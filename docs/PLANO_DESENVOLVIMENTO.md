@@ -596,10 +596,11 @@ interno de captura/WAL e spool durável, ainda não exposto pela API pública. E
 Linux amd64, Go e Rust passaram testes de barreiras concorrentes, recuperação
 após `SIGKILL`, publicação parcial com ENOSPC real em tmpfs limitado,
 cancelamento cooperativo e reconciliação após escrita/checkpoint por conexão
-externa de teste. A captura não executa checkpoint. Permanecem pendentes a
-matriz nativa Linux arm64/macOS arm64 (jobs manuais com opt-in em
-`.github/workflows/ci.yml`), falhas físicas de `fsync`/energia, crash durante
-checkpoint real e as demais combinações driver/VFS/filesystem. Ver
+externa de teste. A captura não executa checkpoint. Os jobs nativos
+`make test-native` para Linux arm64 e macOS arm64 passaram no despacho manual
+40113447285, no commit `5aae79a`; isso não inclui o drill ENOSPC Linux amd64 nem
+completa CP-01. Permanecem pendentes falhas físicas de `fsync`/energia, crash
+durante checkpoint real e as demais combinações driver/VFS/filesystem. Ver
 `spec/CHECKPOINT_PROTOCOL.md`; esses resultados parciais não aprovam CP-01.
 
 ### Fase 3 — S3-compatible e Floci [M3]
@@ -747,7 +748,8 @@ Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, 
 **Estado do plano:** arquitetura e execução definidas; gate M0 local verificado
 (matriz ampla ainda parcial), M1 implementado/verificado localmente, M2
 bloqueado por CP-01 e M3 ainda sem adapter S3 de biblioteca. `make test`, o
-smoke de persistência Floci e o drill ENOSPC limitado passaram localmente. A
-matriz nativa arm64/macOS exige despacho manual com opt-in e continua sendo
-evidência separada. A compatibilidade comprovada é LTX v2 contra
-`superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
+smoke de persistência Floci e o drill ENOSPC limitado passaram localmente. Os
+jobs `make test-native` Linux arm64/macOS arm64 passaram no despacho manual
+40113447285 (`5aae79a`); isso é evidência parcial, não aprovação CP-01. A
+compatibilidade comprovada é LTX v2 contra `superfly/ltx v0.4.0`, não qualquer
+release genérica do Litestream.

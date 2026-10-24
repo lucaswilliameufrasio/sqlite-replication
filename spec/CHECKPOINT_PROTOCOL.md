@@ -117,8 +117,8 @@ transição; `sleep` ou stress probabilístico sozinho não é prova.
 | Plataforma da decisão D-16 | Resultado nesta execução |
 | --- | --- |
 | Linux amd64 — produção inicial | Testado em Btrfs local; Go `modernc.org/sqlite` 3.54.1 e Rust `rusqlite` bundled SQLite 3.53.2. Quality gate `make test` e drill ENOSPC em tmpfs passaram; CP-01 segue bloqueado. |
-| Linux arm64 — produção inicial | Não executado: host é amd64 e não há QEMU/binfmt arm64 disponível. Job nativo `workflow_dispatch` foi configurado com opt-in explícito, mas ainda não foi publicado/acionado. |
-| macOS arm64 — integração | Não executado neste host Linux; não há runner macOS conectado a esta sessão. Job nativo `workflow_dispatch` foi configurado com opt-in explícito, mas ainda não foi publicado/acionado. |
+| Linux arm64 — produção inicial | `make test-native` passou em runner nativo `ubuntu-24.04-arm`, despacho manual 40113447285, commit `5aae79a`; o drill ENOSPC continua limitado a Linux amd64. |
+| macOS arm64 — integração | `make test-native` passou em runner nativo `macos-15`, despacho manual 40113447285, commit `5aae79a`. |
 | Windows 11 amd64 — fase posterior | Fora da primeira matriz D-16; não verificado. |
 
 Permanecem sem prova: drivers/VFS alternativos e conexões externas além da
@@ -127,12 +127,11 @@ escrita direta ou concorrente no sidecar fora do lock SQLite; falha física de
 `fsync`/energia e ENOSPC em filesystems de produção (a evidência de espaço
 cheio é somente em tmpfs);
 interrupção de syscalls em andamento; crash durante e recuperação de uma
-operação real de checkpoint; falha de energia/VFS; e a execução nativa Linux
-arm64/macOS arm64 ainda pendente. Os hooks provam ordenação e
-recuperação em pontos controlados, não atomicidade de hardware ou durabilidade
-de todos os filesystems. O CI declara os jobs manuais, mas eles ainda não foram
-executados; o gate segue bloqueado até haver evidência nativa e revisão do
-protocolo.
+operação real de checkpoint; falha de energia/VFS; e a matriz ampliada de
+drivers/VFS/filesystems. Os testes nativos arm64/macOS passaram, mas não cobrem
+essas lacunas. Os hooks provam ordenação e recuperação em pontos controlados,
+não atomicidade de hardware ou durabilidade de todos os filesystems. O gate
+segue bloqueado até haver evidência completa e revisão do protocolo.
 
 ## Critério para aprovação
 
