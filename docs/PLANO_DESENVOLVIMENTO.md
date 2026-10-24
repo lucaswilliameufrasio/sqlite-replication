@@ -1,7 +1,7 @@
 # Plano de Desenvolvimento — SQLite Replication para Go e Rust
 
 > **Versão:** 1.0 — 21/10/2026  
-> **Estado:** especificação para implementação; nenhuma funcionalidade é declarada implementada  
+> **Estado em 2026-10-24:** execução em andamento; M0 parcial, M1 implementado, M2 bloqueado por CP-01.
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.
@@ -532,30 +532,31 @@ Esses defaults serão confrontados com benchmarks e testes; o resultado final vi
 
 ## 16. Infraestrutura de testes: Floci
 
-**Versão de referência no momento do plano:** `floci/floci:2.3.0` (release 15/10/2026); resolver e fixar também digest no lockfile de CI quando a imagem for obtida. Não usar `latest` em pipelines reproduzíveis.
+Floci é pinado em `infra/compose.yaml` para `floci/floci:2.3.0` e digest OCI
+index `sha256:e0b292df4dc9559b7b1bf4f51bdda4bb8e269276236438cd03cae661260ea8a9`;
+os digests `linux/amd64` e `linux/arm64` estão registrados em
+`infra/floci-image.lock`. Não usar `latest` em pipelines reproduzíveis.
 
-```yaml
-# infra/compose.yaml — proposto (precisa ser executado/validado na implementação)
-services:
-  floci:
-    image: floci/floci:2.3.0
-    environment:
-      FLOCI_HOSTNAME: floci
-      FLOCI_DEFAULT_REGION: us-east-1
-      FLOCI_STORAGE_MODE: persistent
-      FLOCI_STORAGE_PERSISTENT_PATH: /app/data
-    ports:
-      - "127.0.0.1:4566:4566"
-    volumes:
-      - floci-data:/app/data
+`bash infra/floci-smoke.sh` (também exposto como `make test-floci`) foi
+executado com Docker rootless e passou: sobe projeto/volume exclusivos,
+aguarda health, assina requests S3 com credenciais sintéticas, cria bucket e
+objeto, para/inicia o mesmo serviço, lê e compara os bytes persistidos, remove
+objeto/bucket e derruba somente o projeto/volume desta execução. A porta host é
+selecionada para a execução e publicada em loopback. Não foram usados AWS S3,
+R2 ou credenciais reais. Evidência corresponde ao smoke do emulador, não a um
+adapter de storage da biblioteca (ainda não implementado).
 
-volumes:
-  floci-data:
-```
+O ambiente inicial é `persistent`, que é a semântica requerida para este
+smoke. Uma suite rápida em modo `memory` pode ser adicionada junto dos testes do
+adapter S3; ela não substitui persistência/restart. Credenciais de teste são
+`test`/`test`, região `us-east-1`, endpoint local e path-style.
 
-Credenciais de teste: `AWS_ACCESS_KEY_ID=test`, `AWS_SECRET_ACCESS_KEY=test`, `AWS_REGION=us-east-1`, endpoint `http://127.0.0.1:4566` no host, `http://floci:4566` entre containers, S3 path-style. Não compartilhar credenciais reais com a CI. O bootstrap cria bucket único por execução e o teardown remove somente prefixos de teste. A suite deve ter modo `memory` rápido para alguns casos e `persistent` obrigatório para durabilidade/restart.
-
-**Sem validação externa:** não exigir contas AWS, R2, storage real ou rede pública para aprovar merge, release ou documentação. Explicitar que a fidelidade de Floci não prova semântica de todo provedor S3-compatible; por isso os contratos do adapter incluem checagens de capabilities e erros explícitos.
+**Sem validação externa:** não exigir contas AWS, R2 ou APIs de storage reais
+para aprovar merge/release. A CI pode precisar baixar a imagem digest-pinned do
+registry de containers se ela não estiver em cache; isso não utiliza serviço de
+storage real. Explicitar que a fidelidade de Floci não prova semântica de todo
+provedor S3-compatible; por isso os contratos do adapter incluem checagens de
+capabilities e erros explícitos.
 
 ## 17. Roadmap incremental, entregas e gates
 
@@ -565,11 +566,24 @@ Credenciais de teste: `AWS_ACCESS_KEY_ID=test`, `AWS_SECRET_ACCESS_KEY=test`, `A
 
 **Gate M0:** CI reproduzível sem cloud real; baseline de fixtures v2 registrado; specs revisadas; ambiente sobe e derruba Floci consistentemente.
 
+**Estado observado:** implementação e gate local `make test` verificados. Há
+contratos WAL/LTX/layout/restore, snapshots LTX v2 independentes para páginas
+512/1024/4096/8192/65536, vetores WAL para ambas as ordens de checksum e página
+65536, parsers isolados Go/Rust com casos de corrupção/cauda, exemplos de
+snapshot/restore em ambas as linguagens e smoke Floci persistente aprovado. M0
+permanece parcial no escopo amplo: a matriz da seção 6 ainda não inclui DB
+vazio, deltas/compactados e todos os casos de stress; CI remoto também não foi
+observado nesta execução.
+
 ### Fase 1 — Primeiro vertical: snapshot consistente → LTX → filesystem → restore [M1]
 
 **Entregáveis:** adaptador SQLite suportado em cada linguagem, snapshot consistente via API SQLite, encoder/decoder LTX v2 independente, backend fs, restore offline e teste cruzado de snapshot. Construir Go e Rust em paralelo após contrato.
 
 **Gate M1:** ambas as linguagens restauram snapshots mutuamente, passam `integrity_check` e hash lógico e rejeitam corrupção; sem prometer incremental nesse marco.
+
+**Estado observado:** gate M1 verificado localmente por `make test`: snapshot,
+restore cruzado Go↔Rust, verificação SQLite/hash lógico e fixtures do oráculo
+v2 para cinco tamanhos de página; testes rejeitam corrupção e destino existente.
 
 ### Fase 2 — Incremental WAL e checkpoint seguro [M2 — caminho crítico]
 
@@ -577,11 +591,25 @@ Credenciais de teste: `AWS_ACCESS_KEY_ID=test`, `AWS_SECRET_ACCESS_KEY=test`, `A
 
 **Gate M2:** CP-01 aprovado com testes concorrentes e de crash; nenhum WAL commit elegível perdido durante rotação. Se o gate não passar, **bloquear a conclusão da fase e produção**.
 
+**Estado observado em 2026-10-24:** bloqueado por CP-01. Existe um protótipo
+interno de captura/WAL e spool durável, ainda não exposto pela API pública. Em
+Linux amd64, Go e Rust passaram testes de barreiras concorrentes, recuperação
+após `SIGKILL`, publicação parcial com ENOSPC real em tmpfs limitado,
+cancelamento cooperativo e reconciliação após escrita/checkpoint por conexão
+externa de teste. A captura não executa checkpoint. Permanecem pendentes a
+matriz nativa Linux arm64/macOS arm64 (jobs manuais com opt-in em
+`.github/workflows/ci.yml`), falhas físicas de `fsync`/energia, crash durante
+checkpoint real e as demais combinações driver/VFS/filesystem. Ver
+`spec/CHECKPOINT_PROTOCOL.md`; esses resultados parciais não aprovam CP-01.
+
 ### Fase 3 — S3-compatible e Floci [M3]
 
 **Entregáveis:** interface storage unificada, SDKs S3 idiomáticos, uploads imutáveis, multipart, reconciliação, retry, métricas básicas e testes Floci persistente. Implementação paralela Go/Rust, não compartilhada.
 
 **Gate M3:** Floci persistente + kill/restart + restauração cruzada; operação sem qualquer dependência de S3 real.
+
+**Estado observado:** não iniciado como adapter de biblioteca. O smoke Floci
+validou somente o serviço S3 local e sua persistência; não é prova do gate M3.
 
 ### Fase 4 — Recoverability, compaction e retention [M4]
 
@@ -680,24 +708,24 @@ Permitir desenvolvimento independente de adapters S3 e codecs durante a prova de
 
 ## 21. Documentos ADR a escrever (mínimos)
 
-1. `0001-monorepo-libraries-no-shared-runtime.md`
-2. `0002-ltx-v2-interop-and-v3-versioning.md`
-3. `0003-sqlite-driver-and-runtime-version-policy.md`
-4. `0004-wal-capture-and-checkpoint-locking.md`
-5. `0005-durable-spool-and-acknowledgement.md`
-6. `0006-storage-layout-and-immutable-objects.md`
-7. `0007-single-writer-and-no-distributed-failover.md`
-8. `0008-floci-only-s3-conformance.md`
-9. `0009-restore-and-atomic-promotion.md`
-10. `0010-snapshot-compaction-retention.md`
-11. `0011-backpressure-and-write-gate.md`
-12. `0012-security-observability-and-release-gates.md`
+As ADRs estão registradas em `docs/adr/`: 0001–0009 e 0010–0012. A ADR 0010
+(retenção/compactação) e partes das ADRs 0011–0012 permanecem propostas, como
+indicado em seus estados; não são decisões de produto já implementadas.
 
 Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, provas/testes e plano de reversão**. Alterações relevantes no contrato exigem atualização simultânea de specs e fixtures.
 
 ## 22. Instrução executiva para agente de desenvolvimento
 
-> Desenvolva o projeto por jornadas verticais, seguindo o presente plano. Inicie pelo monorepo, especificação WAL/LTX v2 e fixtures, ambiente Floci, e pela primeira jornada snapshot consistente → LTX → filesystem → restore, implementada em Go e Rust de maneira nativa e independente. Não comece por uma etapa isolada de benchmarking ou pesquisa. Faça os testes de conformance e checkpoints conforme as dependências, registrando decisões em ADRs. Execute `go test`, `cargo test` e integrações Floci quando os módulos estiverem disponíveis. Não considere o motor incremental seguro até passar o gate CP-01 de sincronização/rotação WAL. Nenhum serviço externo real é necessário. Sempre entregue código, testes, docs, evidências e pendências remanescentes por milestone; jamais declare algo implementado apenas porque consta do plano.
+> Desenvolva o projeto por jornadas verticais, seguindo o presente plano. O
+> primeiro vertical M1 está implementado em Go e Rust; M0 inclui parsers WAL
+> isolados e vetores compartilhados. O protótipo de captura permanece interno:
+> não o exponha pela API pública nem considere o motor incremental seguro até
+> passar CP-01 com sincronização/rotação WAL e testes concorrentes/crash.
+> Continue os testes de conformance conforme as dependências, registrando
+> decisões em ADRs. Execute `make test` para o gate completo. Nenhum serviço
+> externo real é necessário. Sempre entregue código, testes, docs, evidências e
+> pendências remanescentes por milestone; jamais declare algo implementado
+> apenas porque consta do plano.
 
 ## 23. Referências técnicas e normativas
 
@@ -716,4 +744,10 @@ Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, 
 
 ---
 
-**Estado do plano:** arquitetura e execução definidas. As validações que demandam execução real (protocolo de checkpoint, compatibilidade binária, imagem Floci e integrações) são **gates da implementação**, não testes alegadamente já realizados. A partir de M0, nenhuma nova definição de produto é requisito para começar a codificar.
+**Estado do plano:** arquitetura e execução definidas; gate M0 local verificado
+(matriz ampla ainda parcial), M1 implementado/verificado localmente, M2
+bloqueado por CP-01 e M3 ainda sem adapter S3 de biblioteca. `make test`, o
+smoke de persistência Floci e o drill ENOSPC limitado passaram localmente. A
+matriz nativa arm64/macOS exige despacho manual com opt-in e continua sendo
+evidência separada. A compatibilidade comprovada é LTX v2 contra
+`superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.

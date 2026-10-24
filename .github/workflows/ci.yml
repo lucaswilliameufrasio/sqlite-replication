@@ -1,0 +1,102 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_native_architecture_matrix:
+        description: >-
+          Run both native arm64 jobs (Linux and macOS); hosted runner time may
+          be billable for private repositories.
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Go, Rust, and conformance
+    # Manual dispatch is reserved for the explicitly opted-in native matrix.
+    if: github.event_name != 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        # actions/checkout v7.0.1; canonical release and full SHA checked 2026-10-23.
+        # https://github.com/actions/checkout/releases/tag/v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Go
+        # actions/setup-go v7.0.0; canonical release and full SHA checked 2026-10-23.
+        # https://github.com/actions/setup-go/releases/tag/v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.1'
+          cache: false
+
+      - name: Install Rust
+        # dtolnay/rust-toolchain v1 (1.99.1 action update); full SHA checked 2026-10-23.
+        # https://github.com/dtolnay/rust-toolchain/releases/tag/v1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+
+      - name: Run repository quality gate
+        run: make test
+
+  native-arm64:
+    name: Native ${{ matrix.platform }} tests
+    if: github.event_name == 'workflow_dispatch' && inputs.run_native_architecture_matrix
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: Linux arm64
+            runner: ubuntu-24.04-arm
+            uname: aarch64
+          - platform: macOS arm64
+            runner: macos-15
+            uname: arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        # actions/checkout v7.0.1; canonical release and full SHA checked 2026-10-23.
+        # https://github.com/actions/checkout/releases/tag/v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Verify native runner architecture
+        env:
+          EXPECTED_UNAME: ${{ matrix.uname }}
+        run: test "$(uname -m)" = "$EXPECTED_UNAME"
+
+      - name: Install Go
+        # actions/setup-go v7.0.0; canonical release and full SHA checked 2026-10-23.
+        # https://github.com/actions/setup-go/releases/tag/v7.0.0
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.27.1'
+          cache: false
+
+      - name: Install Rust
+        # dtolnay/rust-toolchain v1 (1.99.1 action update); full SHA checked 2026-10-23.
+        # https://github.com/dtolnay/rust-toolchain/releases/tag/v1
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: '1.98.1'
+          components: rustfmt, clippy
+
+      - name: Run native Go, Rust, and conformance checks
+        run: make test-native

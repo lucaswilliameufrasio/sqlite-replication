@@ -1,0 +1,9 @@
+# Registry: Docker Hub, floci/floci
+# Release: 2.3.0 (2026-10-15), verified against the canonical release and tag
+# metadata on 2026-10-23. OCI index digest covers linux/amd64 and linux/arm64.
+# Canonical release: https://github.com/floci-io/floci/releases/tag/2.3.0
+# Registry tag metadata: https://hub.docker.com/v2/repositories/floci/floci/tags/2.3.0
+image=floci/floci:2.3.0
+index_digest=sha256:e0b292df4dc9559b7b1bf4f51bdda4bb8e269276236438cd03cae661260ea8a9
+linux_amd64_digest=sha256:09b72c45f333019adecb302e79c6b746e290135f528016c8514618bc7ab02344
+linux_arm64_digest=sha256:2b60d1b3843084a366cc05d86f089f8e54271b4b62094ea6706831bbea277a00
