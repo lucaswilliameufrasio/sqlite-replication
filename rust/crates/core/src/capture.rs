@@ -364,6 +364,85 @@ mod tests {
     }
 
     #[test]
+    fn capture_reopens_after_busy_writer_lease_failure() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source_path = directory.path().join("source.sqlite");
+        let repository_path = directory.path().join("repository");
+        let database = Connection::open(&source_path).expect("open SQLite source");
+        database
+            .busy_timeout(Duration::ZERO)
+            .expect("disable source busy timeout");
+        database
+            .execute_batch(
+                "PRAGMA page_size=512;
+                 PRAGMA journal_mode=WAL;
+                 PRAGMA wal_autocheckpoint=0;
+                 CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT);
+                 INSERT INTO records VALUES (1, 'base');",
+            )
+            .expect("initialize source database");
+        let (busy, log_frames, checkpointed): (i64, i64, i64) = database
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("checkpoint baseline database");
+        assert_eq!(busy, 0);
+        assert!(log_frames < 0 || checkpointed == log_frames);
+        crate::snapshot(&source_path, &repository_path).expect("create base snapshot");
+        database
+            .execute(
+                "UPDATE records SET value='captured-before-busy' WHERE id=1",
+                [],
+            )
+            .expect("commit source value before busy lease attempt");
+        let before_busy = capture_once(&source_path, &repository_path, 599)
+            .expect("create watermark before busy lease attempt");
+        assert_eq!(before_busy.transactions.len(), 1);
+        assert_eq!(before_busy.state.database.txid, 2);
+        database
+            .execute("UPDATE records SET value='pending-capture' WHERE id=1", [])
+            .expect("commit source value for capture");
+
+        let external = Connection::open(&source_path).expect("open external writer");
+        external
+            .busy_timeout(Duration::ZERO)
+            .expect("disable external writer busy timeout");
+        external
+            .execute_batch("BEGIN IMMEDIATE;")
+            .expect("acquire external writer lock");
+        let error = match capture_once(&source_path, &repository_path, 600) {
+            Ok(_) => panic!("capture succeeded while the external writer held the lock"),
+            Err(error) => error,
+        };
+        let sqlite_error = error
+            .get_ref()
+            .and_then(|source| source.downcast_ref::<rusqlite::Error>())
+            .expect("busy lease error should retain the SQLite cause");
+        assert_eq!(
+            sqlite_error.sqlite_error_code(),
+            Some(ErrorCode::DatabaseBusy)
+        );
+        let watermark =
+            read_watermark(&repository_path).expect("read watermark after busy lease failure");
+        assert_eq!(watermark.txid, before_busy.state.database.txid);
+        assert_eq!(
+            watermark.database_checksum,
+            before_busy.state.database.checksum
+        );
+
+        external
+            .execute_batch("ROLLBACK;")
+            .expect("release external writer lock");
+        let retried = capture_once(&source_path, &repository_path, 601)
+            .expect("retry capture after releasing external writer");
+        assert_eq!(retried.transactions.len(), 1);
+        assert_eq!(retried.state.database.txid, 3);
+        let watermark = read_watermark(&repository_path).expect("read watermark after retry");
+        assert_eq!(watermark.txid, 3);
+        assert_eq!(watermark.database_checksum, retried.state.database.checksum);
+    }
+
+    #[test]
     fn capture_cancellation_after_partial_publication_releases_lease_and_recovers() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let source_path = directory.path().join("source.sqlite");

@@ -13,6 +13,7 @@ import (
 
 	_ "modernc.org/sqlite"
 	"sqlite-replication"
+	"sqlite-replication/internal/capture"
 	"sqlite-replication/internal/sqliteadapter"
 	"sqlite-replication/ltx"
 	"sqlite-replication/storagefs"
@@ -54,6 +55,11 @@ func run(args []string) error {
 			return usageError()
 		}
 		return createDelta(args[1])
+	case "create-capture-chain":
+		if len(args) != 3 {
+			return usageError()
+		}
+		return createCaptureChain(args[1], args[2])
 	case "restore":
 		if len(args) != 3 {
 			return usageError()
@@ -69,6 +75,16 @@ func run(args []string) error {
 			return usageError()
 		}
 		return verifyDatabase(args[1])
+	case "verify-capture-chain":
+		if len(args) != 2 {
+			return usageError()
+		}
+		return verifyCaptureChain(args[1])
+	case "compare-capture-chain":
+		if len(args) != 3 {
+			return usageError()
+		}
+		return compareCaptureChain(args[1], args[2])
 	default:
 		return usageError()
 	}
@@ -194,6 +210,136 @@ func createDatabase(path string, pageSize int) error {
 	return nil
 }
 
+func createCaptureChain(sourcePath, repositoryPath string) error {
+	if err := createDatabase(sourcePath, 4096); err != nil {
+		return err
+	}
+	if _, err := replication.Snapshot(context.Background(), sourcePath, repositoryPath); err != nil {
+		return fmt.Errorf("publish capture-chain base snapshot: %w", err)
+	}
+	database, err := sql.Open("sqlite", sourcePath)
+	if err != nil {
+		return fmt.Errorf("open capture-chain source: %w", err)
+	}
+	database.SetMaxOpenConns(1)
+	defer database.Close()
+	if _, err := database.Exec("PRAGMA wal_autocheckpoint=0"); err != nil {
+		return fmt.Errorf("disable capture-chain autocheckpoint: %w", err)
+	}
+	if _, err := database.Exec("PRAGMA synchronous=FULL"); err != nil {
+		return fmt.Errorf("set capture-chain synchronous mode: %w", err)
+	}
+	for index, id := range []int{1, 2} {
+		result, err := database.Exec("UPDATE records SET payload = substr(payload, 1, length(payload) - 1) || 'y' WHERE id = ?", id)
+		if err != nil {
+			return fmt.Errorf("commit capture-chain source change %d: %w", id, err)
+		}
+		updatedRows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("inspect capture-chain change %d: %w", id, err)
+		}
+		if updatedRows != 1 {
+			return fmt.Errorf("capture-chain change updated %d rows, want 1", updatedRows)
+		}
+		captured, err := capture.CaptureOnce(context.Background(), sourcePath, repositoryPath, 1_700_000_000_001+int64(index), nil)
+		if err != nil {
+			return fmt.Errorf("capture source transaction %d: %w", index+1, err)
+		}
+		if captured.WALFrames == 0 || len(captured.Transactions) != 1 || captured.State.Database.TXID != uint64(index+2) {
+			return fmt.Errorf("capture transaction %d observed %d WAL frames, produced %d LTX files at TXID %d", index+1, captured.WALFrames, len(captured.Transactions), captured.State.Database.TXID)
+		}
+	}
+	var busy, logFrames, checkpointed int
+	if err := database.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); err != nil {
+		return fmt.Errorf("checkpoint capture-chain source after publication: %w", err)
+	}
+	if busy != 0 || (logFrames >= 0 && checkpointed != logFrames) {
+		return fmt.Errorf("capture-chain source checkpoint incomplete: busy=%d log=%d checkpointed=%d", busy, logFrames, checkpointed)
+	}
+	return verifyCaptureChain(sourcePath)
+}
+
+func verifyCaptureChain(path string) error {
+	if err := sqliteadapter.VerifyDatabase(context.Background(), path); err != nil {
+		return fmt.Errorf("verify capture-chain SQLite image: %w", err)
+	}
+	database, err := sql.Open("sqlite", "file:"+filepath.ToSlash(path)+"?mode=ro")
+	if err != nil {
+		return fmt.Errorf("open capture-chain image: %w", err)
+	}
+	defer database.Close()
+	var count, idSum, payloadBytes, updatedRows, unchangedRows int
+	if err := database.QueryRow(`
+		SELECT count(*), sum(id), sum(length(payload)),
+		       sum(CASE WHEN id IN (1, 2) AND substr(payload, -1, 1) = 'y' THEN 1 ELSE 0 END),
+		       sum(CASE WHEN id NOT IN (1, 2) AND substr(payload, -1, 1) = 'x' THEN 1 ELSE 0 END)
+		FROM records
+	`).Scan(&count, &idSum, &payloadBytes, &updatedRows, &unchangedRows); err != nil {
+		return fmt.Errorf("read capture-chain logical contents: %w", err)
+	}
+	if count != 128 || idSum != 8256 || payloadBytes != 132480 || updatedRows != 2 || unchangedRows != 126 {
+		return fmt.Errorf("unexpected capture-chain contents: count=%d id_sum=%d payload_bytes=%d updated_rows=%d unchanged_rows=%d", count, idSum, payloadBytes, updatedRows, unchangedRows)
+	}
+	return nil
+}
+
+func compareCaptureChain(sourcePath, restoredPath string) error {
+	if err := verifyCaptureChain(sourcePath); err != nil {
+		return fmt.Errorf("verify capture-chain source: %w", err)
+	}
+	if err := verifyCaptureChain(restoredPath); err != nil {
+		return fmt.Errorf("verify capture-chain restore: %w", err)
+	}
+	source, err := sql.Open("sqlite", "file:"+filepath.ToSlash(sourcePath)+"?mode=ro")
+	if err != nil {
+		return fmt.Errorf("open capture-chain source for comparison: %w", err)
+	}
+	defer source.Close()
+	restored, err := sql.Open("sqlite", "file:"+filepath.ToSlash(restoredPath)+"?mode=ro")
+	if err != nil {
+		return fmt.Errorf("open restored capture-chain image: %w", err)
+	}
+	defer restored.Close()
+	sourceRows, err := source.Query("SELECT id, payload FROM records ORDER BY id")
+	if err != nil {
+		return fmt.Errorf("read capture-chain source rows: %w", err)
+	}
+	defer sourceRows.Close()
+	restoredRows, err := restored.Query("SELECT id, payload FROM records ORDER BY id")
+	if err != nil {
+		return fmt.Errorf("read restored capture-chain rows: %w", err)
+	}
+	defer restoredRows.Close()
+	for rowNumber := 1; ; rowNumber++ {
+		sourceHasRow := sourceRows.Next()
+		restoredHasRow := restoredRows.Next()
+		if sourceHasRow != restoredHasRow {
+			return fmt.Errorf("capture-chain row count differs at row %d", rowNumber)
+		}
+		if !sourceHasRow {
+			break
+		}
+		var sourceID, restoredID int
+		var sourcePayload, restoredPayload string
+		if err := sourceRows.Scan(&sourceID, &sourcePayload); err != nil {
+			return fmt.Errorf("scan capture-chain source row %d: %w", rowNumber, err)
+		}
+		if err := restoredRows.Scan(&restoredID, &restoredPayload); err != nil {
+			return fmt.Errorf("scan restored capture-chain row %d: %w", rowNumber, err)
+		}
+		if sourceID != restoredID || sourcePayload != restoredPayload {
+			return fmt.Errorf("capture-chain content differs at row %d (source id=%d, restored id=%d)", rowNumber, sourceID, restoredID)
+		}
+	}
+	if err := sourceRows.Err(); err != nil {
+		return fmt.Errorf("iterate capture-chain source rows: %w", err)
+	}
+	if err := restoredRows.Err(); err != nil {
+		return fmt.Errorf("iterate restored capture-chain rows: %w", err)
+	}
+	return nil
+}
+
 func verifyDatabase(path string) error {
 	if err := sqliteadapter.VerifyDatabase(context.Background(), path); err != nil {
 		return err
@@ -214,5 +360,5 @@ func verifyDatabase(path string) error {
 }
 
 func usageError() error {
-	return errors.New("usage: conformance <create DATABASE [PAGE_SIZE] | snapshot DATABASE REPOSITORY | create-delta LTX | restore REPOSITORY DESTINATION | decode-ltx LTX DESTINATION | verify DATABASE>")
+	return errors.New("usage: conformance <create DATABASE [PAGE_SIZE] | snapshot DATABASE REPOSITORY | create-delta LTX | create-capture-chain DATABASE REPOSITORY | restore REPOSITORY DESTINATION | decode-ltx LTX DESTINATION | verify DATABASE | verify-capture-chain DATABASE | compare-capture-chain SOURCE RESTORED>")
 }

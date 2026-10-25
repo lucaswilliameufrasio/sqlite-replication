@@ -173,20 +173,43 @@ fn immediate_writer_lock_and_noop_checkpoint_boundary() {
         "NOOP boundary did not advance after writer commit: before={baseline_status:?}, after={status_after_writer:?}"
     );
 
-    let truncate_status = checkpoint_status(&checkpointer, "TRUNCATE").expect("blocked TRUNCATE");
-    assert!(
-        truncate_status.busy != 0 && truncate_status.checkpointed < truncate_status.log_frames,
-        "TRUNCATE did not report an incomplete checkpoint behind the pinned reader: {truncate_status:?}"
-    );
-    let wal_after_blocked_truncate = fs::read(&wal_path).expect("read WAL after blocked TRUNCATE");
-    assert!(
-        !wal_after_blocked_truncate.is_empty(),
-        "TRUNCATE removed WAL bytes newer than the pinned reader"
-    );
+    for mode in ["PASSIVE", "FULL", "RESTART", "TRUNCATE"] {
+        let status = checkpoint_status(&checkpointer, mode).unwrap_or_else(|error| {
+            panic!("{mode} checkpoint behind pinned reader failed: {error}")
+        });
+        assert!(
+            mode == "PASSIVE" || status.busy != 0,
+            "{mode} reported completion while an older reader was pinned: {status:?}"
+        );
+        assert_eq!(
+            status.log_frames, status_after_writer.log_frames,
+            "{mode} changed the observed WAL frame boundary"
+        );
+        assert!(
+            status.checkpointed < status.log_frames,
+            "{mode} reported a complete checkpoint behind the pinned reader: {status:?}"
+        );
+        let wal_after_checkpoint = fs::read(&wal_path)
+            .unwrap_or_else(|error| panic!("read WAL after blocked {mode}: {error}"));
+        assert!(
+            !wal_after_checkpoint.is_empty(),
+            "{mode} removed WAL bytes newer than the pinned reader"
+        );
+    }
 
     reader
         .execute_batch("ROLLBACK;")
         .expect("release reader snapshot");
+    let truncate_after_reader_release =
+        checkpoint_status(&checkpointer, "TRUNCATE").expect("TRUNCATE after reader release");
+    assert_eq!(
+        truncate_after_reader_release.busy, 0,
+        "TRUNCATE remained busy after releasing the pinned reader: {truncate_after_reader_release:?}"
+    );
+    assert!(
+        truncate_after_reader_release.checkpointed >= truncate_after_reader_release.log_frames,
+        "TRUNCATE did not checkpoint all frames after reader release: {truncate_after_reader_release:?}"
+    );
 }
 
 fn open_test_connection(path: &Path) -> Connection {

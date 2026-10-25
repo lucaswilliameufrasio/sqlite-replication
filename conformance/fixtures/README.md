@@ -31,5 +31,9 @@ SHA-256:
 
 Regenerate missing fixtures with `generate-ltx-v2-fixture.sh PATH PAGE_SIZE`; the
 script refuses to overwrite existing bytes. The conformance runner restores all
-three page sizes in both engines and verifies SQLite integrity and logical
-contents.
+five page sizes in both engines and verifies SQLite integrity and logical
+contents. It also generates two-commit LTX capture chains independently with
+Go and Rust, applies each chain with the pinned upstream `superfly/ltx v0.4.0`
+CLI, then checks SQLite integrity and compares every restored row with the
+source image. This is local format/restore evidence, not physical-durability
+evidence.

@@ -27,7 +27,7 @@ func run(args []string) error {
 		return verifyLTX(args[1])
 	}
 	if len(args) != 3 {
-		return errors.New("usage: reference <create DATABASE LTX | verify LTX DATABASE_DESTINATION | verify-ltx LTX>")
+		return usageError()
 	}
 	switch args[0] {
 	case "create":
@@ -35,8 +35,12 @@ func run(args []string) error {
 	case "verify":
 		return verifyAndRestore(args[1], args[2])
 	default:
-		return errors.New("usage: reference <create DATABASE LTX | verify LTX DATABASE_DESTINATION | verify-ltx LTX>")
+		return usageError()
 	}
+}
+
+func usageError() error {
+	return errors.New("usage: reference <create DATABASE LTX | verify LTX DATABASE_DESTINATION | verify-ltx LTX>")
 }
 
 func verifyLTX(ltxPath string) error {

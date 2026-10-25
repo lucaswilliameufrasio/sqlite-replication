@@ -87,35 +87,9 @@ func (lease *CaptureLease) ReadStableWAL(ctx context.Context) (StableWAL, error)
 		return StableWAL{}, err
 	}
 	walPath := lease.sourcePath + "-wal"
-	file, err := os.Open(walPath)
-	if errors.Is(err, os.ErrNotExist) {
-		file = nil
-	} else if err != nil {
-		return StableWAL{}, fmt.Errorf("open SQLite WAL for capture: %w", err)
-	}
-	var content []byte
-	if file != nil {
-		beforeInfo, err := file.Stat()
-		if err != nil {
-			_ = file.Close()
-			return StableWAL{}, fmt.Errorf("stat SQLite WAL before capture: %w", err)
-		}
-		content, err = io.ReadAll(file)
-		if err != nil {
-			_ = file.Close()
-			return StableWAL{}, fmt.Errorf("read SQLite WAL: %w", err)
-		}
-		afterInfo, statErr := file.Stat()
-		closeErr := file.Close()
-		if statErr != nil {
-			return StableWAL{}, fmt.Errorf("stat SQLite WAL after capture: %w", statErr)
-		}
-		if closeErr != nil {
-			return StableWAL{}, fmt.Errorf("close captured SQLite WAL: %w", closeErr)
-		}
-		if beforeInfo.Size() != afterInfo.Size() || !beforeInfo.ModTime().Equal(afterInfo.ModTime()) || int64(len(content)) != afterInfo.Size() {
-			return StableWAL{}, fmt.Errorf("SQLite WAL changed while it was being read")
-		}
+	content, walFileInfo, walExists, err := readStableWALFile(walPath, nil)
+	if err != nil {
+		return StableWAL{}, fmt.Errorf("read SQLite WAL for capture: %w", err)
 	}
 	after, err := observeCheckpoint(ctx, lease.sourcePath)
 	if err != nil {
@@ -124,10 +98,108 @@ func (lease *CaptureLease) ReadStableWAL(ctx context.Context) (StableWAL, error)
 	if before.LogFrames != after.LogFrames || before.Checkpointed != after.Checkpointed {
 		return StableWAL{}, fmt.Errorf("SQLite WAL checkpoint observation changed during capture")
 	}
-	if after.LogFrames > 0 && file == nil {
+	// The ctime comparison is scoped to the file read; recheck only path identity
+	// after the second SQLite observation.
+	if err := verifyStableWALPath(walPath, walFileInfo, walExists, false); err != nil {
+		return StableWAL{}, err
+	}
+	if after.LogFrames > 0 && !walExists {
 		return StableWAL{}, fmt.Errorf("SQLite reports WAL frames but the WAL sidecar is absent")
 	}
 	return StableWAL{Bytes: content, Observation: after}, nil
+}
+
+func readStableWALFile(walPath string, afterOpen func() error) ([]byte, os.FileInfo, bool, error) {
+	file, err := os.Open(walPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil, false, nil
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+
+	beforeInfo, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, false, fmt.Errorf("stat SQLite WAL before capture: %w", err)
+	}
+	beforeChangeTime, err := fileChangeTime(beforeInfo)
+	if err != nil {
+		_ = file.Close()
+		return nil, nil, false, fmt.Errorf("read SQLite WAL change time before capture: %w", err)
+	}
+	if afterOpen != nil {
+		if err := afterOpen(); err != nil {
+			_ = file.Close()
+			return nil, nil, false, err
+		}
+	}
+
+	content, readErr := io.ReadAll(file)
+	afterInfo, statErr := file.Stat()
+	closeErr := file.Close()
+	if readErr != nil {
+		return nil, nil, false, fmt.Errorf("read SQLite WAL: %w", readErr)
+	}
+	if statErr != nil {
+		return nil, nil, false, fmt.Errorf("stat SQLite WAL after capture: %w", statErr)
+	}
+	if closeErr != nil {
+		return nil, nil, false, fmt.Errorf("close captured SQLite WAL: %w", closeErr)
+	}
+	afterChangeTime, err := fileChangeTime(afterInfo)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("read SQLite WAL change time after capture: %w", err)
+	}
+	if beforeInfo.Size() != afterInfo.Size() ||
+		!beforeInfo.ModTime().Equal(afterInfo.ModTime()) ||
+		int64(len(content)) != afterInfo.Size() {
+		return nil, nil, false, fmt.Errorf("SQLite WAL changed while it was being read")
+	}
+	if beforeChangeTime != afterChangeTime {
+		return nil, nil, false, fmt.Errorf("SQLite WAL change time changed while it was being read")
+	}
+	if err := verifyStableWALPath(walPath, beforeInfo, true, true); err != nil {
+		return nil, nil, false, err
+	}
+	return content, beforeInfo, true, nil
+}
+
+func verifyStableWALPath(walPath string, expectedInfo os.FileInfo, expectedPresent, verifyChangeTime bool) error {
+	currentInfo, err := os.Stat(walPath)
+	if !expectedPresent {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("stat SQLite WAL after capture: %w", err)
+		}
+		return fmt.Errorf("SQLite WAL appeared while it was being read")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("SQLite WAL path disappeared while it was being read")
+	}
+	if err != nil {
+		return fmt.Errorf("stat SQLite WAL after capture: %w", err)
+	}
+	if !os.SameFile(expectedInfo, currentInfo) {
+		return fmt.Errorf("SQLite WAL path changed while it was being read")
+	}
+	if !verifyChangeTime {
+		return nil
+	}
+	expectedChangeTime, err := fileChangeTime(expectedInfo)
+	if err != nil {
+		return fmt.Errorf("read SQLite WAL change time before path verification: %w", err)
+	}
+	currentChangeTime, err := fileChangeTime(currentInfo)
+	if err != nil {
+		return fmt.Errorf("read SQLite WAL change time after path verification: %w", err)
+	}
+	if expectedChangeTime != currentChangeTime {
+		return fmt.Errorf("SQLite WAL change time changed after it was read")
+	}
+	return nil
 }
 
 // Close releases the reader pin before the writer guard and closes both pools.

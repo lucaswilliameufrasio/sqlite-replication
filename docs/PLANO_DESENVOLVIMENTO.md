@@ -1,7 +1,7 @@
 # Plano de Desenvolvimento — SQLite Replication para Go e Rust
 
 > **Versão:** 1.0 — 21/10/2026  
-> **Estado em 2026-10-24:** execução em andamento; M0 parcial, M1 implementado, M2 bloqueado por CP-01.
+> **Estado em 2026-10-25:** execução em andamento; M0 parcial, M1 implementado, M2 bloqueado por CP-01.
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.
@@ -591,17 +591,46 @@ v2 para cinco tamanhos de página; testes rejeitam corrupção e destino existen
 
 **Gate M2:** CP-01 aprovado com testes concorrentes e de crash; nenhum WAL commit elegível perdido durante rotação. Se o gate não passar, **bloquear a conclusão da fase e produção**.
 
-**Estado observado em 2026-10-24:** bloqueado por CP-01. Existe um protótipo
+**Estado observado em 2026-10-25:** bloqueado por CP-01. Existe um protótipo
 interno de captura/WAL e spool durável, ainda não exposto pela API pública. Em
 Linux amd64, Go e Rust passaram testes de barreiras concorrentes, recuperação
 após `SIGKILL`, publicação parcial com ENOSPC real em tmpfs limitado,
 cancelamento cooperativo e reconciliação após escrita/checkpoint por conexão
-externa de teste. A captura não executa checkpoint. Os jobs nativos
+externa de teste. A captura não executa checkpoint. Os novos testes locais
+determinísticos também rejeitam truncamento após abrir o sidecar e substituição
+atômica por arquivo de mesmo tamanho/mtime, além de aparecimento/desaparecimento
+entre verificações e sobrescrita in-place de mesmo tamanho com `mtime` restaurado
+(usando `ctime`); isso não prova segurança geral contra gravação direta
+concorrente. Go também compilou os testes para Linux arm64, Darwin arm64 e
+Windows amd64, sem executá-los nesses sistemas. Novos testes também
+exercitam `PASSIVE`, `FULL`, `RESTART` e `TRUNCATE` atrás de reader antigo:
+contagem incompleta nunca é tratada como checkpoint completo, e o `TRUNCATE`
+só completa após liberar o reader. Ainda falta repetir a matriz nativa após
+esta alteração. Os jobs nativos
 `make test-native` para Linux arm64 e macOS arm64 passaram no despacho manual
-40113447285, no commit `5aae79a`; isso não inclui o drill ENOSPC Linux amd64 nem
-completa CP-01. Permanecem pendentes falhas físicas de `fsync`/energia, crash
-durante checkpoint real e as demais combinações driver/VFS/filesystem. Ver
-`spec/CHECKPOINT_PROTOCOL.md`; esses resultados parciais não aprovam CP-01.
+40114086587, no commit `e2a1bc8`; isso não inclui o drill ENOSPC Linux amd64 nem
+completa CP-01 nem cobre as alterações locais sem commit desta execução.
+Permanecem pendentes falhas físicas de `fsync`/energia, repetição do crash de
+checkpoint além de Linux amd64 e as demais combinações driver/VFS/filesystem.
+Nos dois engines, teste Linux amd64 mata o processo durante um
+`PRAGMA wal_checkpoint(FULL)` depois de write e, separadamente, de
+`fsync`/`fdatasync` bem-sucedidos no arquivo principal; reabertura,
+`integrity_check`, 512 linhas e `TRUNCATE` passam, cada limite repetido cinco
+vezes por engine. Isso não prova perda de energia/cache do SO. Testes adicionais
+confirmam que `SQLITE_BUSY` ao adquirir a lease não altera TXID/checksum do
+watermark existente e que uma nova tentativa, após liberar o writer, reabre
+conexões e captura o commit pendente. Ver
+`spec/CHECKPOINT_PROTOCOL.md`. O conformance local também gera cadeias de dois
+deltas em cada engine, aplica snapshot+deltas pelo CLI upstream
+`superfly/ltx v0.4.0` e verifica integridade e igualdade linha a linha com a
+origem; isso não substitui a matriz de plataforma/filesystem e não aprova CP-01.
+**Progresso registrado em 2026-10-25:** `TMPDIR=/mnt/oioi make test`,
+`TMPDIR=/mnt/oioi make test-cp01-enospc`, `go test ./... -count=1` e
+`go mod tidy -diff` passaram em Linux amd64. Go compilou `sqliteadapter` e
+`capture` para Linux arm64, Darwin arm64 e Windows amd64; isso não é execução
+nativa. Gitleaks 8.30.1 não encontrou segredos na árvore de trabalho nem nos
+três commits disponíveis. Esses resultados locais não substituem a matriz nativa
+manual nem aprovam CP-01.
 
 ### Fase 3 — S3-compatible e Floci [M3]
 
@@ -750,6 +779,6 @@ Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, 
 bloqueado por CP-01 e M3 ainda sem adapter S3 de biblioteca. `make test`, o
 smoke de persistência Floci e o drill ENOSPC limitado passaram localmente. Os
 jobs `make test-native` Linux arm64/macOS arm64 passaram no despacho manual
-40113447285 (`5aae79a`); isso é evidência parcial, não aprovação CP-01. A
+40114086587 (`e2a1bc8`); isso é evidência parcial, não aprovação CP-01. A
 compatibilidade comprovada é LTX v2 contra `superfly/ltx v0.4.0`, não qualquer
 release genérica do Litestream.

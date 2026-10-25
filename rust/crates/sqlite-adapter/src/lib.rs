@@ -1,6 +1,6 @@
 //! SQLite Online Backup API adapter supported by the initial M1 vertical.
 
-use std::fs::File;
+use std::fs::{self, File, Metadata};
 use std::io;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -44,34 +44,16 @@ impl CaptureLease {
         }
         let before = observe_checkpoint(&self.source_path)?;
         let wal_path = sidecar_path(&self.source_path, "-wal");
-        let file = match File::open(&wal_path) {
-            Ok(file) => Some(file),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-            Err(error) => {
-                return Err(io::Error::other(format!(
-                    "open SQLite WAL for capture: {error}"
-                )));
-            }
-        };
-        let mut bytes = Vec::new();
-        if let Some(mut file) = file {
-            let before_metadata = file.metadata()?;
-            file.read_to_end(&mut bytes)?;
-            let after_metadata = file.metadata()?;
-            if before_metadata.len() != after_metadata.len()
-                || before_metadata.modified().ok() != after_metadata.modified().ok()
-                || after_metadata.len() != bytes.len() as u64
-            {
-                return Err(io::Error::other("SQLite WAL changed while it was read"));
-            }
-        }
+        let (bytes, wal_file_metadata) = read_stable_wal_file(&wal_path, || Ok(()))?;
         let after = observe_checkpoint(&self.source_path)?;
         if before.log_frames != after.log_frames || before.checkpointed != after.checkpointed {
             return Err(io::Error::other(
                 "SQLite WAL checkpoint observation changed during capture",
             ));
         }
-        if after.log_frames > 0 && bytes.is_empty() {
+        // ctime is checked around the file read; this later check is path identity only.
+        verify_stable_wal_path(&wal_path, wal_file_metadata.as_ref(), false)?;
+        if after.log_frames > 0 && wal_file_metadata.is_none() {
             return Err(io::Error::other(
                 "SQLite reports WAL frames but the sidecar is absent",
             ));
@@ -113,16 +95,119 @@ impl CaptureLease {
     }
 }
 
+fn read_stable_wal_file<F>(
+    wal_path: &Path,
+    after_open: F,
+) -> io::Result<(Vec<u8>, Option<Metadata>)>
+where
+    F: FnOnce() -> io::Result<()>,
+{
+    let mut file = match File::open(wal_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok((Vec::new(), None));
+        }
+        Err(error) => {
+            return Err(io::Error::other(format!(
+                "open SQLite WAL for capture: {error}"
+            )));
+        }
+    };
+    let before_metadata = file.metadata()?;
+    after_open()?;
+
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let after_metadata = file.metadata()?;
+    if before_metadata.len() != after_metadata.len()
+        || before_metadata.modified().ok() != after_metadata.modified().ok()
+        || after_metadata.len() != bytes.len() as u64
+    {
+        return Err(io::Error::other("SQLite WAL changed while it was read"));
+    }
+    if !same_file_change_time(&before_metadata, &after_metadata)? {
+        return Err(io::Error::other(
+            "SQLite WAL change time changed while it was read",
+        ));
+    }
+    verify_stable_wal_path(wal_path, Some(&before_metadata), true)?;
+    Ok((bytes, Some(before_metadata)))
+}
+
+fn verify_stable_wal_path(
+    wal_path: &Path,
+    expected: Option<&Metadata>,
+    verify_change_time: bool,
+) -> io::Result<()> {
+    let current = match fs::metadata(wal_path) {
+        Ok(metadata) => Some(metadata),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+        Err(error) => {
+            return Err(io::Error::other(format!(
+                "stat SQLite WAL after capture: {error}"
+            )));
+        }
+    };
+    match (expected, current.as_ref()) {
+        (None, None) => Ok(()),
+        (None, Some(_)) => Err(io::Error::other("SQLite WAL appeared while it was read")),
+        (Some(_), None) => Err(io::Error::other(
+            "SQLite WAL path disappeared while it was read",
+        )),
+        (Some(expected), Some(current)) => {
+            if !same_file_identity(expected, current)? {
+                return Err(io::Error::other(
+                    "SQLite WAL path changed while it was read",
+                ));
+            }
+            if verify_change_time && !same_file_change_time(expected, current)? {
+                return Err(io::Error::other(
+                    "SQLite WAL change time changed after it was read",
+                ));
+            }
+            Ok(())
+        }
+    }
+}
+
+#[cfg(unix)]
+fn same_file_identity(left: &Metadata, right: &Metadata) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
+}
+
+#[cfg(unix)]
+fn same_file_change_time(left: &Metadata, right: &Metadata) -> io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+
+    Ok(left.ctime() == right.ctime() && left.ctime_nsec() == right.ctime_nsec())
+}
+
+#[cfg(not(unix))]
+fn same_file_identity(_left: &Metadata, _right: &Metadata) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "SQLite WAL identity validation is only supported on Unix",
+    ))
+}
+
+#[cfg(not(unix))]
+fn same_file_change_time(_left: &Metadata, _right: &Metadata) -> io::Result<bool> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "SQLite WAL change-time validation is only supported on Unix",
+    ))
+}
+
 /// Acquires a managed BEGIN IMMEDIATE writer guard followed by a pinned reader.
 pub fn begin_capture_lease(path: &Path) -> io::Result<CaptureLease> {
     let writer = open_capture_connection(path)?;
     writer
         .execute_batch("BEGIN IMMEDIATE;")
-        .map_err(|error| io::Error::other(format!("acquire SQLite writer guard: {error}")))?;
+        .map_err(sqlite_error)?;
     let reader = open_capture_connection(path)?;
-    reader
-        .execute_batch("BEGIN;")
-        .map_err(|error| io::Error::other(format!("begin SQLite read pin: {error}")))?;
+    reader.execute_batch("BEGIN;").map_err(sqlite_error)?;
     let _schema_entries: i64 = reader
         .query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))
         .map_err(|error| io::Error::other(format!("pin SQLite read snapshot: {error}")))?;
@@ -340,16 +425,149 @@ fn sqlite_error(error: rusqlite::Error) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::fs::{self, File, FileTimes};
     use std::path::Path;
     use std::sync::mpsc;
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime};
+
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
 
     use rusqlite::{Connection, ErrorCode, OpenFlags};
 
     use super::{
-        begin_capture_lease, create_online_backup, create_online_backup_inner, verify_database,
+        begin_capture_lease, create_online_backup, create_online_backup_inner,
+        read_stable_wal_file, verify_database, verify_stable_wal_path,
     };
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_wal_read_rejects_truncation_during_read() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let wal_path = directory.path().join("source.sqlite-wal");
+        fs::write(&wal_path, b"0123456789abcdef").expect("create WAL sidecar");
+
+        let error = read_stable_wal_file(&wal_path, || {
+            let file = fs::OpenOptions::new().write(true).open(&wal_path)?;
+            file.set_len(8)
+        })
+        .expect_err("truncation during the read should be rejected");
+        assert!(error.to_string().contains("changed while it was read"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_wal_read_rejects_same_metadata_path_replacement() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let wal_path = directory.path().join("source.sqlite-wal");
+        let original_target = directory.path().join("original-wal-data");
+        let replacement_target = directory.path().join("replacement-wal-data");
+        let replacement_link = directory.path().join("replacement-wal-link");
+        let original = b"0123456789abcdef";
+        let replacement = b"fedcba9876543210";
+        fs::write(&original_target, original).expect("create original WAL target");
+        fs::write(&replacement_target, replacement).expect("create replacement WAL target");
+        std::os::unix::fs::symlink(&original_target, &wal_path)
+            .expect("create original WAL sidecar link");
+        let original_metadata = fs::metadata(&wal_path).expect("stat original WAL sidecar");
+        let original_modified = original_metadata
+            .modified()
+            .expect("read original modification time");
+
+        let error = read_stable_wal_file(&wal_path, || {
+            File::open(&replacement_target)?
+                .set_times(FileTimes::new().set_modified(original_modified))?;
+            std::os::unix::fs::symlink(&replacement_target, &replacement_link)?;
+            fs::rename(&replacement_link, &wal_path)?;
+            let replacement_metadata = fs::metadata(&wal_path)?;
+            if replacement_metadata.len() != original_metadata.len()
+                || replacement_metadata.modified().ok() != Some(original_modified)
+            {
+                return Err(std::io::Error::other(
+                    "replacement fixture did not preserve size and modification time",
+                ));
+            }
+            Ok(())
+        })
+        .expect_err("same-size, same-time replacement should be rejected");
+        assert!(error.to_string().contains("path changed while it was read"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_wal_read_rejects_in_place_rewrite_with_restored_mod_time() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let wal_path = directory.path().join("source.sqlite-wal");
+        let original = b"original-frame".repeat(8);
+        let replacement = b"replaced-frame".repeat(8);
+        assert_eq!(original.len(), replacement.len());
+        fs::write(&wal_path, &original).expect("create original WAL sidecar");
+        let known_modified = SystemTime::UNIX_EPOCH + Duration::from_secs(978_307_200);
+        File::open(&wal_path)
+            .expect("open original WAL sidecar")
+            .set_times(FileTimes::new().set_modified(known_modified))
+            .expect("set original WAL timestamps");
+        let original_metadata = fs::metadata(&wal_path).expect("stat original WAL sidecar");
+        let original_change_time = (original_metadata.ctime(), original_metadata.ctime_nsec());
+
+        let error = read_stable_wal_file(&wal_path, || {
+            fs::write(&wal_path, &replacement)?;
+            File::open(&wal_path)?.set_times(FileTimes::new().set_modified(known_modified))?;
+            let replacement_metadata = fs::metadata(&wal_path)?;
+            if replacement_metadata.len() != original_metadata.len()
+                || replacement_metadata.modified()? != known_modified
+            {
+                return Err(std::io::Error::other(
+                    "in-place rewrite fixture did not preserve size and modification time",
+                ));
+            }
+            if (
+                replacement_metadata.ctime(),
+                replacement_metadata.ctime_nsec(),
+            ) == original_change_time
+            {
+                return Err(std::io::Error::other(
+                    "in-place rewrite fixture did not advance change time",
+                ));
+            }
+            Ok(())
+        })
+        .expect_err("same-size in-place rewrite with restored mtime should be rejected");
+        assert!(
+            error
+                .to_string()
+                .contains("change time changed while it was read")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_wal_read_rejects_sidecar_appearance_after_missing_check() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let wal_path = directory.path().join("source.sqlite-wal");
+        verify_stable_wal_path(&wal_path, None, false).expect("verify absent WAL sidecar");
+        fs::write(&wal_path, b"new WAL generation")
+            .expect("create WAL sidecar after absence check");
+
+        let error = verify_stable_wal_path(&wal_path, None, false)
+            .expect_err("WAL sidecar appearance after absent read should be rejected");
+        assert!(error.to_string().contains("WAL appeared"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn stable_wal_read_rejects_sidecar_disappearance_after_open() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let wal_path = directory.path().join("source.sqlite-wal");
+        fs::write(&wal_path, b"captured WAL generation").expect("create WAL sidecar");
+        let wal_metadata = fs::metadata(&wal_path).expect("stat WAL sidecar");
+        fs::remove_file(&wal_path).expect("remove WAL sidecar");
+
+        let error = verify_stable_wal_path(&wal_path, Some(&wal_metadata), false)
+            .expect_err("WAL sidecar disappearance after open should be rejected");
+        assert!(error.to_string().contains("path disappeared"));
+    }
 
     #[test]
     fn online_backup_creates_verified_database() {

@@ -296,20 +296,31 @@ func TestImmediateWriterLockAndNoopCheckpointBoundary(t *testing.T) {
 	if statusAfterWriter.logFrames <= baselineStatus.logFrames {
 		t.Fatalf("NOOP log boundary did not advance after writer commit: before=%d after=%d", baselineStatus.logFrames, statusAfterWriter.logFrames)
 	}
-	truncateStatus := queryCheckpointStatus(t, ctx, checkpointer, "TRUNCATE")
-	if truncateStatus.busy == 0 || truncateStatus.checkpointed >= truncateStatus.logFrames {
-		t.Fatalf("TRUNCATE did not report an incomplete checkpoint behind the pinned reader: %+v", truncateStatus)
-	}
-	walAfterBlockedTruncate, err := os.ReadFile(walPath)
-	if err != nil {
-		t.Fatalf("read WAL after blocked TRUNCATE: %v", err)
-	}
-	if len(walAfterBlockedTruncate) == 0 {
-		t.Fatal("TRUNCATE removed WAL bytes newer than the pinned reader")
+	for _, mode := range []string{"PASSIVE", "FULL", "RESTART", "TRUNCATE"} {
+		t.Run("pinned-reader/"+mode, func(t *testing.T) {
+			status := queryCheckpointStatus(t, ctx, checkpointer, mode)
+			if mode != "PASSIVE" && status.busy == 0 {
+				t.Fatalf("%s reported completion while an older reader was pinned: %+v", mode, status)
+			}
+			if status.logFrames != statusAfterWriter.logFrames || status.checkpointed >= status.logFrames {
+				t.Fatalf("%s did not report an incomplete checkpoint behind the pinned reader: %+v", mode, status)
+			}
+			walAfterCheckpoint, err := os.ReadFile(walPath)
+			if err != nil {
+				t.Fatalf("read WAL after blocked %s: %v", mode, err)
+			}
+			if len(walAfterCheckpoint) == 0 {
+				t.Fatalf("%s removed WAL bytes newer than the pinned reader", mode)
+			}
+		})
 	}
 
 	if _, err := reader.ExecContext(ctx, "ROLLBACK"); err != nil {
 		t.Fatalf("release reader snapshot: %v", err)
+	}
+	truncateAfterReaderRelease := queryCheckpointStatus(t, ctx, checkpointer, "TRUNCATE")
+	if truncateAfterReaderRelease.busy != 0 || truncateAfterReaderRelease.checkpointed < truncateAfterReaderRelease.logFrames {
+		t.Fatalf("TRUNCATE did not complete after releasing the pinned reader: %+v", truncateAfterReaderRelease)
 	}
 }
 

@@ -157,6 +157,89 @@ func TestCaptureCyclePublishesAndRecoversCheckpointedChanges(t *testing.T) {
 	}
 }
 
+func TestCaptureReopensAfterBusyWriterLeaseFailure(t *testing.T) {
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	repositoryRoot := filepath.Join(directory, "repository")
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open source SQLite database: %v", err)
+	}
+	database.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := database.Close(); err != nil {
+			t.Errorf("close source SQLite database: %v", err)
+		}
+	})
+	for _, statement := range []string{
+		"PRAGMA page_size=512",
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA wal_autocheckpoint=0",
+		"PRAGMA busy_timeout=0",
+		"CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT)",
+		"INSERT INTO records VALUES (1, 'base')",
+	} {
+		if _, err := database.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("initialize SQLite database with %q: %v", statement, err)
+		}
+	}
+	if _, err := database.ExecContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)"); err != nil {
+		t.Fatalf("checkpoint baseline database: %v", err)
+	}
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatalf("create base snapshot: %v", err)
+	}
+	if _, err := database.ExecContext(ctx, "UPDATE records SET value='captured-before-busy' WHERE id=1"); err != nil {
+		t.Fatalf("commit source value before busy lease attempt: %v", err)
+	}
+	beforeBusy, err := CaptureOnce(ctx, databasePath, repositoryRoot, 599, nil)
+	if err != nil {
+		t.Fatalf("create watermark before busy lease attempt: %v", err)
+	}
+	if len(beforeBusy.Transactions) != 1 || beforeBusy.State.Database.TXID != 2 {
+		t.Fatalf("initial capture before busy attempt = transactions:%d txid:%d, want 1 and 2", len(beforeBusy.Transactions), beforeBusy.State.Database.TXID)
+	}
+	if _, err := database.ExecContext(ctx, "UPDATE records SET value='pending-capture' WHERE id=1"); err != nil {
+		t.Fatalf("commit source value for capture: %v", err)
+	}
+
+	external := openCaptureTestConnection(t, databasePath)
+	if _, err := external.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		t.Fatalf("acquire external writer lock: %v", err)
+	}
+	_, err = CaptureOnce(ctx, databasePath, repositoryRoot, 600, nil)
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) || sqliteErr.Code()&0xff != 5 {
+		t.Fatalf("capture under external writer lock returned %v, want SQLITE_BUSY", err)
+	}
+	watermark, err := spool.ReadWatermark(repositoryRoot)
+	if err != nil {
+		t.Fatalf("read watermark after busy lease failure: %v", err)
+	}
+	if watermark.TXID != beforeBusy.State.Database.TXID || watermark.DatabaseChecksum != beforeBusy.State.Database.Checksum {
+		t.Fatalf("busy lease failure changed the existing watermark: %+v", watermark)
+	}
+	if _, err := external.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatalf("release external writer lock: %v", err)
+	}
+
+	retried, err := CaptureOnce(ctx, databasePath, repositoryRoot, 601, nil)
+	if err != nil {
+		t.Fatalf("retry capture after releasing external writer: %v", err)
+	}
+	if len(retried.Transactions) != 1 || retried.State.Database.TXID != 3 {
+		t.Fatalf("retry did not capture the pending commit: txs=%d txid=%d", len(retried.Transactions), retried.State.Database.TXID)
+	}
+	watermark, err = spool.ReadWatermark(repositoryRoot)
+	if err != nil {
+		t.Fatalf("read watermark after successful retry: %v", err)
+	}
+	if watermark.TXID != 3 || watermark.DatabaseChecksum != retried.State.Database.Checksum {
+		t.Fatalf("watermark differs after successful retry: %+v", watermark)
+	}
+}
+
 func TestCaptureCancellationAfterPartialPublicationReleasesLeaseAndRecovers(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

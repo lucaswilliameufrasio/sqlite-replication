@@ -17,11 +17,37 @@ rust_delta="$temporary_directory/rust-delta.ltx"
 reference_ltx="$temporary_directory/reference.ltx"
 go_from_reference="$temporary_directory/go-from-reference.sqlite"
 rust_from_reference="$temporary_directory/rust-from-reference.sqlite"
+go_capture_source="$temporary_directory/go-capture-source.sqlite"
+go_capture_repository="$temporary_directory/go-capture-repository"
+go_reference_chain_restore="$temporary_directory/go-reference-chain-restore.sqlite"
+rust_capture_source="$temporary_directory/rust-capture-source.sqlite"
+rust_capture_repository="$temporary_directory/rust-capture-repository"
+rust_reference_chain_restore="$temporary_directory/rust-reference-chain-restore.sqlite"
 fixture="$repository_root/conformance/fixtures/ltx-v2/snapshot-4096.ltx"
 fixture_512="$repository_root/conformance/fixtures/ltx-v2/snapshot-512.ltx"
 fixture_1024="$repository_root/conformance/fixtures/ltx-v2/snapshot-1024.ltx"
 fixture_8192="$repository_root/conformance/fixtures/ltx-v2/snapshot-8192.ltx"
 fixture_65536="$repository_root/conformance/fixtures/ltx-v2/snapshot-65536.ltx"
+
+apply_reference_chain() {
+    local repository_path="$1"
+    local destination_path="$2"
+    local -a ltx_files=()
+    if [[ ! -d "$repository_path/ltx/0" ]]; then
+        printf 'LTX chain directory is missing: %s\n' "$repository_path/ltx/0" >&2
+        return 1
+    fi
+    mapfile -t ltx_files < <(find "$repository_path/ltx/0" -maxdepth 1 -type f -name '*.ltx' -print | LC_ALL=C sort)
+    if [[ "${#ltx_files[@]}" -lt 3 ]]; then
+        printf 'Expected a base snapshot and at least two deltas in %s; found %d files.\n' \
+            "$repository_path/ltx/0" "${#ltx_files[@]}" >&2
+        return 1
+    fi
+    (
+        cd "$repository_root/conformance/reference"
+        go run github.com/superfly/ltx/cmd/ltx apply -db "$destination_path" "${ltx_files[@]}"
+    )
+}
 
 (
     cd "$repository_root/go"
@@ -91,4 +117,35 @@ fixture_65536="$repository_root/conformance/fixtures/ltx-v2/snapshot-65536.ltx"
     go run ./cmd/conformance verify "$go_from_rust"
 )
 
-printf '%s\n' 'Go ↔ Rust and superfly/ltx v0.4.0 LTX v2 conformance passed (SQLite page sizes 512, 1024, 4096, 8192, 65536).'
+(
+    cd "$repository_root/go"
+    go run ./cmd/conformance create-capture-chain "$go_capture_source" "$go_capture_repository"
+    go run ./cmd/conformance verify-capture-chain "$go_capture_source"
+)
+(
+    apply_reference_chain "$go_capture_repository" "$go_reference_chain_restore"
+)
+(
+    cd "$repository_root/go"
+    go run ./cmd/conformance compare-capture-chain "$go_capture_source" "$go_reference_chain_restore"
+)
+
+(
+    cd "$repository_root/rust"
+    cargo run --quiet -p sqlite-replication-core --example capture-conformance -- \
+        "$rust_capture_source" "$rust_capture_repository"
+)
+(
+    apply_reference_chain "$rust_capture_repository" "$rust_reference_chain_restore"
+)
+(
+    cd "$repository_root/go"
+    go run ./cmd/conformance compare-capture-chain "$rust_capture_source" "$rust_reference_chain_restore"
+)
+(
+    cd "$repository_root/rust"
+    cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- \
+        verify "$rust_reference_chain_restore"
+)
+
+printf '%s\n' 'Go ↔ Rust and superfly/ltx v0.4.0 LTX v2 conformance passed, including independent restore of both captured LTX chains (SQLite page sizes 512, 1024, 4096, 8192, 65536).'
