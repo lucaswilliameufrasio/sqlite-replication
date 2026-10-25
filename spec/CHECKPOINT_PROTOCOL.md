@@ -119,7 +119,8 @@ integridade e conteúdo estivessem corretos. O verificador agora fecha o pool
 usado por `integrity_check`/leitura e executa o checkpoint final numa conexão
 nova, sem retry nem relaxamento da asserção. O cenário concorrente passou 100
 execuções locais com `GOMAXPROCS=2`, e o `make test` completo passou. A causa
-remota ainda precisa de confirmação no CI após a publicação desta correção.
+remota ainda precisa de confirmação no gate Linux amd64 após a publicação desta
+correção; a matriz manual do commit `72c834d` passou o cenário em Linux arm64.
 
 ### Casos ainda exigidos
 

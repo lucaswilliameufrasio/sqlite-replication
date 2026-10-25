@@ -672,8 +672,11 @@ em Linux arm64 e falhou em macOS arm64 por `mapfile` incompatível com Bash 3.2.
 O runner agora evita `mapfile` e `find -maxdepth`; o teste Go fecha a conexão de
 verificação antes do `TRUNCATE` final. A matriz de snapshots passou novamente
 isolada (16 casos/96 restores), o teste concorrente passou 100 repetições com
-`GOMAXPROCS=2` e o `make test` completo passou localmente. Correções prontas para
-publicação; os workflows remotos pós-correção ainda não foram executados.
+`GOMAXPROCS=2` e o `make test` completo passou localmente. As correções foram
+publicadas no commit `72c834d`; a matriz manual pós-correção (run
+`40172962620`) passou em Linux arm64 e macOS arm64, incluindo conformance. O
+gate padrão Linux amd64 pós-correção ainda aguarda execução: não apareceu evento
+`push` para `72c834d`.
 
 ### Fase 3 — S3-compatible e Floci [M3]
 
