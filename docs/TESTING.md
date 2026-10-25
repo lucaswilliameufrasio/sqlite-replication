@@ -8,6 +8,8 @@
 - O conformance requer Python 3 com módulo padrão `sqlite3`. Python cria e
   verifica somente fixtures offline; snapshots e restores das bibliotecas usam
   os runtimes SQLite Go/Rust homologados, não o runtime do Python.
+- O runner de conformance precisa continuar compatível com Bash 3.2, ainda
+  disponível por padrão em runners macOS; não usar `mapfile`/`readarray`.
 - `make test-floci` e `make test` requerem Docker Compose e Python 3. O smoke
   usa somente `floci/floci:2.3.0` pinado por digest, credenciais fictícias e
   S3 local; nunca chama AWS S3 ou Cloudflare R2.

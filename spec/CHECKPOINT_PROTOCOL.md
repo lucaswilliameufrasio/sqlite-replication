@@ -113,6 +113,14 @@ provoca ENOSPC real no tmpfs limitado do container rootless. São duas
 filesystems locais exercitadas, não falha física de `fsync` nem matriz nativa de
 produção.
 
+Na CI remota de 2026-10-25, a recuperação de um dos oito subprocessos concorrentes
+retornou `busy=1, log=-1, checkpointed=-1` no `wal_checkpoint(TRUNCATE)`, embora
+integridade e conteúdo estivessem corretos. O verificador agora fecha o pool
+usado por `integrity_check`/leitura e executa o checkpoint final numa conexão
+nova, sem retry nem relaxamento da asserção. O cenário concorrente passou 100
+execuções locais com `GOMAXPROCS=2`, e o `make test` completo passou. A causa
+remota ainda precisa de confirmação no CI após a publicação desta correção.
+
 ### Casos ainda exigidos
 
 Use barreiras determinísticas/test hooks para pausar exatamente em cada

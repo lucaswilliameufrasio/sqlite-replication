@@ -367,8 +367,24 @@ func verifyCheckpointRecovery(t *testing.T, databasePath string) {
 	if rows != 512 || invalidPayloads != 0 {
 		t.Fatalf("recovered checkpoint rows=%d invalid_payloads=%d, want 512 and 0", rows, invalidPayloads)
 	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close recovery verification database before checkpoint: %v", err)
+	}
+
+	// Do not let the pooled connection used by integrity_check or the row scan
+	// retain a read mark while verifying that recovery can truncate the WAL.
+	checkpointDatabase, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open database for recovery checkpoint: %v", err)
+	}
+	defer func() {
+		if err := checkpointDatabase.Close(); err != nil {
+			t.Errorf("close recovery checkpoint database: %v", err)
+		}
+	}()
+	checkpointDatabase.SetMaxOpenConns(1)
 	var busy, logFrames, checkpointed int
-	if err := database.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); err != nil {
+	if err := checkpointDatabase.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); err != nil {
 		t.Fatalf("finish checkpoint after crash recovery: %v", err)
 	}
 	if busy != 0 || (logFrames >= 0 && checkpointed != logFrames) {

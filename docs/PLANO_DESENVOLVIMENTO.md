@@ -572,9 +572,10 @@ contratos WAL/LTX/layout/restore, snapshots LTX v2 independentes para páginas
 65536, parsers isolados Go/Rust com casos de corrupção/cauda, exemplos de
 snapshot/restore em ambas as linguagens e smoke Floci persistente aprovado. M0
 permanece parcial no escopo amplo: a matriz da seção 6 ainda não inclui todos
-os casos de deltas/compactados e stress; CI remoto também não foi observado
-nesta execução. O incremento local de 2026-10-25 acrescentou bancos sem tabelas
-e tabelas vazias nos cinco tamanhos de página, além de 1/100 mil/1 milhão de
+os casos de deltas/compactados e stress; aquela validação local ainda não tinha
+observação de CI remoto. O incremento local de 2026-10-25 acrescentou bancos
+sem tabelas e tabelas vazias nos cinco tamanhos de página, além de
+1/100 mil/1 milhão de
 linhas, BLOBs de 1/16 MiB, rollback e VACUUM/reutilização em páginas de 4096.
 `make test` passou com 16 casos e 96 restores Go↔Rust↔oráculo v0.4.0, cada um
 com schema/valores completos verificados por SHA-256 lógico e checks SQLite.
@@ -664,6 +665,15 @@ ENOSPC segue em tmpfs dedicado; isso não prova falha física de `fsync`/energia
 nem substitui a matriz nativa/filesystem pendente. O gate
 completo final inclui a matriz ampliada de snapshots descrita em M0 e o smoke
 Floci; esses testes não aprovam CP-01 nem implementam os adapters S3 de M3.
+
+**CI observada em 2026-10-25:** o gate de push do commit `03f9b83` falhou no
+checkpoint final concorrente (`busy=1`, contagens `-1`); a matriz manual passou
+em Linux arm64 e falhou em macOS arm64 por `mapfile` incompatível com Bash 3.2.
+O runner agora evita `mapfile` e `find -maxdepth`; o teste Go fecha a conexão de
+verificação antes do `TRUNCATE` final. A matriz de snapshots passou novamente
+isolada (16 casos/96 restores), o teste concorrente passou 100 repetições com
+`GOMAXPROCS=2` e o `make test` completo passou localmente. Correções prontas para
+publicação; os workflows remotos pós-correção ainda não foram executados.
 
 ### Fase 3 — S3-compatible e Floci [M3]
 

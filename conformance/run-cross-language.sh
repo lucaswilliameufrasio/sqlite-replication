@@ -33,11 +33,14 @@ apply_reference_chain() {
     local repository_path="$1"
     local destination_path="$2"
     local -a ltx_files=()
+    local ltx_file
     if [[ ! -d "$repository_path/ltx/0" ]]; then
         printf 'LTX chain directory is missing: %s\n' "$repository_path/ltx/0" >&2
         return 1
     fi
-    mapfile -t ltx_files < <(find "$repository_path/ltx/0" -maxdepth 1 -type f -name '*.ltx' -print | LC_ALL=C sort)
+    while IFS= read -r ltx_file; do
+        ltx_files+=("$ltx_file")
+    done < <(find "$repository_path/ltx/0" -type f -name '*.ltx' -print | LC_ALL=C sort)
     if [[ "${#ltx_files[@]}" -lt 3 ]]; then
         printf 'Expected a base snapshot and at least two deltas in %s; found %d files.\n' \
             "$repository_path/ltx/0" "${#ltx_files[@]}" >&2
