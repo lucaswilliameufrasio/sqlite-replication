@@ -4,8 +4,8 @@ use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+use serde::{Deserialize, Deserializer, Serialize};
+use uuid::{Uuid, Variant};
 
 pub const FORMAT_VERSION: u32 = 2;
 
@@ -14,8 +14,30 @@ pub const FORMAT_VERSION: u32 = 2;
 pub struct Repository {
     pub schema_version: u32,
     pub format_version: u32,
+    #[serde(deserialize_with = "deserialize_identity")]
     pub repository_id: Uuid,
+    #[serde(deserialize_with = "deserialize_identity")]
     pub database_id: Uuid,
+}
+
+fn deserialize_identity<'de, D>(deserializer: D) -> Result<Uuid, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let value = String::deserialize(deserializer)?;
+    let identity = Uuid::parse_str(&value).map_err(serde::de::Error::custom)?;
+    if value.len() != 36
+        || ![8, 13, 18, 23]
+            .iter()
+            .all(|&index| value.as_bytes()[index] == b'-')
+        || identity.get_version_num() != 4
+        || identity.get_variant() != Variant::RFC4122
+    {
+        return Err(serde::de::Error::custom(
+            "repository identity must be a hyphenated RFC 4122 UUID v4",
+        ));
+    }
+    Ok(identity)
 }
 
 pub fn ltx_path(root: &Path, min_txid: u64, max_txid: u64) -> PathBuf {
@@ -156,6 +178,49 @@ mod tests {
         ensure_repository(directory.path()).expect("initialize again");
         let second = read_repository(directory.path()).expect("read again");
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn repository_rejects_invalid_identity_without_reinitializing() {
+        for identity in [
+            "00000000-0000-0000-0000-000000000000",
+            "550e8400-e29b-11d4-a716-446655440000",
+            "550e8400-e29b-41d4-0716-446655440000",
+            "550e8400e29b41d4a716446655440000",
+            "urn:uuid:550e8400-e29b-41d4-a716-446655440000",
+            "{550e8400-e29b-41d4-a716-446655440000}",
+        ] {
+            for field in ["repository_id", "database_id"] {
+                let directory = tempfile::tempdir().expect("temporary directory");
+                ensure_repository(directory.path()).expect("initialize repository");
+                let manifest_path = directory.path().join("_meta/repository.json");
+                let mut manifest: serde_json::Value =
+                    serde_json::from_slice(&fs::read(&manifest_path).expect("read metadata"))
+                        .expect("parse metadata");
+                manifest[field] = identity.into();
+                let content = serde_json::to_vec(&manifest).expect("serialize invalid metadata");
+                fs::write(&manifest_path, &content).expect("write invalid metadata");
+                assert!(
+                    read_repository(directory.path()).is_err(),
+                    "{field}: {identity}"
+                );
+                assert!(ensure_repository(directory.path()).is_err());
+                assert_eq!(
+                    fs::read(&manifest_path).expect("read preserved metadata"),
+                    content
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn repository_accepts_uppercase_identity() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        ensure_repository(directory.path()).expect("initialize repository");
+        let manifest = br#"{"schema_version":1,"format_version":2,"repository_id":"550E8400-E29B-41D4-A716-446655440000","database_id":"550E8400-E29B-41D4-A716-446655440001"}"#;
+        fs::write(directory.path().join("_meta/repository.json"), manifest)
+            .expect("write metadata");
+        read_repository(directory.path()).expect("valid uppercase identities");
     }
 
     #[test]

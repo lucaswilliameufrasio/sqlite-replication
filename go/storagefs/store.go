@@ -162,7 +162,7 @@ func validUUID(value string) bool {
 	}
 	compact := strings.ReplaceAll(value, "-", "")
 	decoded, err := hex.DecodeString(compact)
-	return err == nil && len(decoded) == 16 && bytes.ToLower([]byte(value))[14] == '4'
+	return err == nil && len(decoded) == 16 && decoded[6]>>4 == 4 && decoded[8]&0xc0 == 0x80
 }
 
 func sameFiles(leftPath, rightPath string) (bool, error) {

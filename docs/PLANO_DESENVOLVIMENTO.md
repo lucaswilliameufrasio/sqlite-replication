@@ -571,9 +571,21 @@ contratos WAL/LTX/layout/restore, snapshots LTX v2 independentes para páginas
 512/1024/4096/8192/65536, vetores WAL para ambas as ordens de checksum e página
 65536, parsers isolados Go/Rust com casos de corrupção/cauda, exemplos de
 snapshot/restore em ambas as linguagens e smoke Floci persistente aprovado. M0
-permanece parcial no escopo amplo: a matriz da seção 6 ainda não inclui DB
-vazio, deltas/compactados e todos os casos de stress; CI remoto também não foi
-observado nesta execução.
+permanece parcial no escopo amplo: a matriz da seção 6 ainda não inclui todos
+os casos de deltas/compactados e stress; CI remoto também não foi observado
+nesta execução. O incremento local de 2026-10-25 acrescentou bancos sem tabelas
+e tabelas vazias nos cinco tamanhos de página, além de 1/100 mil/1 milhão de
+linhas, BLOBs de 1/16 MiB, rollback e VACUUM/reutilização em páginas de 4096.
+`make test` passou com 16 casos e 96 restores Go↔Rust↔oráculo v0.4.0, cada um
+com schema/valores completos verificados por SHA-256 lógico e checks SQLite.
+A matriz também rejeitou 32 restores com metadados inválidos e aceitou duas
+restaurações com UUIDs válidos em maiúsculas. Os parsers Go/Rust agora concordam
+na identidade UUID v4 hifenizada e variante RFC 4122. O caso de um milhão
+excedeu 300 s nos restores Rust antes da otimização do CRC. Após a tabela CRC-64
+ISO, a matriz final passou com o binário Rust release, sem remover o caso,
+aumentar o timeout ou reduzir as verificações. As suites Rust de
+unidade/integração continuam no perfil debug. Isso não é baseline de performance
+nem prova de captura incremental nesses workloads.
 
 ### Fase 1 — Primeiro vertical: snapshot consistente → LTX → filesystem → restore [M1]
 
@@ -631,6 +643,27 @@ origem; isso não substitui a matriz de plataforma/filesystem e não aprova CP-0
 nativa. Gitleaks 8.30.1 não encontrou segredos na árvore de trabalho nem nos
 três commits disponíveis. Esses resultados locais não substituem a matriz nativa
 manual nem aprovam CP-01.
+
+**Validação adicional deste incremento:** `make test` e
+`make test-cp01-enospc` passaram novamente depois da otimização de CRC. A
+implementação de CRC-64 ISO do
+decoder Rust foi otimizada de oito passos de bits por byte para tabela de 256
+entradas calculada em compilação; o check value padrão e o conformance LTX
+cruzado passaram. Depois dessa correção, os 16 casos/96 restores da matriz
+passaram com limite de 300 s. Os testes CP-01 Go/Rust também passaram em Btrfs
+local: Go `internal/capture` e `internal/sqliteadapter` cinco vezes; Rust
+`core::capture` e todos os testes `sqlite-adapter` uma vez. As primeiras
+repetições do crash de checkpoint Go encontraram
+`ESRCH`: instrumentação confirmou migração da thread do tracer, corrigida com
+`runtime.LockOSThread` no pai. A nova regressão rastreia oito filhos em paralelo;
+ela falhou antes da correção e passou, junto ao teste sequencial, em 50
+execuções após a correção. Go compilou `storagefs`, `sqliteadapter` e `capture`
+para Linux arm64, Darwin arm64 e Windows amd64; não houve execução nativa nesses
+sistemas. As repetições CP-01 descritas acima usaram Btrfs local, e o drill
+ENOSPC segue em tmpfs dedicado; isso não prova falha física de `fsync`/energia
+nem substitui a matriz nativa/filesystem pendente. O gate
+completo final inclui a matriz ampliada de snapshots descrita em M0 e o smoke
+Floci; esses testes não aprovam CP-01 nem implementam os adapters S3 de M3.
 
 ### Fase 3 — S3-compatible e Floci [M3]
 

@@ -84,6 +84,37 @@ Referência: [`wal.c`, `sqlite3WalCheckpoint()`](https://github.com/sqlite/sqlit
 
 ## Matriz CP-01 ainda obrigatória
 
+### Correção do harness de crash em 2026-10-25
+
+Uma nova repetição local encontrou `ESRCH` intermitente no tracer Go de
+checkpoint. Instrumentação temporária confirmou migração da goroutine do pai
+para outra thread entre `Wait4` e `ptrace`; o Linux associa o tracee à thread
+que fez attach. Somente a thread do filho estava fixada anteriormente. O helper
+agora mantém `runtime.LockOSThread` no pai desde antes do attach até colher a
+saída por SIGKILL. A instrumentação temporária foi removida; não há retry de
+ESRCH nem tolerância a checkpoint que complete antes da interrupção.
+
+`TestCheckpointCrashTracerSurvivesConcurrentScheduling` rastreia oito filhos
+independentes em paralelo. Falhou nas dez execuções antes da correção;
+depois dela, esse teste e `TestCheckpointCrashDuringRealCheckpointIoRecovers`
+passaram juntos em 50 execuções (`go test ./internal/sqliteadapter -run
+'^TestCheckpointCrash(DuringRealCheckpointIoRecovers|TracerSurvivesConcurrentScheduling)$'
+-count=50`), Linux amd64, temporários no tmpfs local. A correção torna a coleta
+da evidência mais confiável, mas não amplia os drivers/filesystems homologados,
+não simula perda de energia e não aprova CP-01.
+
+Após essas alterações, em 2026-10-25, os testes Go de `internal/capture` e
+`internal/sqliteadapter` passaram cinco vezes sobre Btrfs local (`TMPDIR` em
+diretório temporário exclusivo dentro do checkout). Rust `core::capture` passou
+sete testes, com um caso ENOSPC corretamente ignorado fora do drill, e os 14
+testes de `sqlite-adapter` passaram uma vez na mesma filesystem. O `make test`
+completo e `make test-cp01-enospc` passaram depois da otimização CRC; o segundo
+provoca ENOSPC real no tmpfs limitado do container rootless. São duas
+filesystems locais exercitadas, não falha física de `fsync` nem matriz nativa de
+produção.
+
+### Casos ainda exigidos
+
 Use barreiras determinísticas/test hooks para pausar exatamente em cada
 transição; `sleep` ou stress probabilístico sozinho não é prova.
 

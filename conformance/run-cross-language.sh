@@ -148,4 +148,29 @@ apply_reference_chain() {
         verify "$rust_reference_chain_restore"
 )
 
-printf '%s\n' 'Go ↔ Rust and superfly/ltx v0.4.0 LTX v2 conformance passed, including independent restore of both captured LTX chains (SQLite page sizes 512, 1024, 4096, 8192, 65536).'
+(
+    cd "$repository_root/go"
+    go build -o "$temporary_directory/go-conformance" ./cmd/conformance
+)
+(
+    cd "$repository_root/rust"
+    # Large snapshot cases exercise the optimized library, not Rust's opt-level=0
+    # checksum/decompression loops. Unit and integration suites still run debug.
+    cargo build --quiet --release -p sqlite-replication-core --bin replication-conformance
+    # Copy through Cargo rather than assuming a target directory: CARGO_TARGET_DIR
+    # and workspace configuration can redirect the executable.
+    target_directory="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+    cp "$target_directory/release/replication-conformance" "$temporary_directory/rust-conformance"
+)
+(
+    cd "$repository_root/conformance/reference"
+    go build -o "$temporary_directory/reference-conformance" .
+)
+python3 -B -m unittest discover -s "$repository_root/conformance" -p 'test_*.py'
+python3 -B "$repository_root/conformance/snapshot_matrix.py" \
+    --go "$temporary_directory/go-conformance" \
+    --rust "$temporary_directory/rust-conformance" \
+    --reference "$temporary_directory/reference-conformance" \
+    --temporary-root "$temporary_directory"
+
+printf '%s\n' 'Go ↔ Rust and superfly/ltx v0.4.0 LTX v2 conformance passed, including independent restore of both captured LTX chains and the snapshot workload matrix.'

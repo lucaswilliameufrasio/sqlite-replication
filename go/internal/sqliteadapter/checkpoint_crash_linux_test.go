@@ -46,6 +46,15 @@ func TestCheckpointCrashDuringRealCheckpointIoRecovers(t *testing.T) {
 	}
 }
 
+func TestCheckpointCrashTracerSurvivesConcurrentScheduling(t *testing.T) {
+	for attempt := 0; attempt < 8; attempt++ {
+		t.Run(strconv.Itoa(attempt), func(t *testing.T) {
+			t.Parallel()
+			runCheckpointCrashRecovery(t, "sync")
+		})
+	}
+}
+
 func runCheckpointCrashRecovery(t *testing.T, boundary string) {
 	databasePath, err := filepath.Abs(filepath.Join(t.TempDir(), "checkpoint-crash.sqlite"))
 	if err != nil {
@@ -208,6 +217,12 @@ func waitForCheckpointChildReady(stdout io.Reader) (int, error) {
 }
 
 func killAfterCheckpointIoBoundary(traceTID, processID int, databasePath, boundary string, stdin io.Writer) (unix.WaitStatus, error) {
+	// Linux associates the tracee with the attaching OS thread, not merely the
+	// Go process. Wait4 can park this goroutine, so pin the tracer too (the child
+	// already pins its checkpoint thread). Otherwise migration causes ESRCH at
+	// a valid syscall stop and invalidates the crash-boundary evidence.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if err := unix.PtraceAttach(traceTID); err != nil {
 		return 0, fmt.Errorf("attach to checkpoint child thread: %w", err)
 	}

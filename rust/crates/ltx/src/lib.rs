@@ -11,6 +11,28 @@ const CHECKSUM_FLAG: u64 = 1 << 63;
 const LOCK_BYTE: u64 = 0x4000_0000;
 const CRC64_ISO_POLY_REFLECTED: u64 = 0xD800_0000_0000_0000;
 
+const fn crc64_iso_table() -> [u64; 256] {
+    let mut table = [0_u64; 256];
+    let mut index = 0;
+    while index < table.len() {
+        let mut value = index as u64;
+        let mut bit = 0;
+        while bit < 8 {
+            value = if value & 1 == 1 {
+                (value >> 1) ^ CRC64_ISO_POLY_REFLECTED
+            } else {
+                value >> 1
+            };
+            bit += 1;
+        }
+        table[index] = value;
+        index += 1;
+    }
+    table
+}
+
+const CRC64_ISO_TABLE: [u64; 256] = crc64_iso_table();
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Header {
     pub flags: u32,
@@ -763,14 +785,8 @@ fn page_checksum(page_no: u32, page: &[u8]) -> u64 {
 fn crc64_iso_update(mut checksum: u64, bytes: &[u8]) -> u64 {
     checksum = !checksum;
     for byte in bytes {
-        checksum ^= u64::from(*byte);
-        for _ in 0..8 {
-            checksum = if checksum & 1 == 1 {
-                (checksum >> 1) ^ CRC64_ISO_POLY_REFLECTED
-            } else {
-                checksum >> 1
-            };
-        }
+        let index = ((checksum ^ u64::from(*byte)) & 0xff) as usize;
+        checksum = (checksum >> 8) ^ CRC64_ISO_TABLE[index];
     }
     !checksum
 }
@@ -790,6 +806,14 @@ mod tests {
     use super::{
         DatabaseState, Header, Page, decode_delta, decode_snapshot, encode_delta, encode_snapshot,
     };
+
+    #[test]
+    fn crc64_iso_matches_standard_check_value() {
+        assert_eq!(
+            super::crc64_iso_update(0, b"123456789"),
+            0xB909_56C7_75A4_1001
+        );
+    }
 
     #[test]
     fn snapshot_round_trip() {

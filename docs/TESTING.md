@@ -5,6 +5,9 @@
 - Go 1.27.1 ou posterior compatível com `go.mod`.
 - Rust/Cargo 1.98.1 ou posterior compatível com `Cargo.toml`.
 - M1 usa filesystem local e SQLite embutido; não requer credenciais nem S3.
+- O conformance requer Python 3 com módulo padrão `sqlite3`. Python cria e
+  verifica somente fixtures offline; snapshots e restores das bibliotecas usam
+  os runtimes SQLite Go/Rust homologados, não o runtime do Python.
 - `make test-floci` e `make test` requerem Docker Compose e Python 3. O smoke
   usa somente `floci/floci:2.3.0` pinado por digest, credenciais fictícias e
   S3 local; nunca chama AWS S3 ou Cloudflare R2.
@@ -27,7 +30,8 @@
 - `make test-go`
 - `make test-rust`
 - `make test-conformance` (Go↔Rust e `superfly/ltx v0.4.0` como oráculo apenas
-  de teste; compilação de ambas as toolchains é requisito)
+  de teste; compilação de ambas as toolchains é requisito; inclui a matriz de
+  snapshots descrita abaixo, com um milhão de linhas e BLOB de 16 MiB)
 - `make test-floci` (Floci persistente: cria bucket/objeto local, para e inicia
   o mesmo serviço mantendo volume, confere o objeto, e remove os recursos
   isolados da execução)
@@ -55,3 +59,47 @@ Os testes devem usar diretórios temporários exclusivos e removê-los ao termin
 Não executar testes contra bancos de desenvolvimento ou credenciais externas.
 O gate CP-01 permanece obrigatório antes de declarar captura WAL/checkpoint
 incremental segura.
+
+## Matriz de snapshots
+
+`conformance/snapshot_matrix.py` é chamado pelo runner do gate; não é dependência
+de runtime das bibliotecas. Compila-se um executável de cada linguagem e do
+oráculo fixado, sem recompilação por caso. A matriz executa 16 casos:
+
+O executável Rust da matriz usa `cargo build --release`; as suites unitárias e
+integrações Rust continuam no perfil debug do `cargo test`. Uma primeira
+tentativa em release ainda excedeu 300 s: o CRC-64 ISO Rust processava cada bit
+em um loop de oito iterações por byte. A implementação agora usa uma tabela
+CRC-64 ISO calculada em compilação, com vetor padrão `123456789` e conformance
+cruzado. A matriz final passou mantendo o milhão de linhas, asserts completos e
+timeout original de 300 s. Isso corrige o bloqueio funcional do gate; não é
+comparação de throughput entre Go e Rust nem evidência dos benchmarks de M6.
+
+- banco sem tabelas e tabela com zero linhas, cada um com páginas de
+  512/1024/4096/8192/65536 bytes;
+- 1, 100 mil e 1 milhão de linhas (páginas de 4096);
+- BLOBs de 1 e 16 MiB, com todos os valores possíveis de byte;
+- rollback de alterações, remoções e DDL;
+- redução física por `VACUUM`, seguida de reinserção/reutilização de IDs.
+
+Cada caso passa por seis rotas: Go→Rust, Go→oráculo, Rust→Go, Rust→oráculo e
+oráculo→Go/Rust. Os restores usam os adapters reais. Cada imagem passa por
+`quick_check`, `integrity_check`, `foreign_key_check` e SHA-256 lógico de todo o
+schema e de cada valor ordenado por chave primária. O hash distingue tipos,
+limites dos valores, NULL, BLOB e texto, incluindo Unicode e NUL. Também compara
+page size, encoding, application ID e user version. Não basta somar IDs ou
+comparar contagem/tamanho das linhas. Não se exige igualdade dos bytes físicos
+SQLite, que podem mudar legitimamente no Online Backup.
+
+O caso de uma linha também exercita 16 manifestos inválidos em ambos os motores
+(32 restores rejeitados, sem promoção nem alteração dos metadados), além de duas
+restaurações com UUIDs válidos em maiúsculas. Os testes Python do próprio oráculo
+comprovam detecção de conteúdo alterado de mesmo tamanho, índice ausente,
+distinção de tipos e ausência de criação de arquivo durante verificação.
+
+As fixtures são isoladas e descartadas por caso. O hash percorre linhas em
+streaming; um valor BLOB é materializado pelo driver Python, limitado aos 16 MiB
+da fixture. A matriz é conformance funcional, não benchmark, teste de limites de
+memória nem prova CP-01. Milhão de linhas/BLOB/rollback/VACUUM são exercitados
+como snapshots offline, não como captura WAL concorrente. A parte incremental
+do runner continua limitada às duas cadeias internas já descritas em CP-01.

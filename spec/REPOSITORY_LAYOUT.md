@@ -7,6 +7,12 @@
 não são inferidos de caminho, nome de arquivo ou conteúdo. O primeiro perfil
 define `format_version: 2`; LTX v2/v3 nunca é inferido de `LTX1`.
 
+No schema 1, ambas as identidades usam UUID v4 com variante RFC 4122 e forma
+hifenizada de 36 caracteres (hexadecimal pode ser maiúsculo ou minúsculo).
+UUID nulo, outra versão/variante, forma compacta, URN ou chaves externas são
+rejeitados igualmente pelos dois motores. Metadados inválidos não são
+reinicializados silenciosamente nem substituídos por identidades novas.
+
 O metadata ajuda validação, mas não é índice mutável autoritativo: recuperação
 enumera objetos imutáveis e valida suas posições, identidade e cadeia. Ausência,
 versão não suportada, campo desconhecido ou JSON excedente deve falhar
