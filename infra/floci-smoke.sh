@@ -43,10 +43,26 @@ compose_resources_created=1
 "${compose[@]}" up --detach --pull always --wait --wait-timeout 90
 python3 "$repository_root/infra/floci_smoke.py" wait "$endpoint" "$run_id"
 python3 "$repository_root/infra/floci_smoke.py" write "$endpoint" "$run_id"
+export SQLITE_REPLICATION_FLOCI_ENDPOINT="$endpoint"
+export SQLITE_REPLICATION_FLOCI_RUN_ID="$run_id"
+export SQLITE_REPLICATION_FLOCI_FIXTURE="$repository_root/conformance/fixtures/ltx-v2/snapshot-4096.ltx"
+(
+    cd "$repository_root/go"
+    go test ./storages3 -run '^TestFlociAdapterConformance$' -count=1
+    SQLITE_REPLICATION_FLOCI_RESTART_PHASE=write go test ./storages3 -run '^TestFlociRestartMarker$' -count=1
+)
 
-"${compose[@]}" stop --timeout 30 floci
+"${compose[@]}" kill --signal SIGKILL floci
 "${compose[@]}" start floci
 python3 "$repository_root/infra/floci_smoke.py" wait "$endpoint" "$run_id"
+(
+    cd "$repository_root/rust"
+    cargo test -p sqlite-replication-storage-s3 tests::floci_adapter_conformance -- --ignored --exact
+)
+(
+    cd "$repository_root/go"
+    SQLITE_REPLICATION_FLOCI_RESTART_PHASE=verify go test ./storages3 -run '^TestFlociRestartMarker$' -count=1
+)
 python3 "$repository_root/infra/floci_smoke.py" verify "$endpoint" "$run_id"
 python3 "$repository_root/infra/floci_smoke.py" cleanup "$endpoint" "$run_id"
 

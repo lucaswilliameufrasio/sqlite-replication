@@ -6,9 +6,12 @@ Independent Go and Rust SQLite replication libraries
 test`, incluindo 16 casos/96 restores de snapshots LTX v2 (até 1 milhão de
 linhas e BLOBs de 16 MiB) contra o oráculo fixado e smoke Floci persistente.
 O gate local de M0 passou, mas a matriz ampla de casos segue
-parcial. Parsers WAL são isolados e não habilitam captura incremental. O
-projeto ainda não oferece adapter S3 da biblioteca, retenção ou compactação.
-CP-01 continua bloqueando qualquer promessa de segurança WAL.
+parcial. Parsers WAL são isolados e não habilitam captura incremental. M3 está
+implementado e verificado localmente: adapters S3 Go/Rust, métricas,
+reconciliação read-only, testes de falha/retry/cancelamento e restore cruzado após
+crash/restart do Floci. Isso não homologa AWS S3, R2 ou outro provedor. Retenção e
+compactação seguem ausentes. CP-01
+continua pendente e bloqueia qualquer promessa de segurança WAL.
 
 ## Documentos
 - [Plano de desenvolvimento](docs/PLANO_DESENVOLVIMENTO.md)

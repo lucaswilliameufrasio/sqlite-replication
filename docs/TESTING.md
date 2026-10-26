@@ -10,9 +10,10 @@
   os runtimes SQLite Go/Rust homologados, não o runtime do Python.
 - O runner de conformance precisa continuar compatível com Bash 3.2, ainda
   disponível por padrão em runners macOS; não usar `mapfile`/`readarray`.
-- `make test-floci` e `make test` requerem Docker Compose e Python 3. O smoke
-  usa somente `floci/floci:2.3.0` pinado por digest, credenciais fictícias e
-  S3 local; nunca chama AWS S3 ou Cloudflare R2.
+- `make test-floci` e `make test` requerem Docker Compose, Python 3, Go/Cargo e
+  dependências baixadas pelos SDKs. O alvo usa somente `floci/floci:2.3.0`
+  pinado por digest, credenciais sintéticas e S3 local; nunca chama AWS S3 ou
+  Cloudflare R2.
 - O smoke escolhe o contexto Docker `rootless` quando existe e confirma a
   opção `name=rootless` do daemon. Cada execução usa nome de projeto e volume
   próprios e remove apenas esses recursos no teardown.
@@ -34,16 +35,20 @@
 - `make test-conformance` (Go↔Rust e `superfly/ltx v0.4.0` como oráculo apenas
   de teste; compilação de ambas as toolchains é requisito; inclui a matriz de
   snapshots descrita abaixo, com um milhão de linhas e BLOB de 16 MiB)
-- `make test-floci` (Floci persistente: cria bucket/objeto local, para e inicia
-  o mesmo serviço mantendo volume, confere o objeto, e remove os recursos
-  isolados da execução)
+- `make test-floci` (testa adapters S3 Go/Rust contra Floci: PUT imutável/retry/
+  conflito, zero bytes, multipart, metadata, checksum, HEAD/GET range, paginação,
+  reconciliação (missing/divergent/unexpected) e delete batch; publica fixture
+  LTX em Go, mata Floci com SIGKILL, reinicia e valida restore Go↔Rust a partir
+  dos objetos de cada linguagem. Suites Go/Rust também usam servidor HTTP local
+  para falhas 503, retry limitado/exaurido, timeout, cancelamento e resposta
+  perdida após PUT;
+  recursos Floci são isolados e removidos)
 - `make test-cp01-enospc` (drill opt-in de ENOSPC em tmpfs limitado, publicação
   parcial, watermark e recuperação Go/Rust; exige as ferramentas acima)
 - `make test-native` (format, lint, suites Go/Rust e conformance, sem o smoke
   Floci que requer Docker; usado nos runners nativos Linux/macOS arm64)
-- `make test` (format, lint, suites Go/Rust, conformance e Floci; não executa o
-  drill opt-in `make test-cp01-enospc`; valida o emulador, não um adapter S3 da
-  biblioteca, que ainda não existe)
+- `make test` (format, lint, suites Go/Rust, conformance e adapters/Floci; não
+  executa o drill opt-in `make test-cp01-enospc` nem os drills CP-01)
 
 ## Matriz nativa arm64 no GitHub Actions
 
