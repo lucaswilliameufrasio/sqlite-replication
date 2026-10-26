@@ -680,17 +680,29 @@ publicadas no commit `72c834d`; a matriz manual pós-correção (run
 gate padrão Linux amd64 passou no run `40173262007` (commit `961583f`); a
 atualização de evidências também passou no run `40266208888` (commit `e6ee152`).
 
+**Atualização em 2026-10-26:** o drill opt-in QEMU de ext4/virtio-blk passou três
+execuções para Go e Rust: após `SIGKILL` do processo QEMU e novo boot, ambas as
+implementações recuperaram TXID/checksum e passaram recovery idempotente. Para
+contornar o limite local de io_uring sem mudar configuração global, o QEMU rodou
+numa unidade temporária `systemd-run --user` com seccomp restrito. A imagem raw
+residia em tmpfs do host; isso não prova falha do host, mídia persistente ou
+perda física de energia. **O gate CP-01 completo permanece pendente**, conforme
+pedido do operador: não avançar para aprovação nem para exposição WAL/M2 enquanto
+a matriz e a revisão restantes não forem concluídas. O trabalho independente
+de storage M3 pode avançar em paralelo, conforme a seção 18.
+
 ### Próximos passos — CP-01 (atualizado em 2026-10-26)
 
 1. **Concluído:** corrigir os gates reproduzíveis. `make test`, conformance
    (16 casos/96 restores), 100 repetições do cenário concorrente e os gates
    remotos Linux amd64, Linux arm64 e macOS arm64 passaram. O commit `826c8e6`
    também passou o quality gate remoto no run `40298291303`; a job da matriz
-   nativa foi ignorada nesse evento push. Após o fixture FUSE, `make test` passou
-   novamente localmente e `make test-cp01-fsync-interrupt` passou para Go/Rust.
-   O slice foi publicado em `0c977eb`; seu gate de push (`40300850835`) e a matriz
-   manual arm64 (`40300871827`) estão em execução. O run `40300698296` foi
-   despachado em `826c8e6` e não valida este slice. Isso não aprova CP-01.
+   nativa foi ignorada nesse evento push. Após o fixture FUSE, `make test` e
+   `make test-cp01-fsync-interrupt` passaram localmente para Go/Rust. O código do
+   slice em `0c977eb` passou Linux arm64 e macOS arm64 no run manual
+   `40300871827`; o push gate do HEAD `4259009` passou no run `40300905561`.
+   O run `40300698296` usava `826c8e6`, foi cancelado e não conta como evidência
+   deste slice. Isso não aprova CP-01.
 2. **Concluído — seam de erro no limite de I/O:** Go/Rust agora permitem, somente
    em funções internas de teste, fazer o sync de arquivo e o sync do diretório
    pós-rename retornarem EIO. `make test` passou: watermark não avança quando
@@ -705,18 +717,25 @@ atualização de evidências também passou no run `40266208888` (commit `e6ee15
    valida recovery idempotente. Isso prova tratamento de um pedido FUSE em voo,
    não interrupção de um `fsync` já executando no filesystem subjacente, nem
    perda física de energia/cache.
-4. **Bloqueado por ambiente — queda abrupta:** executar drill isolado de VM com
-   disco virtual/write-cache e power-off abrupto, depois reabrir e validar todos
-   os commits. Isso mede somente a combinação VM/disco virtual/filesystem; não
-   substitui corte físico de energia. O host de desenvolvimento não tem QEMU
-   disponível; requer runner dedicado ou setup de virtualização aprovado.
+4. **Concluído — queda abrupta QEMU, evidência limitada:** `make
+   test-cp01-qemu-poweroff` passou três execuções, usando `systemd-run --user`
+   com filtro seccomp apenas na unidade temporária (`SystemCallFilter=~io_uring_setup`,
+   `SystemCallErrorNumber=EPERM`). Isso faz QEMU 11.1.2 usar o fallback epoll sem
+   alterar o `RLIMIT_MEMLOCK` 8 MiB nem política global. Em cada execução, Go e
+   Rust publicaram e verificaram a captura, QEMU recebeu `SIGKILL`, e novo boot
+   recuperou o mesmo TXID/checksum e repetiu recovery idempotente. Guest kernel
+   7.3.0-5-cachyos, ext4 sobre virtio-blk, imagem raw com `cache=writeback`; a
+   imagem host ficou em `/tmp/opencode` (tmpfs). Isso prova somente restart abrupto
+   do VMM/guest com o backing file ainda disponível no host — não perda do host,
+   corte físico de energia ou perda de cache de hardware.
 5. **Pendente — matriz homologada:** enumerar e executar as combinações
    pretendidas de SQLite/driver, VFS, OS e filesystem; registrar versões e
    resultados por combinação. Não ampliar suporte por extrapolação dos runners
    arm64/macOS atuais.
-6. **Gate de aprovação:** revisar protocolo e resultados de todas as linhas;
-   manter captura WAL fora da API pública até aprovação formal de CP-01. Só então
-   iniciar/liberar M2; M3–M6 continuam no roadmap após os gates anteriores.
+6. **Pendente por solicitação do operador — CP-01 completo:** deixar em aberto a
+   matriz ampliada e revisão; não expor captura WAL nem declarar M2 concluído.
+   Avançar somente nos slices independentes do gate, começando pelo adapter S3
+   M3 autorizado em paralelo pelo grafo de dependências da seção 18.
 
 ### Fase 3 — S3-compatible e Floci [M3]
 

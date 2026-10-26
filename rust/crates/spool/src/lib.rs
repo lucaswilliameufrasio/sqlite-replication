@@ -765,6 +765,36 @@ mod tests {
         assert_eq!(repeated.database, recovered.database);
     }
 
+    #[test]
+    #[ignore = "requires the opt-in CP-01 QEMU power-off drill"]
+    fn recover_after_abrupt_qemu_exit() {
+        let Some(root) = std::env::var_os("SQLITE_REPLICATION_CP01_QEMU_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let mode = std::env::var("SQLITE_REPLICATION_CP01_QEMU_MODE").expect("QEMU drill mode");
+        let (transaction, state) = sample_capture();
+
+        match mode.as_str() {
+            "prepare" => {
+                initialize_fuse_recovery_repository(&root);
+                publish_transactions(&root, &[transaction], &state, |_, _| Ok(()))
+                    .expect("publish durable capture before abrupt QEMU exit");
+                let recovered = recover(&root, &[]).expect("verify capture before QEMU exit");
+                assert_eq!(recovered.database.txid, state.database.txid);
+                assert_eq!(recovered.database.checksum, state.database.checksum);
+            }
+            "recover" => {
+                let recovered = recover(&root, &[]).expect("recover after abrupt QEMU exit");
+                assert_eq!(recovered.database.txid, state.database.txid);
+                assert_eq!(recovered.database.checksum, state.database.checksum);
+                let repeated = recover(&root, &[]).expect("repeat post-exit recovery");
+                assert_eq!(repeated.database, recovered.database);
+            }
+            _ => panic!("unknown QEMU drill mode {mode:?}"),
+        }
+    }
+
     struct DrillChild {
         child: Option<Child>,
         release_path: PathBuf,

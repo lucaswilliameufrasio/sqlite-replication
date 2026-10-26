@@ -211,6 +211,50 @@ func TestPublishInterruptedDuringSync(t *testing.T) {
 	}
 }
 
+func TestRecoverAfterAbruptQEMUExit(t *testing.T) {
+	root := os.Getenv("SQLITE_REPLICATION_CP01_QEMU_ROOT")
+	mode := os.Getenv("SQLITE_REPLICATION_CP01_QEMU_MODE")
+	if root == "" || mode == "" {
+		t.Skip("requires the opt-in CP-01 QEMU power-off drill")
+	}
+
+	transaction, state := sampleCapture()
+	switch mode {
+	case "prepare":
+		baseState := initializeRecoveryRepository(t, root)
+		if baseState.TXID != 1 {
+			t.Fatalf("fixture base TXID = %d, want 1", baseState.TXID)
+		}
+		if err := PublishTransactions(root, []walcapture.Transaction{transaction}, state, nil); err != nil {
+			t.Fatalf("publish durable capture before abrupt QEMU exit: %v", err)
+		}
+		recovered, err := Recover(root, nil)
+		if err != nil {
+			t.Fatalf("verify capture before abrupt QEMU exit: %v", err)
+		}
+		if recovered.Database.TXID != state.Database.TXID || recovered.Database.Checksum != state.Database.Checksum {
+			t.Fatalf("pre-exit recovery differs from published capture: %+v", recovered.Database)
+		}
+	case "recover":
+		recovered, err := Recover(root, nil)
+		if err != nil {
+			t.Fatalf("recover after abrupt QEMU exit: %v", err)
+		}
+		if recovered.Database.TXID != state.Database.TXID || recovered.Database.Checksum != state.Database.Checksum {
+			t.Fatalf("post-exit recovery differs from published capture: %+v", recovered.Database)
+		}
+		repeated, err := Recover(root, nil)
+		if err != nil {
+			t.Fatalf("repeat post-exit recovery: %v", err)
+		}
+		if !reflect.DeepEqual(repeated.Database, recovered.Database) {
+			t.Fatal("post-exit recovery was not idempotent")
+		}
+	default:
+		t.Fatalf("unknown QEMU drill mode %q", mode)
+	}
+}
+
 func TestRecoverRejectsGapOrDivergentWatermark(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "repository")
 	baseState := initializeRecoveryRepository(t, root)

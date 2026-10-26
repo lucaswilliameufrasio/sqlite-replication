@@ -64,6 +64,7 @@ inclui `go/internal/capture`, `go/internal/walcapture`, `go/internal/spool`,
 | Restauração independente de cadeias LTX capturadas | passou | passou | Linux amd64: o conformance gera dois commits capturados por engine, aplica snapshot+deltas com o CLI upstream `superfly/ltx v0.4.0`, verifica checksums LTX e compara integridade e todas as linhas restauradas com a origem. Repetir na matriz de plataformas/filesystems homologada. |
 | Processo filho morto com `SIGKILL` nos limites de stage, publicação e watermark | passou | passou | No Linux, restart recupera sem perder commit nem duplicar LTX já publicado. |
 | `SIGKILL` com syscall `fsync` pendente em callback FUSE e recovery | passou | passou | `make test-cp01-fsync-interrupt`: o processo de captura é morto enquanto o pedido `fsync` aguarda o callback FUSE; o callback então executa sync no backing file em `/tmp/opencode` (tmpfs), e recovery confirma watermark antigo, retry da captura e recovery repetido. Prova encerramento com pedido FUSE em voo; não interrompe um `fsync` já dentro do filesystem subjacente, nem simula power loss. |
+| Power-off abrupto de guest QEMU e recovery Go/Rust em ext4/virtio-blk | passou (3 execuções) | passou (3 execuções) | `make test-cp01-qemu-poweroff`: guest QEMU 11.1.2/KVM, kernel 7.3.0-5-cachyos, ext4/virtio-blk e imagem raw `cache=writeback`. Cada guest publicou e validou a captura; o host encerrou o QEMU com `SIGKILL`; no reboot, TXID/checksum foram recuperados e uma segunda recovery foi idempotente. O QEMU foi iniciado por uma unidade temporária `systemd-run --user` com seccomp restrito (`SystemCallFilter=~io_uring_setup`, `SystemCallErrorNumber=EPERM`), induzindo fallback epoll sem elevar o `RLIMIT_MEMLOCK` (8 MiB) nem alterar configuração global. A imagem raw residia em `/tmp/opencode` (tmpfs): prova restart abrupto de QEMU/guest enquanto o backing file do host permanece disponível; não prova perda do host, power loss físico ou cache de hardware. |
 
 O gate local `make test` passou nesta execução: formatação, `go vet`, Clippy com
 warnings negados, suites Go/Rust, conformance Go↔Rust, restauração independente
@@ -77,6 +78,28 @@ host, provocando ENOSPC real em tmpfs de 8 MiB e verificando publicação parcia
 watermark sem avanço e recuperação após liberar espaço.
 Os testes de `SIGKILL` são testes de processo em Linux; não são teste de perda
 de energia nem de comportamento do filesystem após falha física.
+
+O primeiro start direto do QEMU falhou ao criar io_uring (`ENOMEM`) com
+`RLIMIT_MEMLOCK` soft/hard em 8 MiB. Sem mudar limites ou configuração do host,
+uma unidade temporária `systemd-run --user` negou `io_uring_setup` por seccomp e
+configurou retorno `EPERM`; o QEMU então fez fallback para epoll. O drill passou
+três execuções. O harness cobre QEMU/KVM, disco virtual virtio-blk, kernel
+convidado e ext4 enquanto o arquivo de backing permanece no host. O backing
+ficou em tmpfs, portanto a evidência não cobre crash/perda do host, mídia
+persistente, corte físico de energia ou perda da cache volátil do
+host/controlador/dispositivo. Esta linha amplia a evidência operacional, mas não
+completa a matriz nem aprova CP-01.
+
+Comando reproduzível neste host, aplicando o filtro somente à unidade temporária
+e preservando o `PATH` do shell chamador:
+
+```sh
+systemd-run --user --wait --pipe --collect \
+  --working-directory="$PWD" --setenv=PATH="$PATH" \
+  --property='SystemCallFilter=~io_uring_setup' \
+  --property=SystemCallErrorNumber=EPERM \
+  make test-cp01-qemu-poweroff
+```
 
 Na implementação SQLite 3.51.3 consultada, `SQLITE_CHECKPOINT_NOOP` não toma o
 checkpoint lock nem o writer lock: o fluxo pula a aquisição desses locks e lê o
@@ -190,6 +213,12 @@ transição; `sleep` ou stress probabilístico sozinho não é prova.
 | Linux arm64 — produção inicial | `make test-native` passou no runner `ubuntu-24.04-arm`, run manual 40172962620, commit `72c834d`; inclui o cenário concorrente de crash/checkpoint. O drill ENOSPC continua limitado a Linux amd64. |
 | macOS arm64 — integração | `make test-native` passou no runner `macos-15`, run manual 40172962620, commit `72c834d`; inclui as suites Go/Rust e conformance. O tracer de checkpoint com ptrace é Linux-only. |
 | Windows 11 amd64 — fase posterior | Fora da primeira matriz D-16; não verificado. A validação de identidade/`ctime` no adapter Rust é Unix-only e a validação de `ctime` em Go é Linux/macOS-only; ambos falham fechados fora do escopo. |
+
+Após adicionar o drill de interrupção FUSE, o código em `0c977eb` passou as
+suites nativas/conformance em Linux arm64 e macOS arm64 no run `40300871827`;
+Linux arm64 concluiu em 3m09s e macOS arm64 em 3m44s. O quality gate do push
+no HEAD `4259009` passou no run `40300905561`. O drill FUSE em si é Linux-only
+e passou localmente nos dois runtimes; a matriz remota não executa montagem FUSE.
 
 Permanecem sem prova: drivers/VFS alternativos e conexões externas além da
 configuração de aplicação testada; autocheckpoint global da aplicação;

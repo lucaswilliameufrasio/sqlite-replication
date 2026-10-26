@@ -2,7 +2,7 @@ GO ?= go
 GOFMT ?= gofmt
 CARGO ?= cargo
 
-.PHONY: fmt-check vet-go clippy-rust test-go test-rust test-conformance test-floci test-cp01-enospc test-cp01-fsync-interrupt test-native test
+.PHONY: fmt-check vet-go clippy-rust test-go test-rust test-conformance test-floci test-cp01-enospc test-cp01-fsync-interrupt test-cp01-qemu-poweroff test-native test
 
 fmt-check:
 	cd go && test -z "$$($(GOFMT) -l $$(find . -type f -name '*.go'))"
@@ -31,6 +31,9 @@ test-cp01-enospc:
 
 test-cp01-fsync-interrupt:
 	bash infra/cp01-fsync-interrupt-drill.sh
+
+test-cp01-qemu-poweroff:
+	bash infra/cp01-qemu-poweroff-drill.sh
 
 test-native: fmt-check vet-go clippy-rust test-go test-rust test-conformance
 
