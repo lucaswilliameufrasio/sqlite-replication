@@ -675,8 +675,35 @@ isolada (16 casos/96 restores), o teste concorrente passou 100 repetições com
 `GOMAXPROCS=2` e o `make test` completo passou localmente. As correções foram
 publicadas no commit `72c834d`; a matriz manual pós-correção (run
 `40172962620`) passou em Linux arm64 e macOS arm64, incluindo conformance. O
-gate padrão Linux amd64 pós-correção ainda aguarda execução: não apareceu evento
-`push` para `72c834d`.
+gate padrão Linux amd64 passou no run `40173262007` (commit `961583f`); a
+atualização de evidências também passou no run `40266208888` (commit `e6ee152`).
+
+### Próximos passos — CP-01 (atualizado em 2026-10-26)
+
+1. **Concluído:** corrigir os gates reproduzíveis. `make test`, conformance
+   (16 casos/96 restores), 100 repetições do cenário concorrente e os gates
+   remotos Linux amd64, Linux arm64 e macOS arm64 passaram. Isso não aprova CP-01.
+2. **Pendente — injeção no limite de I/O:** ampliar os testes para falha `EIO`
+   retornada por `File.Sync`/`fsync` e pela sincronização do diretório após
+   rename, exercitando a chamada real por uma seam de teste. Conferir estado do
+   watermark e recuperação idempotente sem alegar persistência física. Os hooks
+   atuais injetam o erro antes da syscall; o ENOSPC real já é coberto em tmpfs.
+3. **Pendente — interrupção durante syscall:** preparar um filesystem/fixture que
+   consiga manter `fsync` em andamento, interromper o processo nesse intervalo e
+   validar recovery. `SIGKILL` depois de write/fsync concluídos já passou; não
+   cobre syscall em andamento.
+4. **Bloqueado por ambiente — queda abrupta:** executar drill isolado de VM com
+   disco virtual/write-cache e power-off abrupto, depois reabrir e validar todos
+   os commits. Isso mede somente a combinação VM/disco virtual/filesystem; não
+   substitui corte físico de energia. O host de desenvolvimento não tem QEMU
+   disponível; requer runner dedicado ou setup de virtualização aprovado.
+5. **Pendente — matriz homologada:** enumerar e executar as combinações
+   pretendidas de SQLite/driver, VFS, OS e filesystem; registrar versões e
+   resultados por combinação. Não ampliar suporte por extrapolação dos runners
+   arm64/macOS atuais.
+6. **Gate de aprovação:** revisar protocolo e resultados de todas as linhas;
+   manter captura WAL fora da API pública até aprovação formal de CP-01. Só então
+   iniciar/liberar M2; M3–M6 continuam no roadmap após os gates anteriores.
 
 ### Fase 3 — S3-compatible e Floci [M3]
 
