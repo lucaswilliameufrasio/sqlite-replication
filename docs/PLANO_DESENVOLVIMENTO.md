@@ -1,7 +1,7 @@
 # Plano de Desenvolvimento — SQLite Replication para Go e Rust
 
 > **Versão:** 1.0 — 21/10/2026  
-> **Estado em 2026-10-25:** execução em andamento; M0 parcial, M1 implementado, M2 bloqueado por CP-01.
+> **Estado em 2026-10-26:** M0 parcial, M1 verificado, M2 bloqueado por CP-01, M3 implementado e verificado localmente; M4–M6 incompletos.
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.
@@ -664,7 +664,9 @@ sistemas. As repetições CP-01 descritas acima usaram Btrfs local, e o drill
 ENOSPC segue em tmpfs dedicado; isso não prova falha física de `fsync`/energia
 nem substitui a matriz nativa/filesystem pendente. O gate
 completo final inclui a matriz ampliada de snapshots descrita em M0 e o smoke
-Floci; esses testes não aprovam CP-01 nem implementam os adapters S3 de M3.
+Floci; esses testes não aprovam CP-01. Os adapters S3 foram implementados e a
+conformance M3 verificada posteriormente em Floci, sem homologar provedores
+externos.
 
 **CI observada em 2026-10-25:** o gate de push do commit `03f9b83` falhou no
 checkpoint final concorrente (`busy=1`, contagens `-1`); a matriz manual passou
@@ -722,8 +724,23 @@ atualização de evidências também passou no run `40266208888` (commit `e6ee15
 
 **Gate M3:** Floci persistente + kill/restart + restauração cruzada; operação sem qualquer dependência de S3 real.
 
-**Estado observado:** não iniciado como adapter de biblioteca. O smoke Floci
-validou somente o serviço S3 local e sua persistência; não é prova do gate M3.
+**Estado observado em 2026-10-26:** adapters Go/Rust implementados e testados
+contra Floci local; estratégia de SDK registrada em ADR 0013. `make test-floci`
+passa create-only, upload simples/multipart, retry idempotente, conflito de
+bytes/metadados, zero bytes, checksum, HEAD/GET range, paginação, reconciliação
+de objetos missing/divergent/unexpected e delete batch. Também publica fixture
+LTX com Go, encerra Floci por `SIGKILL`, reinicia com o mesmo volume, baixa e
+restaura com Rust; repete na direção Rust→Go. **Gate M3 local Floci verificado.**
+Os dois adapters também expõem hooks de métricas de baixa
+cardinalidade (operação, duração, bytes e classe de erro), com testes unitários.
+Reconciliação read-only (ausentes/divergentes/inesperados com SHA-256 dos bytes)
+e testes de retry limitado/exaustão, timeout, cancelamento, classes de erro e
+resposta perdida após PUT estão implementados. Limites/capabilities e obrigações
+do deployment estão documentados em `spec/STORAGE_CONTRACT.md`; a política do
+SDK em ADR 0013. `make test` passou após essas mudanças; a entrega M3 foi
+commitada em `1cf06be`: **M3 implementado e gate local verificado.** Evidência
+não homologa AWS/R2/outros serviços. CP-01 continua pendente; captura WAL
+permanece privada.
 
 ### Fase 4 — Recoverability, compaction e retention [M4]
 
@@ -858,11 +875,12 @@ Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, 
 
 ---
 
-**Estado do plano:** arquitetura e execução definidas; gate M0 local verificado
-(matriz ampla ainda parcial), M1 implementado/verificado localmente, M2
-bloqueado por CP-01 e M3 ainda sem adapter S3 de biblioteca. `make test`, o
-smoke de persistência Floci e o drill ENOSPC limitado passaram localmente. Os
-jobs `make test-native` Linux arm64/macOS arm64 passaram no despacho manual
-40114086587 (`e2a1bc8`); isso é evidência parcial, não aprovação CP-01. A
-compatibilidade comprovada é LTX v2 contra `superfly/ltx v0.4.0`, não qualquer
-release genérica do Litestream.
+**Estado do plano em 2026-10-26:** M0 parcial, M1 implementado/verificado, M2
+bloqueado por CP-01, M3 implementado e verificado no gate local Floci; M4–M6
+incompletos. O sub-drill QEMU foi repetido três vezes, mas sua evidência
+limitada não aprova CP-01. Por solicitação do operador, o gate completo fica
+pendente enquanto avançam slices independentes; a captura WAL permanece privada.
+M3 inclui reconciliação read-only, falhas/retry/cancelamento testados e métricas
+básicas instrumentadas. `make test` passou integralmente; drills CP-01 não foram
+executados nesta validação. A compatibilidade comprovada continua sendo LTX v2 contra
+`superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
