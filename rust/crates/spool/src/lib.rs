@@ -86,10 +86,33 @@ pub fn publish_transactions<F>(
     root: &Path,
     transactions: &[Transaction],
     state: &State,
-    mut hook: F,
+    hook: F,
 ) -> io::Result<()>
 where
     F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    publish_transactions_with_sync(
+        root,
+        transactions,
+        state,
+        hook,
+        |file| file.sync_all(),
+        sync_directory,
+    )
+}
+
+fn publish_transactions_with_sync<F, S, D>(
+    root: &Path,
+    transactions: &[Transaction],
+    state: &State,
+    mut hook: F,
+    mut sync_file: S,
+    mut sync_metadata_directory: D,
+) -> io::Result<()>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+    S: FnMut(&File) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
 {
     ensure_repository(root)?;
     validate_batch(transactions, state)?;
@@ -112,7 +135,7 @@ where
         staged.write_all(&transaction.encoded)?;
         hook(FaultPoint::AfterStageWrite, index)?;
         hook(FaultPoint::BeforeStageSync, index)?;
-        staged.as_file().sync_all()?;
+        sync_file(staged.as_file())?;
         hook(FaultPoint::AfterStageSync, index)?;
         hook(FaultPoint::BeforeLtxPublish, index)?;
 
@@ -134,7 +157,14 @@ where
         database_checksum: state.database.checksum,
         wal: state.wal.into(),
     };
-    write_watermark(root, watermark, &mut hook, transactions.len())?;
+    write_watermark(
+        root,
+        watermark,
+        &mut hook,
+        transactions.len(),
+        &mut sync_file,
+        &mut sync_metadata_directory,
+    )?;
     hook(FaultPoint::AfterWatermark, transactions.len())
 }
 
@@ -366,14 +396,18 @@ fn validate_current_wal_position(
     Ok(position)
 }
 
-fn write_watermark<F>(
+fn write_watermark<F, S, D>(
     root: &Path,
     watermark: Watermark,
     hook: &mut F,
     transaction_index: usize,
+    sync_file: &mut S,
+    sync_metadata_directory: &mut D,
 ) -> io::Result<()>
 where
     F: FnMut(FaultPoint, usize) -> io::Result<()>,
+    S: FnMut(&File) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
 {
     let metadata_directory = root.join("_meta");
     fs::create_dir_all(&metadata_directory)?;
@@ -385,13 +419,13 @@ where
     serde_json::to_writer_pretty(staged.as_file_mut(), &watermark).map_err(io::Error::other)?;
     staged.write_all(b"\n")?;
     hook(FaultPoint::BeforeWatermarkSync, transaction_index)?;
-    staged.as_file().sync_all()?;
+    sync_file(staged.as_file())?;
     hook(FaultPoint::AfterWatermarkSync, transaction_index)?;
 
     let destination = metadata_directory.join("capture-watermark.json");
     let staged_path = staged.into_temp_path();
     fs::rename(&staged_path, &destination)?;
-    sync_directory(&metadata_directory)?;
+    sync_metadata_directory(&metadata_directory)?;
     Ok(())
 }
 
@@ -441,12 +475,15 @@ fn invalid_input(message: &'static str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io::Cursor;
+    use std::io::{self, Cursor};
 
     use sqlite_replication_ltx::{DatabaseState, Header, Page};
     use sqlite_replication_wal::translate::{Position, State, Transaction};
 
-    use super::{Builder, FaultPoint, publish_transactions, read_watermark, recover};
+    use super::{
+        Builder, FaultPoint, publish_transactions, publish_transactions_with_sync, read_watermark,
+        recover,
+    };
 
     #[test]
     fn publication_orders_ltx_before_watermark_and_survives_injected_failures() {
@@ -553,6 +590,102 @@ mod tests {
     }
 
     #[test]
+    fn publication_propagates_sync_operation_errors_and_retries_idempotently() {
+        let (transaction, state) = sample_capture();
+        for (name, fail_sync_call, expected_ltx) in
+            [("LTX file", 1, false), ("watermark file", 2, true)]
+        {
+            let directory = tempfile::tempdir().expect("sync failure directory");
+            let mut sync_call = 0;
+            let result = publish_transactions_with_sync(
+                directory.path(),
+                std::slice::from_ref(&transaction),
+                &state,
+                |_, _| Ok(()),
+                |file| {
+                    sync_call += 1;
+                    if sync_call == fail_sync_call {
+                        return Err(io::Error::other("injected EIO from sync operation"));
+                    }
+                    file.sync_all()
+                },
+                sqlite_replication_storage_fs::sync_directory,
+            );
+            let error = result.expect_err("sync operation error must be returned");
+            assert!(
+                error.to_string().contains("injected EIO"),
+                "unexpected error: {error}"
+            );
+
+            let ltx_path = sqlite_replication_storage_fs::ltx_path(
+                directory.path(),
+                transaction.header.min_txid,
+                transaction.header.max_txid,
+            );
+            assert_eq!(
+                ltx_path.exists(),
+                expected_ltx,
+                "wrong LTX state after {name} sync error"
+            );
+            assert!(
+                read_watermark(directory.path()).is_err(),
+                "file sync error advanced watermark"
+            );
+
+            publish_transactions(
+                directory.path(),
+                std::slice::from_ref(&transaction),
+                &state,
+                |_, _| Ok(()),
+            )
+            .expect("retry after file sync error");
+            publish_transactions(
+                directory.path(),
+                std::slice::from_ref(&transaction),
+                &state,
+                |_, _| Ok(()),
+            )
+            .expect("repeat retry after file sync error");
+        }
+
+        let directory = tempfile::tempdir().expect("directory sync failure directory");
+        let result = publish_transactions_with_sync(
+            directory.path(),
+            std::slice::from_ref(&transaction),
+            &state,
+            |_, _| Ok(()),
+            |file| file.sync_all(),
+            |_| {
+                Err(io::Error::other(
+                    "injected EIO from directory sync operation",
+                ))
+            },
+        );
+        let error = result.expect_err("directory sync operation error must be returned");
+        assert!(error.to_string().contains("injected EIO"));
+        assert_eq!(
+            read_watermark(directory.path())
+                .expect("renamed watermark remains visible")
+                .txid,
+            state.database.txid,
+        );
+        publish_transactions(
+            directory.path(),
+            std::slice::from_ref(&transaction),
+            &state,
+            |_, _| Ok(()),
+        )
+        .expect("retry after directory sync error");
+        publish_transactions(
+            directory.path(),
+            std::slice::from_ref(&transaction),
+            &state,
+            |_, _| Ok(()),
+        )
+        .expect("repeat retry after directory sync error");
+    }
+
+    #[test]
     fn recovery_repairs_published_ltx_ahead_of_watermark() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let root = directory.path();
@@ -598,18 +731,25 @@ mod tests {
         .expect("publish base watermark");
 
         let (transaction, state) = sample_capture();
-        let result = publish_transactions(
+        let mut sync_call = 0;
+        let result = publish_transactions_with_sync(
             root,
             std::slice::from_ref(&transaction),
             &state,
-            |point, _| {
-                if point == FaultPoint::AfterLtxPublish {
-                    return Err(std::io::Error::other("crash before watermark"));
+            |_, _| Ok(()),
+            |file| {
+                sync_call += 1;
+                if sync_call == 2 {
+                    return Err(io::Error::other(
+                        "injected EIO from watermark sync operation",
+                    ));
                 }
-                Ok(())
+                file.sync_all()
             },
+            sqlite_replication_storage_fs::sync_directory,
         );
-        assert!(result.is_err());
+        let error = result.expect_err("watermark sync EIO must be returned");
+        assert!(error.to_string().contains("injected EIO"));
         assert_eq!(read_watermark(root).unwrap().txid, 1);
 
         let recovered = recover(root, &[]).expect("recover published delta");

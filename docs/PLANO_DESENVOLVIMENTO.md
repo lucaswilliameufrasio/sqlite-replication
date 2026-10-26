@@ -683,15 +683,19 @@ atualização de evidências também passou no run `40266208888` (commit `e6ee15
 1. **Concluído:** corrigir os gates reproduzíveis. `make test`, conformance
    (16 casos/96 restores), 100 repetições do cenário concorrente e os gates
    remotos Linux amd64, Linux arm64 e macOS arm64 passaram. Isso não aprova CP-01.
-2. **Pendente — injeção no limite de I/O:** ampliar os testes para falha `EIO`
-   retornada por `File.Sync`/`fsync` e pela sincronização do diretório após
-   rename, exercitando a chamada real por uma seam de teste. Conferir estado do
-   watermark e recuperação idempotente sem alegar persistência física. Os hooks
-   atuais injetam o erro antes da syscall; o ENOSPC real já é coberto em tmpfs.
+2. **Concluído — seam de erro no limite de I/O:** Go/Rust agora permitem, somente
+   em funções internas de teste, fazer o sync de arquivo e o sync do diretório
+   pós-rename retornarem EIO. `make test` passou: watermark não avança quando
+   falha o sync do LTX ou do watermark staged; erro após rename pode deixar o
+   watermark novo visível; retries repetidos e recovery de LTX publicado com
+   watermark antigo são idempotentes. Isso injeta o retorno da operação na seam,
+   não provoca EIO do kernel nem prova durabilidade física.
 3. **Pendente — interrupção durante syscall:** preparar um filesystem/fixture que
-   consiga manter `fsync` em andamento, interromper o processo nesse intervalo e
+   mantenha `fsync` real em andamento, interromper o processo nesse intervalo e
    validar recovery. `SIGKILL` depois de write/fsync concluídos já passou; não
-   cobre syscall em andamento.
+   cobre syscall em andamento. O host tem `/dev/fuse` e `fusermount`, mas não tem
+   binding/harness FUSE no projeto; uma seam que apenas bloqueie a função não
+   será reportada como syscall real interrompida.
 4. **Bloqueado por ambiente — queda abrupta:** executar drill isolado de VM com
    disco virtual/write-cache e power-off abrupto, depois reabrir e validar todos
    os commits. Isso mede somente a combinação VM/disco virtual/filesystem; não

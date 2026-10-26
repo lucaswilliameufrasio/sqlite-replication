@@ -126,6 +126,87 @@ func TestPublishTransactionsDurabilityAndFaultBoundaries(t *testing.T) {
 	}
 }
 
+func TestPublishTransactionsPropagatesSyncOperationErrors(t *testing.T) {
+	transaction, state := sampleCapture()
+
+	for _, test := range []struct {
+		name         string
+		failSyncCall int
+		wantLTX      bool
+	}{
+		{name: "LTX file sync", failSyncCall: 1},
+		{name: "watermark file sync", failSyncCall: 2, wantLTX: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := filepath.Join(t.TempDir(), "repository")
+			injectedErr := errors.New("injected EIO from File.Sync operation")
+			syncCall := 0
+			err := publishTransactionsWithSync(
+				root,
+				[]walcapture.Transaction{transaction},
+				state,
+				nil,
+				func(file *os.File) error {
+					syncCall++
+					if syncCall == test.failSyncCall {
+						return injectedErr
+					}
+					return file.Sync()
+				},
+				storagefs.SyncDirectory,
+			)
+			if !errors.Is(err, injectedErr) {
+				t.Fatalf("sync error = %v, want injected EIO", err)
+			}
+
+			ltxPath := storagefs.LTXPath(root, transaction.Header.MinTXID, transaction.Header.MaxTXID)
+			_, statErr := os.Stat(ltxPath)
+			if test.wantLTX && statErr != nil {
+				t.Fatalf("failed watermark sync lost published LTX: %v", statErr)
+			}
+			if !test.wantLTX && !errors.Is(statErr, os.ErrNotExist) {
+				t.Fatalf("failed LTX sync unexpectedly published LTX: %v", statErr)
+			}
+			if _, readErr := ReadWatermark(root); readErr == nil {
+				t.Fatal("file sync error advanced watermark")
+			}
+
+			if retryErr := PublishTransactions(root, []walcapture.Transaction{transaction}, state, nil); retryErr != nil {
+				t.Fatalf("retry after file sync error: %v", retryErr)
+			}
+			if retryErr := PublishTransactions(root, []walcapture.Transaction{transaction}, state, nil); retryErr != nil {
+				t.Fatalf("repeat retry after file sync error: %v", retryErr)
+			}
+		})
+	}
+
+	t.Run("metadata directory sync after watermark rename", func(t *testing.T) {
+		root := filepath.Join(t.TempDir(), "repository")
+		injectedErr := errors.New("injected EIO from directory Sync operation")
+		err := publishTransactionsWithSync(
+			root,
+			[]walcapture.Transaction{transaction},
+			state,
+			nil,
+			func(file *os.File) error { return file.Sync() },
+			func(string) error { return injectedErr },
+		)
+		if !errors.Is(err, injectedErr) {
+			t.Fatalf("directory sync error = %v, want injected EIO", err)
+		}
+		watermark, readErr := ReadWatermark(root)
+		if readErr != nil || watermark.TXID != state.Database.TXID {
+			t.Fatalf("renamed watermark not visible after directory sync error: %+v, %v", watermark, readErr)
+		}
+		if retryErr := PublishTransactions(root, []walcapture.Transaction{transaction}, state, nil); retryErr != nil {
+			t.Fatalf("retry after directory sync error: %v", retryErr)
+		}
+		if retryErr := PublishTransactions(root, []walcapture.Transaction{transaction}, state, nil); retryErr != nil {
+			t.Fatalf("repeat retry after directory sync error: %v", retryErr)
+		}
+	})
+}
+
 func sampleCapture() (walcapture.Transaction, walcapture.State) {
 	pageSize := uint32(512)
 	image := make([]byte, 2*int(pageSize))

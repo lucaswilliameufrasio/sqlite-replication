@@ -44,14 +44,24 @@ func TestRecoverPublishedDeltaAheadOfWatermark(t *testing.T) {
 		Encoded:      encoded.Bytes(),
 	}
 	state := walcapture.State{Database: updated}
-	err = PublishTransactions(root, []walcapture.Transaction{transaction}, state, func(point FaultPoint, _ int) error {
-		if point == AfterLTXPublish {
-			return errors.New("simulated crash before watermark")
-		}
-		return nil
-	})
-	if err == nil {
-		t.Fatal("expected injected failure after LTX publication")
+	syncCall := 0
+	injectedSyncErr := errors.New("injected EIO from watermark File.Sync operation")
+	err = publishTransactionsWithSync(
+		root,
+		[]walcapture.Transaction{transaction},
+		state,
+		nil,
+		func(file *os.File) error {
+			syncCall++
+			if syncCall == 2 {
+				return injectedSyncErr
+			}
+			return file.Sync()
+		},
+		storagefs.SyncDirectory,
+	)
+	if !errors.Is(err, injectedSyncErr) {
+		t.Fatalf("publish returned %v, want injected watermark sync EIO", err)
 	}
 	watermark, err := ReadWatermark(root)
 	if err != nil {

@@ -47,6 +47,19 @@ type Watermark struct {
 // advancing the local capture watermark. The caller must retain its SQLite
 // writer guard and reader pin until this function returns successfully.
 func PublishTransactions(root string, transactions []walcapture.Transaction, state walcapture.State, hook FaultHook) error {
+	return publishTransactionsWithSync(root, transactions, state, hook, func(file *os.File) error {
+		return file.Sync()
+	}, storagefs.SyncDirectory)
+}
+
+func publishTransactionsWithSync(
+	root string,
+	transactions []walcapture.Transaction,
+	state walcapture.State,
+	hook FaultHook,
+	syncFile func(*os.File) error,
+	syncMetadataDirectory func(string) error,
+) error {
 	if err := storagefs.EnsureRepository(root); err != nil {
 		return fmt.Errorf("ensure capture repository: %w", err)
 	}
@@ -86,7 +99,7 @@ func PublishTransactions(root string, transactions []walcapture.Transaction, sta
 			_ = staged.Close()
 			return err
 		}
-		if err := staged.Sync(); err != nil {
+		if err := syncFile(staged); err != nil {
 			_ = staged.Close()
 			return fmt.Errorf("sync staged LTX %d: %w", transaction.Header.MinTXID, err)
 		}
@@ -119,7 +132,7 @@ func PublishTransactions(root string, transactions []walcapture.Transaction, sta
 		DatabaseChecksum: state.Database.Checksum,
 		WAL:              state.WAL,
 	}
-	if err := writeWatermark(root, watermark, hook, len(transactions)); err != nil {
+	if err := writeWatermark(root, watermark, hook, len(transactions), syncFile, syncMetadataDirectory); err != nil {
 		return err
 	}
 	return invokeHook(hook, AfterWatermark, len(transactions))
@@ -154,7 +167,14 @@ func ReadWatermark(root string) (Watermark, error) {
 	return watermark, nil
 }
 
-func writeWatermark(root string, watermark Watermark, hook FaultHook, transactionIndex int) error {
+func writeWatermark(
+	root string,
+	watermark Watermark,
+	hook FaultHook,
+	transactionIndex int,
+	syncFile func(*os.File) error,
+	syncMetadataDirectory func(string) error,
+) error {
 	metadataDirectory := filepath.Join(root, "_meta")
 	if err := os.MkdirAll(metadataDirectory, 0o750); err != nil {
 		return fmt.Errorf("create capture metadata directory: %w", err)
@@ -179,7 +199,7 @@ func writeWatermark(root string, watermark Watermark, hook FaultHook, transactio
 		_ = staged.Close()
 		return err
 	}
-	if err := staged.Sync(); err != nil {
+	if err := syncFile(staged); err != nil {
 		_ = staged.Close()
 		return fmt.Errorf("sync capture watermark: %w", err)
 	}
@@ -193,7 +213,7 @@ func writeWatermark(root string, watermark Watermark, hook FaultHook, transactio
 	if err := os.Rename(stagedPath, finalPath); err != nil {
 		return fmt.Errorf("atomically replace capture watermark: %w", err)
 	}
-	if err := storagefs.SyncDirectory(metadataDirectory); err != nil {
+	if err := syncMetadataDirectory(metadataDirectory); err != nil {
 		return fmt.Errorf("sync capture metadata directory: %w", err)
 	}
 	return nil
