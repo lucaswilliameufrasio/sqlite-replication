@@ -6,8 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
 
 	"sqlite-replication/internal/walcapture"
 	"sqlite-replication/ltx"
@@ -91,6 +94,120 @@ func TestRecoverPublishedDeltaAheadOfWatermark(t *testing.T) {
 	}
 	if repeated.Database.TXID != recovered.Database.TXID || repeated.Database.Checksum != recovered.Database.Checksum {
 		t.Fatal("recovery was not idempotent")
+	}
+}
+
+func TestPublishInterruptedDuringSync(t *testing.T) {
+	root := os.Getenv("SQLITE_REPLICATION_CP01_FUSE_ROOT")
+	if root == "" {
+		t.Skip("requires the opt-in CP-01 FUSE fsync interruption drill")
+	}
+	transaction, state := sampleCapture()
+	if os.Getenv("SQLITE_REPLICATION_CP01_FUSE_CHILD") == "1" {
+		if err := PublishTransactions(root, []walcapture.Transaction{transaction}, state, nil); err != nil {
+			t.Fatalf("publish in child after release: %v", err)
+		}
+		return
+	}
+
+	barrierPath := os.Getenv("CP01_FUSE_BARRIER")
+	releasePath := os.Getenv("CP01_FUSE_RELEASE")
+	completedPath := os.Getenv("CP01_FUSE_COMPLETED")
+	if barrierPath == "" || releasePath == "" || completedPath == "" {
+		t.Fatal("FUSE barrier environment is incomplete")
+	}
+	baseState := initializeRecoveryRepository(t, root)
+	if baseState.TXID != 1 {
+		t.Fatalf("fixture base TXID = %d, want 1", baseState.TXID)
+	}
+
+	command := exec.Command(os.Args[0], "-test.run=^TestPublishInterruptedDuringSync$")
+	command.Env = append(os.Environ(), "SQLITE_REPLICATION_CP01_FUSE_CHILD=1")
+	var childOutput bytes.Buffer
+	command.Stdout = &childOutput
+	command.Stderr = &childOutput
+	if err := command.Start(); err != nil {
+		t.Fatalf("start publishing child: %v", err)
+	}
+	childDone := make(chan error, 1)
+	go func() {
+		childDone <- command.Wait()
+	}()
+	defer func() {
+		if command.Process != nil {
+			_ = command.Process.Kill()
+			_ = os.WriteFile(releasePath, []byte("release\n"), 0o600)
+			<-childDone
+		}
+	}()
+
+	barrierDeadline := time.Now().Add(15 * time.Second)
+	for {
+		select {
+		case childErr := <-childDone:
+			command.Process = nil
+			t.Fatalf("publishing child exited before reaching blocked fsync: %v; output: %s", childErr, childOutput.String())
+		default:
+		}
+		if _, err := os.Stat(barrierPath); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("inspect FUSE fsync barrier: %v", err)
+		}
+		if time.Now().After(barrierDeadline) {
+			t.Fatal("child did not enter the FUSE fsync callback before the timeout")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := command.Process.Kill(); err != nil {
+		t.Fatalf("kill child during blocked fsync: %v", err)
+	}
+	if err := os.WriteFile(releasePath, []byte("release\n"), 0o600); err != nil {
+		t.Fatalf("release FUSE fsync callback after process kill: %v", err)
+	}
+	if err := <-childDone; err == nil {
+		t.Fatal("publishing child exited successfully instead of being killed during fsync")
+	}
+	command.Process = nil
+	completedDeadline := time.Now().Add(15 * time.Second)
+	for {
+		if _, err := os.Stat(completedPath); err == nil {
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("inspect FUSE completion marker: %v", err)
+		}
+		if time.Now().After(completedDeadline) {
+			t.Fatal("FUSE fsync callback did not finish after releasing its barrier")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	recovered, err := Recover(root, nil)
+	if err != nil {
+		t.Fatalf("recover base after interrupted fsync: %v", err)
+	}
+	if recovered.Database.TXID != 1 {
+		t.Fatalf("interrupted publication advanced recovery to TXID %d, want 1", recovered.Database.TXID)
+	}
+	watermark, err := ReadWatermark(root)
+	if err != nil || watermark.TXID != 1 {
+		t.Fatalf("interrupted publication changed watermark: %+v, %v", watermark, err)
+	}
+
+	if err := PublishTransactions(root, []walcapture.Transaction{transaction}, state, nil); err != nil {
+		t.Fatalf("retry capture after interrupted fsync: %v", err)
+	}
+	recovered, err = Recover(root, nil)
+	if err != nil {
+		t.Fatalf("recover retried capture: %v", err)
+	}
+	if recovered.Database.TXID != 2 || recovered.Database.Checksum != state.Database.Checksum {
+		t.Fatalf("recovered capture differs from expected transaction: %+v", recovered.Database)
+	}
+	repeated, err := Recover(root, nil)
+	if err != nil || !reflect.DeepEqual(repeated.Database, recovered.Database) {
+		t.Fatalf("recovery after interrupted sync is not idempotent: %+v, %v", repeated.Database, err)
 	}
 }
 

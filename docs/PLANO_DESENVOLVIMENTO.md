@@ -682,7 +682,13 @@ atualização de evidências também passou no run `40266208888` (commit `e6ee15
 
 1. **Concluído:** corrigir os gates reproduzíveis. `make test`, conformance
    (16 casos/96 restores), 100 repetições do cenário concorrente e os gates
-   remotos Linux amd64, Linux arm64 e macOS arm64 passaram. Isso não aprova CP-01.
+   remotos Linux amd64, Linux arm64 e macOS arm64 passaram. O commit `826c8e6`
+   também passou o quality gate remoto no run `40298291303`; a job da matriz
+   nativa foi ignorada nesse evento push. Após o fixture FUSE, `make test` passou
+   novamente localmente. O run manual `40300698296` foi despachado ainda em
+   `826c8e6`, antes deste slice FUSE, portanto não conta como validação nativa
+   destas mudanças; essa validação será repetida no commit do slice. Isso não
+   aprova CP-01.
 2. **Concluído — seam de erro no limite de I/O:** Go/Rust agora permitem, somente
    em funções internas de teste, fazer o sync de arquivo e o sync do diretório
    pós-rename retornarem EIO. `make test` passou: watermark não avança quando
@@ -690,12 +696,13 @@ atualização de evidências também passou no run `40266208888` (commit `e6ee15
    watermark novo visível; retries repetidos e recovery de LTX publicado com
    watermark antigo são idempotentes. Isso injeta o retorno da operação na seam,
    não provoca EIO do kernel nem prova durabilidade física.
-3. **Pendente — interrupção durante syscall:** preparar um filesystem/fixture que
-   mantenha `fsync` real em andamento, interromper o processo nesse intervalo e
-   validar recovery. `SIGKILL` depois de write/fsync concluídos já passou; não
-   cobre syscall em andamento. O host tem `/dev/fuse` e `fusermount`, mas não tem
-   binding/harness FUSE no projeto; uma seam que apenas bloqueie a função não
-   será reportada como syscall real interrompida.
+3. **Concluído — interrupção de syscall via FUSE:** o alvo
+   `make test-cp01-fsync-interrupt` passou em Go e Rust. O processo é morto com `SIGKILL`
+   enquanto seu `fsync` real está pendente no callback FUSE; depois o callback é
+   liberado, a captura recupera o watermark anterior, repete a publicação e
+   valida recovery idempotente. Isso prova tratamento de um pedido FUSE em voo,
+   não interrupção de um `fsync` já executando no filesystem subjacente, nem
+   perda física de energia/cache.
 4. **Bloqueado por ambiente — queda abrupta:** executar drill isolado de VM com
    disco virtual/write-cache e power-off abrupto, depois reabrir e validar todos
    os commits. Isso mede somente a combinação VM/disco virtual/filesystem; não

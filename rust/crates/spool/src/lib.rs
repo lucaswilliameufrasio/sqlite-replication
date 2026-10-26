@@ -476,6 +476,10 @@ fn invalid_input(message: &'static str) -> io::Error {
 mod tests {
     use std::fs;
     use std::io::{self, Cursor};
+    use std::path::PathBuf;
+    use std::process::{Child, Command, ExitStatus, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use sqlite_replication_ltx::{DatabaseState, Header, Page};
     use sqlite_replication_wal::translate::{Position, State, Transaction};
@@ -683,6 +687,174 @@ mod tests {
             |_, _| Ok(()),
         )
         .expect("repeat retry after directory sync error");
+    }
+
+    #[test]
+    #[ignore = "requires the opt-in CP-01 FUSE fsync interruption drill"]
+    fn publish_interrupted_during_sync() {
+        let root = PathBuf::from(
+            std::env::var_os("SQLITE_REPLICATION_CP01_FUSE_ROOT")
+                .expect("FUSE drill root environment"),
+        );
+        let (transaction, state) = sample_capture();
+        if std::env::var("SQLITE_REPLICATION_CP01_FUSE_CHILD").as_deref() == Ok("1") {
+            publish_transactions(&root, std::slice::from_ref(&transaction), &state, |_, _| {
+                Ok(())
+            })
+            .expect("child capture resumes after FUSE releases sync");
+            return;
+        }
+
+        let barrier_path =
+            PathBuf::from(std::env::var_os("CP01_FUSE_BARRIER").expect("FUSE barrier environment"));
+        let release_path =
+            PathBuf::from(std::env::var_os("CP01_FUSE_RELEASE").expect("FUSE release environment"));
+        let completed_path = PathBuf::from(
+            std::env::var_os("CP01_FUSE_COMPLETED").expect("FUSE completion environment"),
+        );
+        initialize_fuse_recovery_repository(&root);
+
+        let executable = std::env::current_exe().expect("test executable path");
+        let mut child = DrillChild::start(
+            &executable,
+            release_path,
+            "SQLITE_REPLICATION_CP01_FUSE_ROOT",
+            root.as_os_str(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(status) = child.try_wait() {
+                panic!("publishing child exited before blocked fsync: {status}");
+            }
+            if barrier_path.exists() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child did not enter FUSE fsync callback"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let status = child.kill_release_and_wait();
+        assert!(
+            !status.success(),
+            "child unexpectedly survived SIGKILL during fsync"
+        );
+        let completion_deadline = Instant::now() + Duration::from_secs(15);
+        while !completed_path.exists() {
+            assert!(
+                Instant::now() < completion_deadline,
+                "FUSE fsync callback did not finish after release"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let recovered = recover(&root, &[]).expect("recover base after interrupted fsync");
+        assert_eq!(recovered.database.txid, 1);
+        assert_eq!(read_watermark(&root).expect("read old watermark").txid, 1);
+
+        publish_transactions(&root, std::slice::from_ref(&transaction), &state, |_, _| {
+            Ok(())
+        })
+        .expect("retry capture after interrupted fsync");
+        let recovered = recover(&root, &[]).expect("recover retried capture");
+        assert_eq!(recovered.database.txid, state.database.txid);
+        assert_eq!(recovered.database.checksum, state.database.checksum);
+        let repeated = recover(&root, &[]).expect("repeat recovery");
+        assert_eq!(repeated.database, recovered.database);
+    }
+
+    struct DrillChild {
+        child: Option<Child>,
+        release_path: PathBuf,
+    }
+
+    impl DrillChild {
+        fn start(
+            executable: &std::path::Path,
+            release_path: PathBuf,
+            root_key: &str,
+            root: &std::ffi::OsStr,
+        ) -> Self {
+            let mut command = Command::new(executable);
+            command
+                .args([
+                    "--exact",
+                    "tests::publish_interrupted_during_sync",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("SQLITE_REPLICATION_CP01_FUSE_CHILD", "1")
+                .env(root_key, root)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let child = command.spawn().expect("start publishing child");
+            Self {
+                child: Some(child),
+                release_path,
+            }
+        }
+
+        fn try_wait(&mut self) -> Option<ExitStatus> {
+            self.child
+                .as_mut()
+                .expect("publishing child is active")
+                .try_wait()
+                .expect("check publishing child status")
+        }
+
+        fn kill_release_and_wait(&mut self) -> ExitStatus {
+            let mut child = self.child.take().expect("publishing child is active");
+            let _ = child.kill();
+            fs::write(&self.release_path, b"release\n").expect("release FUSE sync barrier");
+            child.wait().expect("wait for killed publishing child")
+        }
+    }
+
+    impl Drop for DrillChild {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = fs::write(&self.release_path, b"release\n");
+                let _ = child.wait();
+            }
+        }
+    }
+
+    fn initialize_fuse_recovery_repository(root: &std::path::Path) {
+        let mut image = vec![0_u8; 1024];
+        image[..16].copy_from_slice(b"SQLite format 3\0");
+        image[16..18].copy_from_slice(&512_u16.to_be_bytes());
+        image[28..32].copy_from_slice(&2_u32.to_be_bytes());
+        let base = DatabaseState::load(&mut Cursor::new(&image), 1).expect("load base state");
+
+        sqlite_replication_storage_fs::ensure_repository(root).expect("initialize repository");
+        let snapshot_path = sqlite_replication_storage_fs::ltx_path(root, 1, 1);
+        let parent = snapshot_path.parent().expect("snapshot parent");
+        fs::create_dir_all(parent).expect("create snapshot directory");
+        let mut staged = Builder::new()
+            .prefix(".snapshot-")
+            .suffix(".stage")
+            .tempfile_in(parent)
+            .expect("create base snapshot stage");
+        sqlite_replication_ltx::encode_snapshot(&mut Cursor::new(&image), staged.as_file_mut(), 1)
+            .expect("encode base snapshot");
+        staged.as_file().sync_all().expect("sync base snapshot");
+        let (file, staged_path) = staged.keep().expect("retain base snapshot stage");
+        drop(file);
+        sqlite_replication_storage_fs::publish(&staged_path, &snapshot_path)
+            .expect("publish base snapshot");
+        publish_transactions(
+            root,
+            &[],
+            &State {
+                database: base,
+                wal: Position::default(),
+            },
+            |_, _| Ok(()),
+        )
+        .expect("publish base watermark");
     }
 
     #[test]

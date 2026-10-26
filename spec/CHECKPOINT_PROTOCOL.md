@@ -63,6 +63,7 @@ inclui `go/internal/capture`, `go/internal/walcapture`, `go/internal/spool`,
 | Crash de processo durante checkpoint real e recuperação | passou | passou | Linux amd64: durante `PRAGMA wal_checkpoint(FULL)`, o pai envia `SIGKILL` após write bem-sucedido e, separadamente, após `fsync`/`fdatasync` bem-sucedido no arquivo principal; reabertura, `integrity_check`, 512 linhas e checkpoint `TRUNCATE` final passam. Cada limite repetido cinco vezes por engine. Não simula perda de energia/cache do SO. |
 | Restauração independente de cadeias LTX capturadas | passou | passou | Linux amd64: o conformance gera dois commits capturados por engine, aplica snapshot+deltas com o CLI upstream `superfly/ltx v0.4.0`, verifica checksums LTX e compara integridade e todas as linhas restauradas com a origem. Repetir na matriz de plataformas/filesystems homologada. |
 | Processo filho morto com `SIGKILL` nos limites de stage, publicação e watermark | passou | passou | No Linux, restart recupera sem perder commit nem duplicar LTX já publicado. |
+| `SIGKILL` com syscall `fsync` pendente em callback FUSE e recovery | passou | passou | `make test-cp01-fsync-interrupt`: o processo de captura é morto enquanto o pedido `fsync` aguarda o callback FUSE; o callback então executa sync no backing file em `/tmp/opencode` (tmpfs), e recovery confirma watermark antigo, retry da captura e recovery repetido. Prova encerramento com pedido FUSE em voo; não interrompe um `fsync` já dentro do filesystem subjacente, nem simula power loss. |
 
 O gate local `make test` passou nesta execução: formatação, `go vet`, Clippy com
 warnings negados, suites Go/Rust, conformance Go↔Rust, restauração independente
@@ -194,10 +195,10 @@ Permanecem sem prova: drivers/VFS alternativos e conexões externas além da
 configuração de aplicação testada; autocheckpoint global da aplicação;
 escrita direta ou concorrente no sidecar fora do lock SQLite; falha física de
 `fsync`/energia e ENOSPC em filesystems de produção (a evidência de espaço cheio
-é somente em tmpfs); interrupção de syscalls em andamento; o tracer de crash
-Linux em filesystems/arquiteturas além de amd64 e arm64; falha de energia/VFS; e
-a matriz ampliada de drivers/VFS/filesystems. Os hooks provam ordenação e
-recuperação em pontos controlados, não atomicidade de hardware ou durabilidade
+é somente em tmpfs); interrupção de `fsync` já dentro do filesystem subjacente;
+o tracer de crash Linux em filesystems/arquiteturas além de amd64 e arm64; falha
+de energia/VFS; e a matriz ampliada de drivers/VFS/filesystems. Os hooks provam
+ordenação e recuperação em pontos controlados, não atomicidade de hardware ou durabilidade
 de todos os filesystems. O gate segue bloqueado até haver evidência completa e
 revisão do protocolo.
 
