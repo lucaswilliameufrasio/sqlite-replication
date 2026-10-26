@@ -118,9 +118,9 @@ retornou `busy=1, log=-1, checkpointed=-1` no `wal_checkpoint(TRUNCATE)`, embora
 integridade e conteúdo estivessem corretos. O verificador agora fecha o pool
 usado por `integrity_check`/leitura e executa o checkpoint final numa conexão
 nova, sem retry nem relaxamento da asserção. O cenário concorrente passou 100
-execuções locais com `GOMAXPROCS=2`, e o `make test` completo passou. A causa
-remota ainda precisa de confirmação no gate Linux amd64 após a publicação desta
-correção; a matriz manual do commit `72c834d` passou o cenário em Linux arm64.
+execuções locais com `GOMAXPROCS=2`, e o `make test` completo passou. A CI
+remota confirmou a correção: o gate Linux amd64 passou no commit `961583f`, e o
+cenário também passou em Linux arm64 na matriz manual do commit `72c834d`.
 
 ### Casos ainda exigidos
 
@@ -155,8 +155,9 @@ transição; `sleep` ou stress probabilístico sozinho não é prova.
    SQLite, a checagem final revalida identidade do caminho. Go também compilou
    os testes para Linux arm64, Darwin arm64 e Windows amd64; isso não é execução
    nativa. Escritas externas continuam sem coordenação pelo lock SQLite, e a
-   prova não garante detecção de toda corrida/filesystem. A matriz arm64/macOS
-   ainda precisa ser repetida com este código.
+    prova não garante detecção de toda corrida/filesystem. A matriz nativa Linux
+    arm64/macOS arm64 foi repetida depois das correções e passou no run
+    `40172962620` (commit `72c834d`).
 5. `SIGKILL` nos pontos antes/depois de stage fsync, publicação e watermark foi
    exercitado nos runtimes/OS locais. **Linux amd64 Go/Rust:** teste de processo
    filho executa `PRAGMA wal_checkpoint(FULL)` real; o pai observa syscalls e
@@ -184,22 +185,21 @@ transição; `sleep` ou stress probabilístico sozinho não é prova.
 
 | Plataforma da decisão D-16 | Resultado nesta execução |
 | --- | --- |
-| Linux amd64 — produção inicial | Testado em Btrfs local; Go `modernc.org/sqlite` 3.54.1 e Rust `rusqlite` bundled SQLite 3.53.2. Quality gate `make test` e drill ENOSPC em tmpfs passaram; CP-01 segue bloqueado. |
-| Linux arm64 — produção inicial | `make test-native` passou em runner nativo `ubuntu-24.04-arm`, despacho manual 40114086587, commit `e2a1bc8`; o drill ENOSPC continua limitado a Linux amd64. Esse resultado antecede as alterações locais sem commit desta execução. |
-| macOS arm64 — integração | `make test-native` passou em runner nativo `macos-15`, despacho manual 40114086587, commit `e2a1bc8`. Esse resultado antecede as alterações locais sem commit desta execução. |
+| Linux amd64 — produção inicial | Btrfs local com Go `modernc.org/sqlite` 3.54.1 e Rust `rusqlite` bundled SQLite 3.53.2; `make test` e o drill ENOSPC em tmpfs passaram. O gate padrão remoto passou no run 40173262007, commit `961583f`. |
+| Linux arm64 — produção inicial | `make test-native` passou no runner `ubuntu-24.04-arm`, run manual 40172962620, commit `72c834d`; inclui o cenário concorrente de crash/checkpoint. O drill ENOSPC continua limitado a Linux amd64. |
+| macOS arm64 — integração | `make test-native` passou no runner `macos-15`, run manual 40172962620, commit `72c834d`; inclui as suites Go/Rust e conformance. O tracer de checkpoint com ptrace é Linux-only. |
 | Windows 11 amd64 — fase posterior | Fora da primeira matriz D-16; não verificado. A validação de identidade/`ctime` no adapter Rust é Unix-only e a validação de `ctime` em Go é Linux/macOS-only; ambos falham fechados fora do escopo. |
 
 Permanecem sem prova: drivers/VFS alternativos e conexões externas além da
 configuração de aplicação testada; autocheckpoint global da aplicação;
 escrita direta ou concorrente no sidecar fora do lock SQLite; falha física de
-`fsync`/energia e ENOSPC em filesystems de produção (a evidência de espaço
-cheio é somente em tmpfs);
-interrupção de syscalls em andamento; repetição do crash de checkpoint além de
-Linux amd64; falha de energia/VFS; e a matriz ampliada de drivers/VFS/filesystems.
-Os testes nativos arm64/macOS passaram em revisão anterior, mas não cobrem estas
-alterações locais. Os hooks provam ordenação e recuperação em pontos controlados,
-não atomicidade de hardware ou durabilidade de todos os filesystems. O gate
-segue bloqueado até haver evidência completa e revisão do protocolo.
+`fsync`/energia e ENOSPC em filesystems de produção (a evidência de espaço cheio
+é somente em tmpfs); interrupção de syscalls em andamento; o tracer de crash
+Linux em filesystems/arquiteturas além de amd64 e arm64; falha de energia/VFS; e
+a matriz ampliada de drivers/VFS/filesystems. Os hooks provam ordenação e
+recuperação em pontos controlados, não atomicidade de hardware ou durabilidade
+de todos os filesystems. O gate segue bloqueado até haver evidência completa e
+revisão do protocolo.
 
 ## Critério para aprovação
 
