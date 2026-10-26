@@ -39,6 +39,32 @@ func TestSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCompactedSnapshotPreservesInclusiveTXID(t *testing.T) {
+	database := make([]byte, 512)
+	copy(database[:16], "SQLite format 3\x00")
+	binary.BigEndian.PutUint16(database[16:18], 512)
+	binary.BigEndian.PutUint32(database[28:32], 1)
+	var encoded bytes.Buffer
+	header, err := EncodeSnapshotAt(bytes.NewReader(database), int64(len(database)), &encoded, 42, 1234)
+	if err != nil {
+		t.Fatalf("encode compacted snapshot: %v", err)
+	}
+	if header.MinTXID != 1 || header.MaxTXID != 42 || header.Timestamp != 1234 {
+		t.Fatalf("compacted snapshot header = %+v", header)
+	}
+	var restored bytes.Buffer
+	decodedHeader, err := DecodeSnapshot(bytes.NewReader(encoded.Bytes()), &restored)
+	if err != nil {
+		t.Fatalf("decode compacted snapshot: %v", err)
+	}
+	if decodedHeader != header || !bytes.Equal(restored.Bytes(), database) {
+		t.Fatalf("compacted snapshot round trip differs: header=%+v size=%d", decodedHeader, restored.Len())
+	}
+	if _, err := EncodeSnapshotAt(bytes.NewReader(database), int64(len(database)), &bytes.Buffer{}, 0, 1234); err == nil {
+		t.Fatal("snapshot with TXID zero was accepted")
+	}
+}
+
 func TestDeltaRoundTrip(t *testing.T) {
 	page1 := bytes.Repeat([]byte{0x11}, 512)
 	page3 := bytes.Repeat([]byte{0x33}, 512)

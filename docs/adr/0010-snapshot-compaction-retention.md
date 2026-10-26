@@ -1,6 +1,6 @@
 # ADR 0010: snapshots, compactação e retenção
 
-- **Status:** Proposta; ainda não congelada nem implementada
+- **Status:** Aceita para implementação M4; habilitação de restore incremental e GC segue bloqueada por CP-01
 - **Data:** 2026-10-23
 
 ## Contexto
@@ -8,27 +8,46 @@
 Histórico integral aumenta custo de restore e uso de storage. Compactação e GC
 podem apagar o único caminho para um ponto de recuperação.
 
-## Proposta
+## Decisão
 
-Snapshots periódicos imutáveis formam novas bases. Compactação cria e valida
-arquivo de nível superior antes de remover fontes. Retenção futura parte da
-proposta de 7 dias, ao menos dois snapshots completos verificados e horizonte
-fino configurável. GC usa grafo de referências/restore points prometidos; expõe
-`dry_run` e plano explicável e nunca exclui o último caminho necessário.
+Snapshots imutáveis formam bases alternativas. Compactação cria e valida um
+snapshot integral para uma fronteira TXID antes que qualquer origem possa ser
+considerada para coleta. Restore por timestamp escolhe o maior TXID disponível
+cujo timestamp LTX seja menor ou igual ao instante UTC solicitado; restore por
+TXID é inclusivo e só pode selecionar fronteiras representadas integralmente.
+
+GC usa o grafo de segmentos necessários aos restore points preservados, retorna
+um plano explicável e começa em `dry_run`. Exclusão requer chamada explícita,
+revalidação do plano contra o inventário atual e prova de que há snapshots
+verificados suficientes para cada ponto prometido. Não há defaults implícitos
+de idade, número de snapshots ou horizonte fino: a política é obrigatória e
+fornecida pelo operador. Os 7 dias/dois snapshots continuam hipótese de
+planejamento, não uma garantia de produto.
+
+CP-01 permanece pré-requisito para habilitar publicamente restore incremental,
+compactação/GC sobre cadeias incrementais ou qualquer promessa de segurança
+WAL. Desenvolvimento e testes isolados de M4 não aprovam M2 nem expõem captura.
 
 ## Alternativas rejeitadas
 
 - Apagar por idade ou prefixo sem conhecer a cadeia: pode remover bases ainda
   necessárias.
 - Tratar compactação como checkpoint SQLite: são operações diferentes.
-- Fixar os defaults de 7 dias/dois snapshots antes de medições e requisitos
-  operacionais: seria uma promessa não validada.
+- Coletar automaticamente por idade/configuração padrão: pode contradizer
+  restore points ainda prometidos pelo operador.
 
-## Consequências e evidência pendente
+## Consequências e evidência
 
-Defaults permanecem proposta. Definir contrato de restore points, grafo, dry-run,
-concorrência com upload e crash recovery; testar que nenhum objeto necessário é
-coletado e que cada snapshot/compactado restaura. M4 depende dessa prova.
+Política deve ser explícita em cada planejamento; plano antigo nunca pode ser
+aplicado sem revalidação. O executor não roda automaticamente. Implementações
+privadas filesystem Go/Rust e testes locais cobrem restore por TXID/instante,
+cadeia SQLite real, snapshot compactado round-trip, dry-run, retenção dos
+segmentos prometidos, coleta explícita e rejeição de inventário stale.
+
+Pendente para concluir o gate operacional: conformance cross-language de
+repositórios compactados, backend S3, crash/concurrency sob single-writer,
+política de snapshot periódico/scheduler e homologação CP-01. Até lá, M4 não é
+API pública nem promessa de produto.
 
 ## Reversão / reconsideração
 

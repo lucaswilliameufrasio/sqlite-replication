@@ -12,6 +12,7 @@ sqlite-replication-spool = { path = "../spool" }
 sqlite-replication-storage-fs = { path = "../storage-fs" }
 sqlite-replication-wal = { path = "../wal" }
 rusqlite.workspace = true
+sha2.workspace = true
 tempfile.workspace = true
 
 [dev-dependencies]

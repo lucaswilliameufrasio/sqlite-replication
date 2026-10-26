@@ -1,6 +1,11 @@
 //! Synchronous bootstrap and offline restore API for the initial M1 vertical.
 //! This crate deliberately does not expose WAL replication.
 
+// Recovery planning remains private until the restore contract and CP-01 gate
+// permit it to be wired into public restore operations.
+#[allow(dead_code)]
+mod recovery;
+
 // CP-01 keeps this orchestration compiled and testable, but not wired into the
 // public API until the required crash and platform matrix is complete.
 #[allow(dead_code)]

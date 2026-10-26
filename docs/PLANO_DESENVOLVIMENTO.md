@@ -326,7 +326,9 @@ Em caso de queda entre upload e confirmação local, a reconciliação enumera o
 ### 10.2 API de restauração
 
 - Operação offline antes da abertura do pool de aplicação; `RestoreIfMissing` é **opt-in** e só atua se arquivo destino não existir.
-- Alvos: último recuperável, TXID, timestamp exclusivo, ou snapshot explícito.
+- Alvos: último recuperável, TXID inclusivo, instante UTC inclusivo (maior TXID
+  com timestamp LTX `<=` ao instante) ou snapshot explícito. Timestamp seleciona
+  fronteiras LTX disponíveis, não commits intermediários.
 - Descoberta de arquivos → plano de recuperação → validação da cadeia/checksums → arquivo temporário → aplicar páginas/truncamento lógico → `PRAGMA quick_check` e `integrity_check` → `fsync` → promoção atômica.
 - Falha em qualquer passo preserva arquivo anterior e registra diagnóstico. Não aceitar DB final com `-wal`/`-shm` antigos e incompatíveis.
 - `RestoreTo(path)` nunca abre o banco destino para escrita concorrente; arquivo de destino preexistente é rejeitado por padrão, com modo de substituição explícito e precondições fortes.
@@ -734,8 +736,9 @@ de storage M3 pode avançar em paralelo, conforme a seção 18.
    arm64/macOS atuais.
 6. **Pendente por solicitação do operador — CP-01 completo:** deixar em aberto a
    matriz ampliada e revisão; não expor captura WAL nem declarar M2 concluído.
-   Avançar somente nos slices independentes do gate, começando pelo adapter S3
-   M3 autorizado em paralelo pelo grafo de dependências da seção 18.
+   Avançar somente nos slices independentes do gate. M3 foi concluído; M4 pode
+   ser desenvolvido e testado em cópias filesystem isoladas, mas não habilitado
+   publicamente como recuperação incremental enquanto CP-01 estiver pendente.
 
 ### Fase 3 — S3-compatible e Floci [M3]
 
@@ -766,6 +769,20 @@ permanece privada.
 **Entregáveis:** restauração por TXID/timestamp, plano explicável, verificação integral da cadeia, compactação, snapshots periódicos, GC seguro, retenção configurável, runbook DR.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
+
+**Estado observado em 2026-10-26:** implementações privadas filesystem em Go e
+Rust agora validam inventário/header/checksum, planejam TXID e instante UTC
+inclusivo, reconstroem em staging com verificação SQLite, publicam snapshots
+compactados em nível superior sem remover fontes e calculam GC somente a partir
+de restore points explicitamente fornecidos. GC inicia em dry-run; execução é
+uma chamada distinta que refaz o plano e compara SHA-256 do inventário e
+identidade do repositório antes de remover objetos. Testes focados cobrem cadeia
+real SQLite em Go/Rust, compactação com round-trip, retenção do caminho
+prometido e rejeição de plano stale. Essas funções permanecem internas; ainda
+não há scheduler periódico, integração de restore/GC com o adapter S3, nem API
+pública. CP-01 continua bloqueando a habilitação pública de recuperação
+incremental e operações que dependam de sua garantia. `docs/recovery-runbook.md`
+registra o procedimento M1 disponível e os limites de M4.
 
 ### Fase 5 — API pública, segurança e observabilidade [M5]
 
@@ -858,9 +875,10 @@ Permitir desenvolvimento independente de adapters S3 e codecs durante a prova de
 
 ## 21. Documentos ADR a escrever (mínimos)
 
-As ADRs estão registradas em `docs/adr/`: 0001–0009 e 0010–0012. A ADR 0010
-(retenção/compactação) e partes das ADRs 0011–0012 permanecem propostas, como
-indicado em seus estados; não são decisões de produto já implementadas.
+As ADRs estão registradas em `docs/adr/`: 0001–0013. ADR 0010 define a política
+de retenção/compactação para implementação M4; a habilitação pública permanece
+bloqueada por CP-01. Partes das ADRs 0011–0012 permanecem propostas, conforme
+seus estados.
 
 Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, provas/testes e plano de reversão**. Alterações relevantes no contrato exigem atualização simultânea de specs e fixtures.
 

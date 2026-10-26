@@ -1866,6 +1866,7 @@ version = "0.1.0"
 dependencies = [
  "libc",
  "rusqlite",
+ "sha2",
  "sqlite-replication-ltx",
  "sqlite-replication-spool",
  "sqlite-replication-sqlite",

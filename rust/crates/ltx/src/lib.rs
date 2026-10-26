@@ -356,6 +356,23 @@ pub fn encode_snapshot<R: Read + Seek, W: Write>(
     destination: &mut W,
     timestamp_millis: i64,
 ) -> io::Result<Header> {
+    encode_snapshot_at(source, destination, 1, timestamp_millis)
+}
+
+/// Encodes a full snapshot representing the database at the inclusive TXID.
+/// Its LTX range begins at TXID 1 because the snapshot contains a complete image.
+pub fn encode_snapshot_at<R: Read + Seek, W: Write>(
+    source: &mut R,
+    destination: &mut W,
+    txid: u64,
+    timestamp_millis: i64,
+) -> io::Result<Header> {
+    if txid == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "snapshot TXID must be positive",
+        ));
+    }
     let file_size = source.seek(SeekFrom::End(0))?;
     if file_size < 100 {
         return Err(invalid_data("SQLite image is too short"));
@@ -388,7 +405,7 @@ pub fn encode_snapshot<R: Read + Seek, W: Write>(
         page_size,
         commit: page_count as u32,
         min_txid: 1,
-        max_txid: 1,
+        max_txid: txid,
         timestamp_millis,
         pre_apply_checksum: 0,
         wal_offset: 0,
@@ -805,6 +822,7 @@ mod tests {
 
     use super::{
         DatabaseState, Header, Page, decode_delta, decode_snapshot, encode_delta, encode_snapshot,
+        encode_snapshot_at,
     };
 
     #[test]
@@ -830,6 +848,26 @@ mod tests {
         let mut restored = Vec::new();
         decode_snapshot(Cursor::new(encoded), &mut restored).expect("decode snapshot");
         assert_eq!(restored, database);
+    }
+
+    #[test]
+    fn compacted_snapshot_preserves_inclusive_txid() {
+        let mut database = vec![0_u8; 512];
+        database[..16].copy_from_slice(b"SQLite format 3\0");
+        database[16..18].copy_from_slice(&512_u16.to_be_bytes());
+        database[28..32].copy_from_slice(&1_u32.to_be_bytes());
+        let mut encoded = Vec::new();
+        let header = encode_snapshot_at(&mut Cursor::new(database.clone()), &mut encoded, 42, 1234)
+            .expect("encode compacted snapshot");
+        assert_eq!(header.min_txid, 1);
+        assert_eq!(header.max_txid, 42);
+        assert_eq!(header.timestamp_millis, 1234);
+        let mut restored = Vec::new();
+        let decoded = decode_snapshot(Cursor::new(encoded), &mut restored)
+            .expect("decode compacted snapshot");
+        assert_eq!(decoded, header);
+        assert_eq!(restored, database);
+        assert!(encode_snapshot_at(&mut Cursor::new(database), &mut Vec::new(), 0, 1234).is_err());
     }
 
     #[test]

@@ -2,20 +2,23 @@
 
 ## Escopo atual
 
-M1 restaura somente o snapshot inicial LTX v2 para um novo arquivo. Não há
-recuperação incremental, por TXID/timestamp, compactação nem retenção no código
-atual. Uma lacuna nessa capacidade deve aparecer como indisponibilidade, não
-como ponto recuperável.
+O caminho público M1 restaura somente o snapshot inicial LTX v2 para um novo
+arquivo. Planejamento por TXID/instante, restore incremental, compactação e GC
+existem como implementação privada filesystem em Go/Rust, mas não estão
+conectados à API pública nem ao adapter S3; CP-01 impede sua habilitação pública.
+Uma lacuna deve aparecer como indisponibilidade, não como ponto recuperável.
 
-## Descoberta e planejamento (incremental futuro)
+## Descoberta e planejamento (implementação privada M4)
 
 1. Validar manifesto, `format_version`, `repository_id` e `database_id`.
 2. Enumerar chaves imutáveis no layout do backend e decodificar cada header
    candidato sem confiar em manifesto mutável.
 3. Construir grafo/cadeia por intervalos TXID inclusivos, geração, checksum
    pre/post e tamanho lógico; rejeitar gaps, forks e bases ausentes.
-4. Selecionar o caminho completo até o alvo. `timestamp < alvo` é exclusivo;
-   TXID é inclusivo. LTX compactado não pode ser parcialmente aplicado.
+4. Selecionar o caminho completo até o alvo. Timestamp UTC seleciona o maior
+   TXID disponível cujo timestamp LTX seja `<= alvo`; TXID é inclusivo. LTX
+   compactado não pode ser parcialmente aplicado. Se o alvo cair dentro de um
+   segmento não subdivisível, informar indisponibilidade em vez de aproximar.
 5. Produzir plano explicável contendo base, segmentos, alvo e validações; não
    mutar o repositório durante planejamento.
 
@@ -35,10 +38,17 @@ como ponto recuperável.
 
 ## Alvos e limites
 
-Alvos previstos: snapshot explícito, TXID inclusivo e timestamp exclusivo. A
+Alvos previstos: snapshot explícito, TXID inclusivo e instante UTC inclusivo. A
 precisão é a fronteira entre arquivos ainda retidos, não cada commit SQLite.
 Retenção pode tornar pontos antigos indisponíveis; APIs devem indicar isso sem
-inventar um estado restaurável.
+inventar um estado restaurável. Nenhum default de retenção é fixado; cada
+planejamento de GC exige política explícita.
+
+O planejador de GC recebe uma lista não vazia de pontos de restore prometidos;
+não infere retenção por idade, contagem ou horizonte fino. O plano lista chaves
+retidas e candidatas. A execução é separada e refaz a validação de todos os
+LTX, compara identidade do repositório e fingerprint SHA-256 do inventário, e
+recusa plano alterado. Nenhuma coleta é automática.
 
 ## Evidência de teste
 
