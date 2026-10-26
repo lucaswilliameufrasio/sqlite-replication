@@ -717,7 +717,7 @@ de storage M3 pode avançar em paralelo, conforme a seção 18.
    valida recovery idempotente. Isso prova tratamento de um pedido FUSE em voo,
    não interrupção de um `fsync` já executando no filesystem subjacente, nem
    perda física de energia/cache.
-4. **Concluído — queda abrupta QEMU, evidência limitada:** `make
+4. **Concluído — queda abrupta QEMU, evidência limitada (commit `07da8d6`):** `make
    test-cp01-qemu-poweroff` passou três execuções, usando `systemd-run --user`
    com filtro seccomp apenas na unidade temporária (`SystemCallFilter=~io_uring_setup`,
    `SystemCallErrorNumber=EPERM`). Isso faz QEMU 11.1.2 usar o fallback epoll sem
