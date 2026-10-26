@@ -685,10 +685,10 @@ atualização de evidências também passou no run `40266208888` (commit `e6ee15
    remotos Linux amd64, Linux arm64 e macOS arm64 passaram. O commit `826c8e6`
    também passou o quality gate remoto no run `40298291303`; a job da matriz
    nativa foi ignorada nesse evento push. Após o fixture FUSE, `make test` passou
-   novamente localmente. O run manual `40300698296` foi despachado ainda em
-   `826c8e6`, antes deste slice FUSE, portanto não conta como validação nativa
-   destas mudanças; essa validação será repetida no commit do slice. Isso não
-   aprova CP-01.
+   novamente localmente e `make test-cp01-fsync-interrupt` passou para Go/Rust.
+   O slice foi publicado em `0c977eb`; seu gate de push (`40300850835`) e a matriz
+   manual arm64 (`40300871827`) estão em execução. O run `40300698296` foi
+   despachado em `826c8e6` e não valida este slice. Isso não aprova CP-01.
 2. **Concluído — seam de erro no limite de I/O:** Go/Rust agora permitem, somente
    em funções internas de teste, fazer o sync de arquivo e o sync do diretório
    pós-rename retornarem EIO. `make test` passou: watermark não avança quando
