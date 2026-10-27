@@ -214,6 +214,22 @@ transição; `sleep` ou stress probabilístico sozinho não é prova.
 | macOS arm64 — integração | `make test-native` passou no runner `macos-15`, run manual 40172962620, commit `72c834d`; inclui as suites Go/Rust e conformance. O tracer de checkpoint com ptrace é Linux-only. |
 | Windows 11 amd64 — fase posterior | Fora da primeira matriz D-16; não verificado. A validação de identidade/`ctime` no adapter Rust é Unix-only e a validação de `ctime` em Go é Linux/macOS-only; ambos falham fechados fora do escopo. |
 
+### Reexecução local dos drills opt-in — 2026-10-27
+
+No checkout `d719533` (Linux amd64, daemon Docker rootless já ativo), `make
+test-cp01-fsync-interrupt` passou para Go e Rust: o FUSE local bloqueou a
+syscall `fsync`, cada processo de publicação foi terminado nesse ponto e a
+recuperação/retry passou. `make test-cp01-qemu-poweroff` também passou nos dois
+engines: após sync/validação das capturas, o processo QEMU foi morto
+abruptamente; a recuperação foi validada em ext4 sobre virtio-blk. Isso prova
+somente o comportamento observado no harness FUSE e no ambiente virtualizado,
+não perda física de energia/cache nem persistência de hardware real.
+
+`make test-cp01-enospc` não foi executado: a imagem Debian pinada não estava
+presente localmente; o script verifica a imagem e falha sem fazer pull. A matriz
+CP-01 permanece bloqueada pelas combinações e falhas listadas abaixo, e estes
+resultados não autorizam habilitar a captura WAL pública.
+
 Após adicionar o drill de interrupção FUSE, o código em `0c977eb` passou as
 suites nativas/conformance em Linux arm64 e macOS arm64 no run `40300871827`;
 Linux arm64 concluiu em 3m09s e macOS arm64 em 3m44s. O quality gate do push

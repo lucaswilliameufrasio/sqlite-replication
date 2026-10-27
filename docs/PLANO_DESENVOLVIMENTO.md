@@ -1004,15 +1004,17 @@ entregável de benchmarks M6 permanece parcial.
 |---|---|---|---|
 | M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test` completo com Floci | Evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
 | M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test` | Nenhum item novo identificado nesta retomada |
-| M2 — WAL/checkpoint | Bloqueado por CP-01 | Parser e protótipo interno apenas | Prova CP-01 e aprovação explícita; até lá, manter APIs/captura/recovery incremental privadas |
+| M2 — WAL/checkpoint | Bloqueado por CP-01 | `make test-cp01-fsync-interrupt` e `make test-cp01-qemu-poweroff` passaram para Go/Rust; captura segue privada | ENOSPC drill não executado (imagem Debian pinada ausente localmente; script proíbe pull), além das lacunas da matriz; aprovação explícita antes de habilitar API |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos localmente | Fechamento operacional/documentação completa conforme o runbook, sem habilitação pública dependente de M2 |
 | M5 — API/segurança/observabilidade | Incompleto | Métricas básicas/adapters existentes; não há ainda superfície pública completa de `Status`/`Health`/`Flush` nem exemplos Chi/Axum do aceite | Contrato público, write-gate/flush, integração OTEL, compatibilidade de drivers e exemplos/guias; revisar dependências com M2 e ADRs 0011–0012 antes de expor comportamento |
 | M6 — stress/bench/release | Em andamento | Fuzz-smokes Go para LTX/WAL, propriedades Rust com fixtures independentes, `make bench-ltx` e baseline Go/Rust | Fuzz/chaos prolongado, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
 
-**Verificação da retomada:** `make test-native`, `make test` e `make bench-ltx`
-passaram. `make test` usou Floci local persistente pelo daemon rootless já ativo;
-o próprio smoke removeu apenas projeto/volume nomeados por esta execução. Drills
-CP-01 seguem pendentes de execução e avaliação. Implementação e progresso têm
-commits separados. Esta retomada prioriza todos os itens que não dependem de
-CP-01; não marca M2 nem o roadmap inteiro como concluídos.
+**Verificação da retomada:** `make test-native`, `make test`, `make bench-ltx`,
+`make test-cp01-fsync-interrupt` e `make test-cp01-qemu-poweroff` passaram em
+`d719533`. `make test` usou Floci local persistente pelo daemon rootless já
+ativo; o smoke removeu apenas o projeto/volume próprios. O drill ENOSPC não foi
+executado: a imagem Debian pinada não está presente e o script não baixa imagens.
+FUSE/QEMU aumentam evidência, mas não cobrem falha física de energia/cache,
+filesystems/drivers alternativos nem fecham toda a matriz CP-01. Implementação e
+progresso têm commits separados. M2 e o roadmap inteiro continuam incompletos.
