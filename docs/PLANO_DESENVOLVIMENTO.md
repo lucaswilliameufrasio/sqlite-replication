@@ -770,7 +770,7 @@ permanece privada.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
 
-**Estado observado em 2026-10-26 (commits `8ad39a0`–`58dafae`):** as
+**Estado observado em 2026-10-26 (commits `8ad39a0`–`fafd57a`):** as
 implementações privadas Go/Rust validam inventário/header/checksum, planejam
 restore inclusivo por TXID e timestamp UTC, reconstroem em staging com
 verificação SQLite, compactam sem remover fontes e planejam GC apenas com
@@ -791,10 +791,10 @@ plano anterior é rejeitado como stale, o novo plano coleta o restante e o ponto
 retido continua restaurável (`e88e60d`). A recuperação também é exercitada após
 encerrar abruptamente o processo cliente logo depois de uma exclusão S3: o plano
 antigo é rejeitado, o GC é replanejado e o ponto prometido segue restaurável
-(`58dafae`). Duas execuções consecutivas de
-`make test-floci` e uma terceira incluída em `make test` passaram antes da
-injeção de crash. Após essa cobertura, `make test-floci` e `make test` passaram
-novamente com a imagem Floci local cacheada no digest conferido. O smoke agora
+(`58dafae`). Também se injeta crash após a publicação do snapshot de compactação:
+o retry retorna objeto presente e o restore point permanece coberto (`fafd57a`).
+`make test-floci` e `make test` passaram após essas coberturas com a imagem Floci
+local cacheada no digest conferido. O smoke agora
 restaura o mesmo repositório S3 publicado pelo Go no Rust; depois o Rust publica
 outro repositório e o Go o restaura no bucket isolado compartilhado, após restart
 do Floci (`de4604e`). Conformance de snapshots compactados Go→Rust e Rust→Go
