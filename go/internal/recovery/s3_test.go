@@ -1,9 +1,12 @@
 package recovery
 
 import (
+	"bufio"
 	"context"
 	"database/sql"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -306,9 +309,7 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 	if err := store.DeleteBatch(ctx, []string{extraKey}); err != nil {
 		t.Fatalf("remove stale-plan fixture: %v", err)
 	}
-	if err := store.DeleteBatch(ctx, []string{plan.CandidateObjectKeys[0]}); err != nil {
-		t.Fatalf("simulate interruption after partial S3 GC: %v", err)
-	}
+	crashAfterS3Delete(t, ctx, plan.CandidateObjectKeys[0])
 	if err := ApplyS3GCPlan(ctx, store, prefix, plan); err != ErrStaleGCPlan {
 		t.Fatalf("partially applied S3 GC plan error = %v, want ErrStaleGCPlan", err)
 	}
@@ -339,6 +340,69 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 		t.Fatalf("restore retained timestamp after S3 GC: %v", err)
 	}
 	assertRecoveryRow(t, restoredByTimeAfterGC, "updated")
+}
+
+func TestFlociS3DeleteCrashChild(t *testing.T) {
+	if os.Getenv("SQLITE_REPLICATION_FLOCI_DELETE_CRASH_CHILD") != "1" {
+		t.Skip("child process for the isolated Floci GC crash test")
+	}
+	endpoint := os.Getenv("SQLITE_REPLICATION_FLOCI_ENDPOINT")
+	runID := os.Getenv("SQLITE_REPLICATION_FLOCI_RUN_ID")
+	key := os.Getenv("SQLITE_REPLICATION_FLOCI_DELETE_KEY")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	awsConfig, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion("us-east-1"),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
+	)
+	if err != nil {
+		t.Fatalf("load local S3 SDK config in crash child: %v", err)
+	}
+	client := s3.NewFromConfig(awsConfig, func(options *s3.Options) {
+		options.BaseEndpoint = aws.String(endpoint)
+		options.UsePathStyle = true
+	})
+	store, err := storages3.New(client, "sqlite-replication-m4-"+runID)
+	if err != nil {
+		t.Fatalf("initialize S3 adapter in crash child: %v", err)
+	}
+	if err := store.DeleteBatch(ctx, []string{key}); err != nil {
+		t.Fatalf("delete one GC candidate in crash child: %v", err)
+	}
+	if _, err := fmt.Fprintln(os.Stdout, "s3-delete-applied"); err != nil {
+		t.Fatalf("signal completed S3 delete to parent: %v", err)
+	}
+	select {}
+}
+
+func crashAfterS3Delete(t *testing.T, ctx context.Context, key string) {
+	t.Helper()
+	command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFlociS3DeleteCrashChild$")
+	command.Env = append(os.Environ(),
+		"SQLITE_REPLICATION_FLOCI_DELETE_CRASH_CHILD=1",
+		"SQLITE_REPLICATION_FLOCI_DELETE_KEY="+key,
+	)
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		t.Fatalf("open S3 delete crash-child stdout: %v", err)
+	}
+	command.Stderr = os.Stderr
+	if err := command.Start(); err != nil {
+		t.Fatalf("start S3 delete crash child: %v", err)
+	}
+	line, err := bufio.NewReader(stdout).ReadString('\n')
+	if err != nil || line != "s3-delete-applied\n" {
+		_ = command.Process.Kill()
+		_ = command.Wait()
+		t.Fatalf("S3 delete crash child signal = %q, error = %v", line, err)
+	}
+	if err := command.Process.Kill(); err != nil {
+		_ = command.Wait()
+		t.Fatalf("kill S3 delete crash child after partial GC: %v", err)
+	}
+	if err := command.Wait(); err == nil {
+		t.Fatal("S3 delete crash child exited successfully; expected abrupt termination")
+	}
 }
 
 func TestFlociS3CrossEngineRestore(t *testing.T) {

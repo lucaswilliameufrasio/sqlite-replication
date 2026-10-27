@@ -910,6 +910,9 @@ mod tests {
     use std::fs::{self, File};
     use std::io::{Cursor, Seek, SeekFrom};
     use std::path::Path;
+    use std::process::{Command, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use aws_credential_types::Credentials;
     use rusqlite::Connection;
@@ -1421,14 +1424,11 @@ mod tests {
             .delete_batch(std::slice::from_ref(&extra_key))
             .await
             .expect("remove stale-plan fixture");
-        store
-            .delete_batch(std::slice::from_ref(
-                plan.candidate_object_keys
-                    .first()
-                    .expect("GC candidate exists"),
-            ))
-            .await
-            .expect("simulate interruption after partial S3 GC");
+        crash_after_s3_gc_delete(
+            plan.candidate_object_keys
+                .first()
+                .expect("GC candidate exists"),
+        );
         assert!(apply_s3_gc_plan(&store, prefix, &plan).await.is_err());
         let plan = build_s3_gc_plan(&store, prefix, &[RestoreTarget::Txid(8)])
             .await
@@ -1492,6 +1492,74 @@ mod tests {
                 .await
                 .expect("delete isolated M4 bucket");
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "child process for the isolated Floci GC crash test"]
+    async fn floci_s3_gc_delete_crash_child() {
+        let endpoint = std::env::var("SQLITE_REPLICATION_FLOCI_ENDPOINT")
+            .expect("Floci endpoint configured by smoke script");
+        let run_id = std::env::var("SQLITE_REPLICATION_FLOCI_RUN_ID")
+            .expect("Floci run ID configured by smoke script");
+        let key = std::env::var("SQLITE_REPLICATION_FLOCI_DELETE_KEY")
+            .expect("GC object key configured for crash child");
+        let marker = std::env::var("SQLITE_REPLICATION_FLOCI_DELETE_MARKER")
+            .expect("GC completion marker configured for crash child");
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version_latest()
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .endpoint_url(endpoint)
+            .force_path_style(true)
+            .credentials_provider(Credentials::new("test", "test", None, None, "m4-test"))
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard())
+            .build();
+        let client = aws_sdk_s3::Client::from_conf(config);
+        let bucket = format!("sqlite-replication-m4-{run_id}");
+        let store = S3Store::new(client, &bucket).expect("construct crash-child S3 store");
+        store
+            .delete_batch(std::slice::from_ref(&key))
+            .await
+            .expect("delete one GC candidate in crash child");
+        fs::write(marker, b"deleted").expect("signal completed delete to parent");
+        std::future::pending::<()>().await;
+    }
+
+    fn crash_after_s3_gc_delete(key: &str) {
+        let marker_directory = tempfile::tempdir().expect("create GC crash marker directory");
+        let marker = marker_directory.path().join("delete-complete");
+        let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "recovery::tests::floci_s3_gc_delete_crash_child",
+            ])
+            .env("SQLITE_REPLICATION_FLOCI_DELETE_KEY", key)
+            .env("SQLITE_REPLICATION_FLOCI_DELETE_MARKER", &marker)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start S3 GC delete crash child");
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if marker.exists() {
+                break;
+            }
+            if let Some(status) = child.try_wait().expect("poll S3 GC crash child") {
+                panic!("S3 GC crash child exited before deletion marker: {status}");
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("timed out waiting for S3 GC crash child deletion");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        child.kill().expect("kill S3 GC child after partial delete");
+        let status = child.wait().expect("wait for killed S3 GC crash child");
+        assert!(
+            !status.success(),
+            "S3 GC crash child exited successfully instead of being killed"
+        );
     }
 
     fn assert_s3_record(path: &Path) {
