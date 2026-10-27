@@ -34,9 +34,10 @@
 - `make test-rust` (inclui teste de propriedades Rust que trunca e muta cada
   byte das amostras LTX de snapshot/delta, verificando os invariantes de toda
   decodificação aceita)
-- `make test-fuzz` (duas execuções nativas de fuzz do Go, com 2 workers e 1 s
-  por decoder: LTX snapshot e delta; também incluído em `make test-native` e
-  `make test`, portanto executado no job CI padrão)
+- `make test-fuzz` (três execuções nativas de fuzz do Go, com 2 workers e 1 s
+  cada: decoders LTX snapshot/delta e parser WAL; usa seeds independentes para
+  ambos os formatos e integra `make test-native`/`make test`, portanto roda no
+  job CI padrão)
 - `make test-conformance` (Go↔Rust e `superfly/ltx v0.4.0` como oráculo apenas
   de teste; compilação de ambas as toolchains é requisito; inclui a matriz de
   snapshots descrita abaixo, com um milhão de linhas e BLOB de 16 MiB)

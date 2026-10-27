@@ -23,6 +23,7 @@ test-rust:
 test-fuzz:
 	cd go && GOMAXPROCS=2 $(GO) test ./ltx -run '^$$' -fuzz '^FuzzDecodeSnapshot$$' -fuzztime=1s -parallel=2
 	cd go && GOMAXPROCS=2 $(GO) test ./ltx -run '^$$' -fuzz '^FuzzDecodeDelta$$' -fuzztime=1s -parallel=2
+	cd go && GOMAXPROCS=2 $(GO) test ./internal/wal -run '^$$' -fuzz '^FuzzScan$$' -fuzztime=1s -parallel=2
 
 test-conformance:
 	bash conformance/run-cross-language.sh
