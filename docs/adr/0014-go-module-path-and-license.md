@@ -1,6 +1,6 @@
 # ADR 0014: caminho do módulo Go e licença dos pacotes
 
-- **Status:** aceita para identidade do módulo e escolha da licença; aviso de copyright e publicação pendentes
+- **Status:** aceita para caminho do módulo e escolha da licença; revisão de atribuições e publicação pendentes
 - **Data:** 2026-10-27
 
 ## Contexto
@@ -18,9 +18,12 @@ fixtures.
   mantenedor.
 - Apache-2.0 será a licença pretendida para Go e Rust, sujeita à revisão de
   notices/atribuições de dependências e à confirmação dos direitos das fixtures.
-- A pessoa/entidade detentora de copyright para o cabeçalho legal ainda não foi
-  confirmada. Não criar/interpretar o arquivo `LICENSE` nem publicar pacote até
-  essa confirmação e a revisão de notices.
+- A pedido do mantenedor, o aviso de copyright usará o nome público do perfil
+  GitHub, **Lucas Eufrasio** (`https://github.com/lucaswilliameufrasio`), com
+  ano inicial 2026. O perfil público não foi tratado como verificação de nome
+  civil/legal.
+- Ainda não criar o arquivo `LICENSE` nem publicar pacote até a revisão de
+  notices/dependências e confirmação dos direitos das fixtures.
 - Esta decisão não autoriza tag, release, publicação ou push; tampouco altera o
   gate CP-01 ou torna captura WAL pública.
 
@@ -42,6 +45,7 @@ esta ADR e o módulo antes de publicar.
 
 ## Evidência pendente
 
-- Confirmar o titular exato do copyright para o arquivo `LICENSE`.
 - Revisar licenças/notices de dependências e permissões das fixtures antes de
-  criar o pacote legal final ou publicar.
+  criar o pacote legal final ou publicar. Os geradores de fixtures e a
+  proveniência LTX/WAL estão descritos em `conformance/fixtures/README.md` e
+  `conformance/fixtures/wal/README.md`; ainda falta a revisão de atribuições.
