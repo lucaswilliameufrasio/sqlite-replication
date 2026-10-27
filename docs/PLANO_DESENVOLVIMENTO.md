@@ -969,10 +969,13 @@ adiciona uma cadeia de 32 deltas restaurada por Go/Rust. O fuzzing Go cobre
 segundos completaram 415 mil e 264 mil casos sem falhas. `make test-fuzz` executa
 fuzz-smokes de 1 s por decoder e integra a verificação a
 `make test-native`/`make test` (logo, ao job CI padrão). Rust tem teste de
-propriedades que percorre truncamentos e mutações em cada posição de snapshot e
-delta. `make test-native` passou após a cadeia longa. `make test` foi tentado no
-checkout atual, mas não concluiu o smoke Floci porque o daemon Docker rootless
-está inacessível; não foi iniciado nem reconfigurado. Isso não é fuzzing
-exaustivo nem conclusão de M6. Próximo foco: avançar itens independentes
-restantes de M0/M5/M6; nenhum passo autoriza expor captura WAL ou declarar M2
-concluído sem CP-01.
+propriedades que percorre truncamentos e mutações em todas as posições dos
+vetores locais pequenos e inclui seeds do oráculo independente: as fixtures
+maiores usam posições representativas para manter o custo do teste limitado.
+`make test-native` passou após adicionar as seeds independentes aos dois engines
+(Go fuzz seeds e Rust mutation seeds), incluindo format, vet/clippy, suites,
+fuzz-smoke e conformance. `make test` continua sem validação Floci nesta sessão:
+o smoke depende do daemon Docker rootless inacessível; ele não foi iniciado nem
+reconfigurado. Isso não é fuzzing exaustivo nem conclusão de M6. Próximo foco:
+avançar itens independentes restantes de M0/M5/M6; nenhum passo autoriza expor
+captura WAL ou declarar M2 concluído sem CP-01.
