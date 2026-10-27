@@ -5,8 +5,11 @@
 Este runbook cobre somente o vertical público M1: restore offline do snapshot
 LTX inicial para um caminho novo em um repositório filesystem. Restore por TXID/
 instante, compactação e GC foram implementados privadamente para desenvolvimento
-M4, mas não são APIs/CLI operacionais e não estão integrados ao S3. CP-01 segue
-pendente; não habilite captura WAL nem anuncie recuperação incremental.
+M4 em filesystem e S3 nos engines Go/Rust, mas não são APIs/CLI operacionais nem
+procedimentos aprovados para repositórios ativos. O restore S3 privado baixa o
+repositório inteiro para staging filesystem temporário; o uso de espaço local é
+proporcional ao repositório e provedores externos não foram homologados. CP-01
+segue pendente; não habilite captura WAL nem anuncie recuperação incremental.
 
 ## Restore disponível (M1)
 
