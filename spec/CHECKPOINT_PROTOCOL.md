@@ -1,9 +1,11 @@
-# Protocolo de captura e checkpoint — CP-01 pendente
+# Protocolo de captura e checkpoint — CP-01 aprovado no escopo inicial
 
-> **Estado: bloqueado / não aprovado.** A captura, o spool durável e a
-> recuperação têm implementação interna e evidência local, mas não estão ligados
-> à API pública e não executam checkpoint. Esta evidência parcial não autoriza
-> alegar cobertura incremental saudável nem habilitar M2.
+> **Estado: aprovado com limites.** Em 2026-10-27, o mantenedor aprovou a
+> garantia inicial para Linux x86-64, Go/modernc SQLite 3.54.1 e
+> Rust/rusqlite bundled SQLite 3.53.2, com um escritor lógico coordenado e sem
+> promessa contra perda física de energia/cache. Isso libera implementar a API
+> somente nesse escopo; não equivale a código público já entregue nem autoriza
+> ampliar plataforma, drivers, VFS ou filesystem.
 
 ## Invariante a provar
 
@@ -37,7 +39,7 @@ parciais e não avança o watermark; uma tentativa posterior reconcilia a cadeia
 Depois que o watermark e seu diretório foram sincronizados, a operação é
 considerada concluída mesmo se o cancelamento chegar nessa fronteira final.
 
-## Evidência local — parcial, não aprova CP-01
+## Evidência para o escopo inicial aprovado
 
 No Linux desta execução, os testes exercitaram Go/modernc SQLite **3.54.1** e
 Rust/rusqlite bundled SQLite **3.53.2**, em filesystem local. O código exercitado
@@ -106,24 +108,23 @@ checkpoint lock nem o writer lock: o fluxo pula a aquisição desses locks e lê
 wal-index. Portanto NOOP é uma observação, não uma barreira de sincronização.
 Referência: [`wal.c`, `sqlite3WalCheckpoint()`](https://github.com/sqlite/sqlite/blob/version-3.51.3/src/wal.c#L4314-L4394).
 
-## Matriz CP-01 ainda obrigatória
+## Escopo aprovado e fronteiras para expansão
 
 ### Escopo CP-01 decidido pelo mantenedor — 2026-10-27
 
-O mantenedor escolheu avaliar uma garantia inicial delimitada a Linux 64-bit,
-às combinações Go/Rust com SQLite já testadas e a um único writer coordenado
+O mantenedor aprovou a garantia inicial delimitada a Linux x86-64, às
+combinações Go/Rust com SQLite já testadas e a um único writer lógico coordenado
 pela biblioteca. Perda física de energia/cache fica explicitamente fora dessa
-garantia. O mantenedor aprovou esse escopo x86-64, sem liberar por isso uma
-implementação pública ou um release; esses ainda dependem dos gates de API,
-integração e publicação.
+garantia. A implementação da API e os gates de M5/M6 ainda precisam ser
+concluídos; essa decisão não autoriza release/publicação.
 
 Os drills CP-01 específicos foram executados em Linux amd64; Linux arm64 tem
 gates nativos Go/Rust/conformance aprovados na GitHub Actions (`40592150987`),
-mas esse gate não executa a mesma campanha de falhas. O mantenedor aprovou a
-garantia inicial somente para Linux x86-64; ARM64 fica fora até executar e
-revisar os drills CP-01 nessa arquitetura. macOS arm64 também passou o gate
-nativo, sem se tornar parte da garantia incremental. Outros sistemas, drivers,
-VFS, filesystems e escritores não coordenados permanecem fora do escopo.
+mas esse gate não executa a mesma campanha de falhas. ARM64 fica fora da
+garantia até executar e revisar os drills CP-01 nessa arquitetura. macOS arm64
+também passou o gate nativo, sem se tornar parte da garantia incremental. Outros
+sistemas, drivers, VFS, filesystems e escritores não coordenados permanecem
+fora do escopo.
 
 ### Correção do harness de crash em 2026-10-25
 
@@ -244,9 +245,7 @@ não perda física de energia/cache nem persistência de hardware real.
 
 Na primeira reexecução dos drills, `make test-cp01-enospc` não foi executado: a
 imagem Debian pinada não estava presente localmente e o script não faz pull. A
-execução posterior autorizada está registrada a seguir. A matriz CP-01 permanece
-bloqueada pelas combinações e falhas listadas abaixo; nenhum drill isolado
-autoriza habilitar captura WAL pública.
+execução posterior autorizada está registrada a seguir.
 
 ### Drill ENOSPC após autorização de pull — 2026-10-27
 
@@ -257,8 +256,7 @@ passou para Go e Rust: ambos recuperaram após ENOSPC real no tmpfs `/cp01` de
 8 MiB dentro de container sem rede, root filesystem read-only, 512 MiB de memória
 e 128 PIDs; o teste limpou seu diretório temporário exclusivo. Este resultado
 valida apenas esse cenário Linux amd64/tmpfs e não simula falha física de
-`fsync`/energia nem filesystem de produção. CP-01 permanece bloqueado pela
-matriz restante e revisão do protocolo.
+`fsync`/energia nem filesystems diferentes do escopo testado.
 
 Após a troca do módulo Go para o caminho canônico em `307da59`, o drill foi
 repetido e passou novamente para os dois engines. `make test` também passou
@@ -270,7 +268,7 @@ Linux arm64 concluiu em 3m09s e macOS arm64 em 3m44s. O quality gate do push
 no HEAD `4259009` passou no run `40300905561`. O drill FUSE em si é Linux-only
 e passou localmente nos dois runtimes; a matriz remota não executa montagem FUSE.
 
-Permanecem sem prova: drivers/VFS alternativos e conexões externas além da
+Permanecem fora da garantia inicial: Linux arm64 e demais plataformas; drivers/VFS alternativos e conexões externas além da
 configuração de aplicação testada; autocheckpoint global da aplicação;
 escrita direta ou concorrente no sidecar fora do lock SQLite; falha física de
 `fsync`/energia e ENOSPC em filesystems de produção (a evidência de espaço cheio
@@ -281,12 +279,13 @@ ordenação e recuperação em pontos controlados, não atomicidade de hardware 
 de todos os filesystems. O gate segue bloqueado até haver evidência completa e
 revisão do protocolo.
 
-## Critério para aprovação
+## Critério para ampliar o escopo
 
 Registrar sequência de locks/transações, versões, combinação driver/VFS/OS,
 hooks/PRAGMAs, código exercitado, seed/carga, pontos de injeção e resultado de
 cada caso. Exigir zero commits elegíveis perdidos, nenhum falso sucesso de
-checkpoint e suites determinísticas repetidas em toda combinação homologada. A
-aprovação deve ser revisada antes de conectar o protocolo à API pública. Até
-lá, CP-01 permanece reprovado por ausência de evidência completa; M2 e promessas
-de streaming permanecem bloqueadas.
+checkpoint e suites determinísticas repetidas em cada combinação nova. A
+aprovação atual cobre somente Linux x86-64 nas versões acima. Para incluir
+ARM64, outro sistema, driver, VFS ou filesystem, repetir/revisar evidência nessa
+combinação antes de ampliar a promessa. A API pública pode ser implementada
+somente sob o escopo já aprovado e os demais gates de M5/M6.

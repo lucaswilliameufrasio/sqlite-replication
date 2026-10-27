@@ -27,8 +27,9 @@ semântica de aceitação/cancelamento descritos abaixo.
 ### Base de contrato aprovada para implementação — 2026-10-27
 
 O mantenedor aprovou esta base para implementação. Isso não congela os detalhes
-listados como pendentes abaixo, nem autoriza anunciar capacidades incrementais.
-A API pública que dependa de captura WAL continua bloqueada por CP-01.
+listados como pendentes abaixo. Captura WAL pode ser integrada somente no escopo
+Linux x86-64 aprovado em CP-01, após os gates de implementação e API; não
+anunciar cobertura mais ampla.
 
 - `Status` expõe separadamente o progresso que o adapter consegue observar,
   aquele que já está protegido em spool durável e o último TXID confirmado no
@@ -58,7 +59,7 @@ testes devem voltar para revisão do contrato.
 
 Em 2026-10-27, o mantenedor confirmou a semântica proposta de alvo de `Flush`,
 confirmação local/remota e timeout/cancelamento. A API e suas implementações
-continuam pendentes de testes; a confirmação não libera captura WAL pública.
+continuam pendentes de testes; a confirmação não substitui os gates de M5.
 
 Definir limites separados para `max_spool_bytes`, `max_wal_bytes`, idade máxima
 sem proteção, workers e bytes em voo. Rejeitar ou aplicar backpressure antes de
