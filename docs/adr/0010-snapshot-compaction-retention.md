@@ -48,14 +48,14 @@ Os adapters S3 Go/Rust são exercitados privadamente via staging em filesystem
 temporário, reutilizando a validação de cadeia existente. Isso consome espaço
 local proporcional ao repositório baixado; não cria cache persistente nem API
 pública. O Floci local cobre snapshot + delta, restore por TXID/timestamp,
-compactação, revalidação de GC e preservação do ponto prometido, mas não homologa
-AWS S3, R2 ou outros provedores.
+compactação concorrente com retry imutável idempotente, revalidação de GC e
+preservação do ponto prometido, mas não homologa AWS S3, R2 ou outros provedores.
 Cadência é avaliada por intervalo TXID positivo e invocação explícita; scheduler
 automático e defaults continuam deliberadamente ausentes.
 
-Pendente para concluir o gate operacional: crash/concurrency sob single-writer,
-homologação CP-01 e confirmação de semântica nos provedores de produção. Até lá,
-M4 não é API pública nem promessa de produto.
+Pendente para concluir o gate operacional: crash/fault-injection, coordenação do
+GC com o writer único, homologação CP-01 e confirmação de semântica nos provedores
+de produção. Até lá, M4 não é API pública nem promessa de produto.
 
 ## Reversão / reconsideração
 

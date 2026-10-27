@@ -770,7 +770,7 @@ permanece privada.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
 
-**Estado observado em 2026-10-26 (commits `8ad39a0`–`bb35b18`):** as
+**Estado observado em 2026-10-26 (commits `8ad39a0`–`d15b443`):** as
 implementações privadas Go/Rust validam inventário/header/checksum, planejam
 restore inclusivo por TXID e timestamp UTC, reconstroem em staging com
 verificação SQLite, compactam sem remover fontes e planejam GC apenas com
@@ -785,18 +785,18 @@ repositório para staging filesystem temporário, reutilizam validação/restore
 publicam compactação no layout S3 e oferecem GC dry-run com revalidação antes da
 exclusão. O Floci local exercitou snapshot + delta, restore por TXID e timestamp
 antes/depois do delta, compactação, rejeição de plano stale, GC e restore dos
-pontos retidos nos dois engines (`bb35b18`). `make test` passou com a imagem
-Floci já cacheada, cujo digest foi conferido; uma tentativa sem wrapper falhou
-somente ao tentar baixar novamente a mesma imagem durante indisponibilidade do
-registry. `make test-floci` passou antes dessa tentativa. Conformance de
-snapshots compactados Go→Rust e Rust→Go (TXIDs não iniciais) passou em `6e15075`.
+pontos retidos nos dois engines (`bb35b18`), além de compactação concorrente no
+mesmo ponto com publicação imutável idempotente (`d15b443`). Duas execuções
+consecutivas de `make test-floci` passaram e `make test` passou com a imagem
+Floci local cacheada no digest conferido. Conformance de snapshots compactados
+Go→Rust e Rust→Go (TXIDs não iniciais) passou em `6e15075`.
 
 As rotinas continuam internas, sem API pública. CP-01 segue bloqueando a
 habilitação pública de recuperação incremental e operações que dependam dessa
 garantia; os drills opt-in não aprovam CP-01. Permanecem fora do aceite deste
-trabalho homologação em AWS/outros provedores e os testes de crash/concurrency
-sob single-writer. `docs/recovery-runbook.md` registra o procedimento M1 e os
-limites operacionais de M4.
+trabalho homologação em AWS/outros provedores, testes de crash/fault-injection e
+coordenação operacional com o writer sob single-writer. `docs/recovery-runbook.md`
+registra o procedimento M1 e os limites operacionais de M4.
 
 ### Fase 5 — API pública, segurança e observabilidade [M5]
 
