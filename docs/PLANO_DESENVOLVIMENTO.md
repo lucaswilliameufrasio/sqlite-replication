@@ -770,7 +770,7 @@ permanece privada.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
 
-**Estado observado em 2026-10-26 (commits `8ad39a0`–`de4604e`):** as
+**Estado observado em 2026-10-26 (commits `8ad39a0`–`58dafae`):** as
 implementações privadas Go/Rust validam inventário/header/checksum, planejam
 restore inclusivo por TXID e timestamp UTC, reconstroem em staging com
 verificação SQLite, compactam sem remover fontes e planejam GC apenas com
@@ -788,7 +788,10 @@ antes/depois do delta, compactação, rejeição de plano stale, GC e restore do
 pontos retidos nos dois engines (`bb35b18`), além de compactação concorrente no
 mesmo ponto (`d15b443`) e retomada segura de GC após exclusão parcial simulada:
 plano anterior é rejeitado como stale, o novo plano coleta o restante e o ponto
-retido continua restaurável (`e88e60d`). Duas execuções consecutivas de
+retido continua restaurável (`e88e60d`). A recuperação também é exercitada após
+encerrar abruptamente o processo cliente logo depois de uma exclusão S3: o plano
+antigo é rejeitado, o GC é replanejado e o ponto prometido segue restaurável
+(`58dafae`). Duas execuções consecutivas de
 `make test-floci` e uma terceira incluída em `make test` passaram com a imagem
 Floci local cacheada no digest conferido. O smoke agora restaura o mesmo
 repositório S3 publicado pelo Go no Rust, depois publica um repositório Rust e o
@@ -799,9 +802,10 @@ iniciais) também passou em `6e15075`.
 As rotinas continuam internas, sem API pública. CP-01 segue bloqueando a
 habilitação pública de recuperação incremental e operações que dependam dessa
 garantia; os drills opt-in não aprovam CP-01. Permanecem fora do aceite deste
-trabalho homologação em AWS/outros provedores, testes de crash/fault-injection e
-coordenação operacional com o writer sob single-writer. `docs/recovery-runbook.md`
-registra o procedimento M1 e os limites operacionais de M4.
+trabalho homologação em AWS/outros provedores, fault-injection nas demais
+fronteiras de durabilidade e coordenação operacional com o writer sob
+single-writer. `docs/recovery-runbook.md` registra o procedimento M1 e os limites
+operacionais de M4.
 
 ### Fase 5 — API pública, segurança e observabilidade [M5]
 

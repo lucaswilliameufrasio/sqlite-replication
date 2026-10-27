@@ -49,14 +49,15 @@ temporário, reutilizando a validação de cadeia existente. Isso consome espaç
 local proporcional ao repositório baixado; não cria cache persistente nem API
 pública. O Floci local cobre snapshot + delta, restore por TXID/timestamp,
 compactação concorrente do mesmo ponto, revalidação de GC e preservação do ponto
-prometido após interrupção parcial simulada de GC, mas não homologa AWS S3, R2
-ou outros provedores.
+prometido após o processo cliente ser encerrado abruptamente entre exclusões de
+GC, mas não homologa AWS S3, R2 ou outros provedores.
 Cadência é avaliada por intervalo TXID positivo e invocação explícita; scheduler
 automático e defaults continuam deliberadamente ausentes.
 
-Pendente para concluir o gate operacional: crash/fault-injection, coordenação do
-GC com o writer único, homologação CP-01 e confirmação de semântica nos provedores
-de produção. Até lá, M4 não é API pública nem promessa de produto.
+Pendente para concluir o gate operacional: fault-injection nas demais fronteiras
+de durabilidade, coordenação do GC com o writer único, homologação CP-01 e
+confirmação de semântica nos provedores de produção. Até lá, M4 não é API pública
+nem promessa de produto.
 
 ## Reversão / reconsideração
 
