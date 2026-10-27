@@ -47,8 +47,9 @@ segmentos prometidos, coleta explícita e rejeição de inventário stale.
 Os adapters S3 Go/Rust são exercitados privadamente via staging em filesystem
 temporário, reutilizando a validação de cadeia existente. Isso consome espaço
 local proporcional ao repositório baixado; não cria cache persistente nem API
-pública. O Floci local cobre restore, compactação, revalidação de GC e
-preservação do ponto prometido, mas não homologa AWS S3, R2 ou outros provedores.
+pública. O Floci local cobre snapshot + delta, restore por TXID/timestamp,
+compactação, revalidação de GC e preservação do ponto prometido, mas não homologa
+AWS S3, R2 ou outros provedores.
 Cadência é avaliada por intervalo TXID positivo e invocação explícita; scheduler
 automático e defaults continuam deliberadamente ausentes.
 
