@@ -792,7 +792,11 @@ retido continua restaurável (`e88e60d`). A recuperação também é exercitada 
 encerrar abruptamente o processo cliente logo depois de uma exclusão S3: o plano
 antigo é rejeitado, o GC é replanejado e o ponto prometido segue restaurável
 (`58dafae`). Também se injeta crash após a publicação do snapshot de compactação:
-o retry retorna objeto presente e o restore point permanece coberto (`fafd57a`).
+o retry publica/retorna um objeto presente e o restore point permanece coberto
+(`fafd57a`). O retry pode criar snapshot imutável em nível superior, em vez de
+reutilizar a mesma chave; a ADR 0010 não especifica idempotência lógica nem
+reutilização de chave entre chamadas repetidas, e o teste não presume esse
+comportamento.
 `make test-floci` e `make test` passaram após essas coberturas com a imagem Floci
 local cacheada no digest conferido. O smoke agora
 restaura o mesmo repositório S3 publicado pelo Go no Rust; depois o Rust publica
