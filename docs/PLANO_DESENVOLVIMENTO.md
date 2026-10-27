@@ -951,10 +951,13 @@ implementado/verificado localmente com fechamento operacional pendente; M5
 incompleto e M6 em andamento. O sub-drill QEMU anterior foi repetido três vezes, mas sua evidência
 limitada não aprova CP-01. A captura WAL permanece privada. M3 inclui
 reconciliação read-only, falhas/retry/cancelamento testados e métricas básicas
-instrumentadas. Em 2026-10-27, `make test` passou integralmente, incluindo o
-runner de conformance, restore cruzado das fixtures de cadeia/compactação,
-validação de todas as novas fixtures pelo decoder independente, restore do delta
-de transação grande e smoke S3 persistente Floci; drills CP-01 não foram
+instrumentadas. Em 2026-10-27, `make test-native` passou após a inclusão do
+fuzz-smoke: formatação, vet/clippy, suites Go/Rust, fuzz limitado e conformance,
+incluindo restore cruzado das fixtures e validação pelo decoder independente.
+`make test` executou as mesmas etapas, mas não concluiu o smoke Floci porque o
+daemon Docker rootless deixou de estar acessível (`/run/user/1000/docker.sock`);
+não houve tentativa de iniciar/reconfigurar o daemon. Um `make test` completo
+com Floci passou antes da inclusão do fuzz-smoke. Drills CP-01 não foram
 executados nesta validação. A compatibilidade comprovada continua sendo LTX v2
 contra `superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
 
@@ -964,7 +967,10 @@ validação pelo oráculo ao runner. `make test` passou após esses commits. A
 implementação segue ativa. O fuzzing baseado no fuzz engine nativo de Go foi
 iniciado para `DecodeSnapshot`/`DecodeDelta`, com seeds válidas e inválidas;
 execuções locais de cinco segundos completaram 415 mil e 264 mil casos sem
-falhas. Isso é evidência inicial, não cobertura exaustiva nem conclusão de M6.
-Próximo foco: ampliar fuzz/property tests nos dois engines e então avançar pelas
-partes independentes restantes de M0/M5/M6; nenhum passo autoriza expor captura
-WAL ou declarar M2 concluído sem CP-01.
+falhas. `make test-fuzz` agora executa fuzz-smokes de 1 s por decoder e integra
+essa verificação a `make test-native`/`make test` (logo, ao job CI padrão). A
+execução `make test-native` passou; a validação completa atual depende de o
+daemon rootless Floci voltar a estar acessível. Isso não é fuzzing exaustivo nem
+conclusão de M6. Próximo foco: ampliar fuzz/property tests nos dois engines e
+avançar pelas partes independentes restantes de M0/M5/M6; nenhum passo autoriza
+expor captura WAL ou declarar M2 concluído sem CP-01.
