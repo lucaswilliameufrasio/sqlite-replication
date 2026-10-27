@@ -48,9 +48,10 @@ Construir **dois motores próprios de backup/replicação assíncrona de SQLite*
 | D-12 | Sem criação de um formato próprio para substituir LTX | Metadados externos podem complementar layout/versão sem modificar bytes LTX |
 | D-13 | Checkpoint sob política coordenada pelo motor | Não assumir que fazer `tail` do `-wal` é seguro |
 | D-14 | OpenTelemetry + métricas Prometheus | Sem servidor HTTP obrigatório; registrador opcional da aplicação |
-| D-15 | Licença Apache-2.0 proposta | Verificar atribuições e licenças de fixtures/referências antes da publicação |
+| D-15 | Apache-2.0 escolhida para Go/Rust | Notices, direitos das fixtures e titular do copyright ainda precisam ser confirmados antes da publicação (ADR 0014) |
 | D-16 | Linux amd64/arm64 como primeira matriz de produção | macOS arm64 na integração; Windows 11 amd64 como fase posterior |
 | D-17 | Segurança de dados tem prioridade sobre latência | Falhas explícitas e bloqueio de promoção quando um invariante não for comprovado |
+| D-18 | Caminho canônico Go: `github.com/lucaswilliameufrasio/sqlite-replication` | Alteração pré-publicação registrada na ADR 0014; revisar antes de publicar se owner/path mudar |
 
 **Nota sobre formatos:** a documentação do Litestream descreve arquivos LTX v2; o projeto `superfly/ltx` documenta v3 com quadros de página e compressão diferentes, embora ambos usem `LTX1`. Para a v1, os leitores e escritores **v2** precisam interoperar com fixtures reconhecidas da versão de Litestream testada. Suporte de escrita v3 **não** será misturado ao mesmo prefixo e não será anunciado como compatível com leitores v2.
 
@@ -909,7 +910,7 @@ Permitir desenvolvimento independente de adapters S3 e codecs durante a prova de
 
 ## 21. Documentos ADR a escrever (mínimos)
 
-As ADRs estão registradas em `docs/adr/`: 0001–0013. ADR 0010 define a política
+As ADRs estão registradas em `docs/adr/`: 0001–0014. ADR 0010 define a política
 de retenção/compactação para implementação M4; a habilitação pública permanece
 bloqueada por CP-01. Partes das ADRs 0011–0012 permanecem propostas, conforme
 seus estados.
@@ -1008,12 +1009,12 @@ entregável de benchmarks M6 permanece parcial.
 
 | Marco | Estado | Evidência atual | Trabalho ainda necessário |
 |---|---|---|---|
-| M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test` completo com Floci | Evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
+| M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test` completo com Floci usando import path canônico Go | Evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
 | M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test` | Nenhum item novo identificado nesta retomada |
 | M2 — WAL/checkpoint | Bloqueado por CP-01 | `make test-cp01-enospc`, `make test-cp01-fsync-interrupt` e `make test-cp01-qemu-poweroff` passaram para Go/Rust; captura segue privada | Revisão/aprovação do protocolo e lacunas da matriz; drills locais não aprovam CP-01 |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos; `docs/recovery-runbook.md` documenta o escopo público M1 e mantém M4 explicitamente privado | Operação M4 em repositórios ativos só após contrato/API e gates dependentes de M2; Floci não substitui homologação de provedor |
-| M5 — API/segurança/observabilidade | Proposta em revisão; sem implementação pública | Mantenedor escolheu modo estrito padrão; proposta de `Status`/`Health`/`Flush` registrada em ADR 0011, aguardando revisão | Aprovar/ajustar semânticas, limites/defaults e compatibilidade de drivers; implementar depois e manter capacidades WAL bloqueadas por CP-01 |
+| M5 — API/segurança/observabilidade | Base aprovada; implementação pendente | Modo estrito padrão e base de `Status`/`Health`/`Flush` aprovados em ADR 0011 | Implementar em fatias sem expor WAL; fechar semânticas finais, limites/defaults, métricas/traces e compatibilidade de drivers; manter APIs incrementais bloqueadas por CP-01 |
 | M6 — stress/bench/release | Em andamento | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust | Chaos/stress amplo, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
 
 ### Pendências que requerem decisão/ação do mantenedor
@@ -1022,23 +1023,17 @@ entregável de benchmarks M6 permanece parcial.
   Após autorização explícita para o pull da imagem pinada, `make
   test-cp01-enospc` passou para Go/Rust no container rootless isolado. Junto com
 FUSE/QEMU, isso amplia evidência; não substitui a revisão/aprovação CP-01.
-- **M5:** modo estrito por padrão foi decidido; a proposta `Status`/`Health`/
-  `Flush` está em ADR 0011 e aguarda revisão. Ainda falta congelar semânticas,
-  admissão e limites/defaults de write-gate, mais integração concreta de
-  métricas/traces e combinações de drivers (ADR 0012). Não implementar defaults
-  hipotéticos antes da revisão.
-- **M6/publicação:** escolher identidade/nome e caminho canônico do módulo Go
-  (atualmente provisório), confirmar licença e notices das dependências/fixtures,
-  e autorizar processo de tag/publicação. Nenhum release será criado a partir
-  deste checkout sem essa decisão; evidência CI remota também depende de enviar
-  commits ao remoto.
-- **Opções para identidade/licença:** (1) `github.com/<owner>/<repo>` como
-  import path Go se GitHub for o host canônico — caminho simples, mas acoplado ao
-  host; (2) caminho vanity sob domínio controlado — estável entre hosts, exigindo
-  domínio e metadados HTTPS mantidos; (3) manter `sqlite-replication` só como
-  nome interno e não publicar até haver identidade. Apache-2.0 é a opção
-  consistente com o `Cargo.toml` atual e a proposta da ADR 0012; confirmar após
-  revisar notices de dependências e direitos das fixtures.
+- **M5:** modo estrito por padrão e base `Status`/`Health`/`Flush` foram
+  aprovados em ADR 0011. Faltam implementação/testes e fechar detalhes de
+  degradação/concorrência, admissão e limites/defaults de write-gate, mais
+  integração concreta de métricas/traces e combinações de drivers (ADR 0012).
+  Não expor captura WAL antes de CP-01.
+- **M6/publicação:** caminho Go `github.com/lucaswilliameufrasio/sqlite-replication`
+  foi aplicado em `307da59`; Apache-2.0 escolhida (ADRs 0014/D-15). Falta
+  confirmar titular do copyright, revisar notices/dependências e direitos das
+  fixtures, além de autorizar tag/publicação. Nenhum release será criado a
+  partir deste checkout sem essa revisão/autorização; evidência CI remota também
+  depende de enviar commits ao remoto.
 - **M6/evidência:** campanha atual é fuzz Go de um minuto, não chaos/stress
   prolongado; baseline Go/Rust não é comparação controlada com Litestream. SBOM,
   supply-chain e guia de migração ainda não têm artefatos aprovados.
@@ -1048,10 +1043,13 @@ FUSE/QEMU, isso amplia evidência; não substitui a revisão/aprovação CP-01.
 `make test-cp01-enospc` passaram em execuções registradas nesta retomada. `make
 test` usou Floci local persistente pelo daemon rootless já ativo; o smoke removeu
 apenas o projeto/volume próprios. A imagem Debian pinada foi baixada somente
-após autorização explícita e o drill ENOSPC passou em Go/Rust. Os drills FUSE,
+após autorização explícita e o drill ENOSPC passou em Go/Rust, inclusive após a
+mudança de import path. `make test` também passou após o caminho canônico ser
+aplicado. Os drills FUSE,
 QEMU e ENOSPC aumentam a evidência, mas não cobrem perda física de energia/cache,
 filesystems/drivers alternativos nem fecham a matriz CP-01. A campanha extended
 foi repetida com minimização limitada e o gate nativo passou após o ajuste. A
 mudança de harness está separada em `4701deb`; campanha e progresso estão em
-`a0415a2`/`abd7ef7`; a proposta ADR aguarda revisão. M2 e o roadmap inteiro
-continuam incompletos.
+`a0415a2`/`abd7ef7`; a identidade do módulo foi aplicada em `307da59`. A base
+M5 foi aprovada para implementação, mas detalhes finais seguem abertos. M2 e o
+roadmap inteiro continuam incompletos.

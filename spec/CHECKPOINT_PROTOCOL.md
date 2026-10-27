@@ -243,6 +243,10 @@ valida apenas esse cenário Linux amd64/tmpfs e não simula falha física de
 `fsync`/energia nem filesystem de produção. CP-01 permanece bloqueado pela
 matriz restante e revisão do protocolo.
 
+Após a troca do módulo Go para o caminho canônico em `307da59`, o drill foi
+repetido e passou novamente para os dois engines. `make test` também passou
+integralmente nesse checkout, incluindo conformance, fuzz-smoke e Floci local.
+
 Após adicionar o drill de interrupção FUSE, o código em `0c977eb` passou as
 suites nativas/conformance em Linux arm64 e macOS arm64 no run `40300871827`;
 Linux arm64 concluiu em 3m09s e macOS arm64 em 3m44s. O quality gate do push
