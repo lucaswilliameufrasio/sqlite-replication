@@ -1391,6 +1391,17 @@ mod tests {
         .expect("restore S3 timestamp after delta");
         assert_s3_record_value(&after_delta, "updated");
 
+        let crashed_compaction_key = crash_after_s3_compaction(prefix);
+        let retried_compaction_key = compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(8))
+            .await
+            .expect("retry S3 compaction after caller crash");
+        assert!(retried_compaction_key.starts_with(&format!("{prefix}/")));
+        store
+            .head(&retried_compaction_key)
+            .await
+            .expect("retried compacted snapshot is present");
+        assert!(crashed_compaction_key.starts_with(&format!("{prefix}/")));
+
         let (first_compaction, second_compaction) = tokio::join!(
             compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(8)),
             compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(8)),
@@ -1524,6 +1535,35 @@ mod tests {
         std::future::pending::<()>().await;
     }
 
+    #[tokio::test]
+    #[ignore = "child process for the isolated Floci compaction crash test"]
+    async fn floci_s3_compact_crash_child() {
+        let endpoint = std::env::var("SQLITE_REPLICATION_FLOCI_ENDPOINT")
+            .expect("Floci endpoint configured by smoke script");
+        let run_id = std::env::var("SQLITE_REPLICATION_FLOCI_RUN_ID")
+            .expect("Floci run ID configured by smoke script");
+        let prefix = std::env::var("SQLITE_REPLICATION_FLOCI_COMPACT_PREFIX")
+            .expect("repository prefix configured for compaction crash child");
+        let marker = std::env::var("SQLITE_REPLICATION_FLOCI_COMPACT_MARKER")
+            .expect("completion marker configured for compaction crash child");
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version_latest()
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .endpoint_url(endpoint)
+            .force_path_style(true)
+            .credentials_provider(Credentials::new("test", "test", None, None, "m4-test"))
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard())
+            .build();
+        let client = aws_sdk_s3::Client::from_conf(config);
+        let bucket = format!("sqlite-replication-m4-{run_id}");
+        let store = S3Store::new(client, &bucket).expect("construct compaction crash-child store");
+        let key = compact_s3_to_snapshot(&store, &prefix, RestoreTarget::Txid(8))
+            .await
+            .expect("publish compacted S3 snapshot in crash child");
+        fs::write(marker, key).expect("signal compacted object key to parent");
+        std::future::pending::<()>().await;
+    }
+
     fn crash_after_s3_gc_delete(key: &str) {
         let marker_directory = tempfile::tempdir().expect("create GC crash marker directory");
         let marker = marker_directory.path().join("delete-complete");
@@ -1560,6 +1600,50 @@ mod tests {
             !status.success(),
             "S3 GC crash child exited successfully instead of being killed"
         );
+    }
+
+    fn crash_after_s3_compaction(prefix: &str) -> String {
+        let marker_directory =
+            tempfile::tempdir().expect("create compaction crash marker directory");
+        let marker = marker_directory.path().join("compaction-complete");
+        let mut child = Command::new(std::env::current_exe().expect("current test executable"))
+            .args([
+                "--ignored",
+                "--exact",
+                "recovery::tests::floci_s3_compact_crash_child",
+            ])
+            .env("SQLITE_REPLICATION_FLOCI_COMPACT_PREFIX", prefix)
+            .env("SQLITE_REPLICATION_FLOCI_COMPACT_MARKER", &marker)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("start S3 compaction crash child");
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if marker.exists() {
+                break;
+            }
+            if let Some(status) = child.try_wait().expect("poll S3 compaction crash child") {
+                panic!("S3 compaction crash child exited before publication marker: {status}");
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("timed out waiting for S3 compaction crash child");
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let key = fs::read_to_string(&marker).expect("read published S3 compaction key");
+        assert!(key.starts_with(&format!("{prefix}/")));
+        child
+            .kill()
+            .expect("kill S3 compaction child after publication");
+        let status = child.wait().expect("wait for killed S3 compaction child");
+        assert!(
+            !status.success(),
+            "S3 compaction crash child exited successfully instead of being killed"
+        );
+        key
     }
 
     fn assert_s3_record(path: &Path) {
