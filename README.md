@@ -2,16 +2,18 @@
 
 Independent Go and Rust SQLite replication libraries
 
-**Status:** M1 implementado e verificado em Go e Rust pelo gate local `make
-test`, incluindo 16 casos/96 restores de snapshots LTX v2 (até 1 milhão de
-linhas e BLOBs de 16 MiB) contra o oráculo fixado e smoke Floci persistente.
-O gate local de M0 passou, mas a matriz ampla de casos segue
-parcial. Parsers WAL são isolados e não habilitam captura incremental. M3 está
-implementado e verificado localmente: adapters S3 Go/Rust, métricas,
-reconciliação read-only, testes de falha/retry/cancelamento e restore cruzado após
-crash/restart do Floci. Isso não homologa AWS S3, R2 ou outro provedor. Retenção e
-compactação seguem ausentes. CP-01
-continua pendente e bloqueia qualquer promessa de segurança WAL.
+**Status:** M0 permanece parcial; M1 está implementado e verificado em Go e Rust
+pelo gate local `make test`, incluindo 16 casos/96 restores de snapshots LTX v2
+(até 1 milhão de linhas e BLOBs de 16 MiB), fixtures independentes de deltas,
+compactação e uma transação de 4 MiB. M3 está implementado e verificado
+localmente: adapters S3 Go/Rust, métricas, reconciliação read-only e testes de
+falha/retry/cancelamento com restore cruzado após crash/restart do Floci. M4
+possui restore, compactação, retenção e GC filesystem/S3 implementados e
+verificados localmente, ainda privados e sem fechamento operacional completo.
+Isso não homologa AWS S3, R2 ou outro provedor. O fuzzing Go do codec LTX começou;
+M5/M6 continuam incompletos. Parsers WAL são isolados e não habilitam captura
+incremental. CP-01 segue pendente e bloqueia exposição/qualquer promessa de
+segurança WAL.
 
 ## Documentos
 - [Plano de desenvolvimento](docs/PLANO_DESENVOLVIMENTO.md)

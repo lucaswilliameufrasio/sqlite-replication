@@ -1,7 +1,7 @@
 # Plano de Desenvolvimento — SQLite Replication para Go e Rust
 
 > **Versão:** 1.0 — 21/10/2026  
-> **Estado em 2026-10-27:** M0 parcial, M1 verificado, M2 bloqueado por CP-01, M3 implementado e verificado localmente, M4 implementado/verificado localmente com fechamento operacional pendente; M5–M6 incompletos.
+> **Estado em 2026-10-27:** M0 parcial, M1 verificado, M2 bloqueado por CP-01, M3 implementado e verificado localmente, M4 implementado/verificado localmente com fechamento operacional pendente; M5 incompleto e M6 em andamento.
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.
@@ -947,8 +947,8 @@ Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, 
 
 **Estado do plano em 2026-10-27:** M0 parcial, M1 implementado/verificado, M2
 bloqueado por CP-01, M3 implementado e verificado no gate local Floci; M4
-implementado/verificado localmente com fechamento operacional pendente; M5–M6
-incompletos. O sub-drill QEMU anterior foi repetido três vezes, mas sua evidência
+implementado/verificado localmente com fechamento operacional pendente; M5
+incompleto e M6 em andamento. O sub-drill QEMU anterior foi repetido três vezes, mas sua evidência
 limitada não aprova CP-01. A captura WAL permanece privada. M3 inclui
 reconciliação read-only, falhas/retry/cancelamento testados e métricas básicas
 instrumentadas. Em 2026-10-27, `make test` passou integralmente, incluindo o
@@ -961,6 +961,10 @@ contra `superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
 **Retomada em 2026-10-27:** os commits `1594687`/`9e9e917` ampliaram fixtures
 independentes de cadeia, compactação e transação grande; `54b8d45` conecta a
 validação pelo oráculo ao runner. `make test` passou após esses commits. A
-implementação segue ativa: próximo foco é fechar o item restante de stress M0 e
-então avançar pelas partes independentes de M5/M6; nenhum passo desta sequência
-autoriza expor captura WAL ou declarar M2 concluído sem CP-01.
+implementação segue ativa. O fuzzing baseado no fuzz engine nativo de Go foi
+iniciado para `DecodeSnapshot`/`DecodeDelta`, com seeds válidas e inválidas;
+execuções locais de cinco segundos completaram 415 mil e 264 mil casos sem
+falhas. Isso é evidência inicial, não cobertura exaustiva nem conclusão de M6.
+Próximo foco: ampliar fuzz/property tests nos dois engines e então avançar pelas
+partes independentes restantes de M0/M5/M6; nenhum passo autoriza expor captura
+WAL ou declarar M2 concluído sem CP-01.
