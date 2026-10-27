@@ -781,15 +781,20 @@ real SQLite em Go/Rust, compactação com round-trip, retenção do caminho
 prometido e rejeição de plano stale. Essas funções permanecem internas; ainda
 há avaliador de cadência por TXID com intervalo positivo obrigatório (`6af1f28`),
 com execução condicional exercitada na cadeia SQLite real (`90125b1`), mas não
-há scheduler automático, integração de restore/GC com o adapter S3, nem API
-pública. **Conformance de snapshot compactado Go→Rust e Rust→Go** passou no
+com execução condicional exercitada na cadeia SQLite real (`90125b1`). A
+integração **privada Go/S3** (`364f281`) agora restaura por TXID/instante via
+staging filesystem validado, publica compactação no layout S3 sem remover fontes
+e oferece GC dry-run com revalidação de inventário/identidade antes da exclusão.
+O teste integrado local Floci cobre restore, compactação, GC e restore do ponto
+retido; `make test` e `make test-floci` passaram nesse commit. Ainda não há
+scheduler automático nem API pública, e a integração equivalente Rust/S3 segue
+pendente. **Conformance de snapshot compactado Go→Rust e Rust→Go** passou no
 commit `6e15075`, validando TXIDs não iniciais e integridade/conteúdo SQLite.
 CP-01 continua bloqueando a habilitação pública de recuperação incremental e
 operações que dependam de sua garantia. `docs/recovery-runbook.md` registra o
-procedimento M1 disponível e os limites de M4. `make test` passou após a
-execução condicional e conformance; os drills CP-01 opt-in permanecem fora desse
-gate e seu resultado anterior continua evidência limitada, não aprovação de
-CP-01.
+procedimento M1 disponível e os limites de M4. Os drills CP-01 opt-in permanecem
+fora desse gate e seu resultado anterior continua evidência limitada, não
+aprovação de CP-01.
 
 ### Fase 5 — API pública, segurança e observabilidade [M5]
 
