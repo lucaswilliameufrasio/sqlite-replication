@@ -576,9 +576,10 @@ snapshot/restore em ambas as linguagens e smoke Floci persistente aprovado. Os
 incrementos de 2026-10-27 adicionaram fixtures LTX v2 fixas e geradas pelo
 oráculo v0.4.0 para snapshot-base, dois deltas, snapshot compactado e um delta
 de uma transação de 4 MiB (512 BLOBs de 8192 bytes); Go e Rust restauram as
-cadeias e validam o conteúdo. M0 permanece parcial no escopo amplo por stress
-ainda pendente e falta de observação de CI remoto. O incremento local de
-2026-10-25 acrescentou bancos
+cadeias e validam o conteúdo. O runner também verifica todos esses arquivos com
+o decoder independente `superfly/ltx v0.4.0` em cada execução. M0 permanece
+parcial no escopo amplo por stress ainda pendente e falta de observação de CI
+remoto. O incremento local de 2026-10-25 acrescentou bancos
 sem tabelas e tabelas vazias nos cinco tamanhos de página, além de
 1/100 mil/1 milhão de
 linhas, BLOBs de 1/16 MiB, rollback e VACUUM/reutilização em páginas de 4096.
@@ -952,7 +953,7 @@ limitada não aprova CP-01. A captura WAL permanece privada. M3 inclui
 reconciliação read-only, falhas/retry/cancelamento testados e métricas básicas
 instrumentadas. Em 2026-10-27, `make test` passou integralmente, incluindo o
 runner de conformance, restore cruzado das fixtures de cadeia/compactação,
-restore do delta de transação grande e smoke S3 persistente Floci; drills CP-01
-não foram executados nesta validação. A compatibilidade comprovada continua
-sendo LTX v2 contra `superfly/ltx v0.4.0`, não qualquer release genérica do
-Litestream.
+validação de todas as novas fixtures pelo decoder independente, restore do delta
+de transação grande e smoke S3 persistente Floci; drills CP-01 não foram
+executados nesta validação. A compatibilidade comprovada continua sendo LTX v2
+contra `superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
