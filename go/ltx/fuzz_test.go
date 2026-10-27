@@ -3,6 +3,7 @@ package ltx
 import (
 	"bytes"
 	"encoding/binary"
+	"os"
 	"testing"
 )
 
@@ -19,6 +20,15 @@ func FuzzDecodeSnapshot(f *testing.F) {
 		f.Fatalf("encode snapshot fuzz seed: %v", err)
 	}
 	f.Add(validSnapshot.Bytes())
+	for _, fixturePath := range []string{
+		"../../conformance/fixtures/ltx-v2/snapshot-4096.ltx",
+	} {
+		fixture, err := os.ReadFile(fixturePath)
+		if err != nil {
+			f.Fatalf("read independent snapshot fuzz seed %q: %v", fixturePath, err)
+		}
+		f.Add(fixture)
+	}
 
 	f.Fuzz(func(t *testing.T, encoded []byte) {
 		if len(encoded) > 4*1024*1024 {
@@ -58,6 +68,16 @@ func FuzzDecodeDelta(f *testing.F) {
 		f.Fatalf("encode delta fuzz seed: %v", err)
 	}
 	f.Add(validDelta.Bytes())
+	for _, fixturePath := range []string{
+		"../../conformance/fixtures/ltx-v2/recovery-chain-4096/delta-2.ltx",
+		"../../conformance/fixtures/ltx-v2/long-chain-4096/delta-033.ltx",
+	} {
+		fixture, err := os.ReadFile(fixturePath)
+		if err != nil {
+			f.Fatalf("read independent delta fuzz seed %q: %v", fixturePath, err)
+		}
+		f.Add(fixture)
+	}
 
 	f.Fuzz(func(t *testing.T, encoded []byte) {
 		if len(encoded) > 4*1024*1024 {

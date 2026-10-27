@@ -1144,6 +1144,22 @@ mod tests {
                 let _ = snapshot_decode_is_valid(&mutated);
             }
         }
+        let reference_snapshot =
+            include_bytes!("../../../../conformance/fixtures/ltx-v2/snapshot-512.ltx");
+        assert!(snapshot_decode_is_valid(reference_snapshot));
+        for end in mutation_sample_offsets(reference_snapshot.len()) {
+            assert!(
+                !snapshot_decode_is_valid(&reference_snapshot[..end]),
+                "truncated reference snapshot unexpectedly decoded at byte {end}"
+            );
+        }
+        for offset in mutation_sample_offsets(reference_snapshot.len()) {
+            for bit in 0..8 {
+                let mut mutated = reference_snapshot.to_vec();
+                mutated[offset] ^= 1 << bit;
+                let _ = snapshot_decode_is_valid(&mutated);
+            }
+        }
 
         let header = Header {
             flags: 0,
@@ -1176,6 +1192,23 @@ mod tests {
         for offset in 0..delta.len() {
             for bit in 0..8 {
                 let mut mutated = delta.clone();
+                mutated[offset] ^= 1 << bit;
+                let _ = delta_decode_is_valid(&mutated);
+            }
+        }
+        let reference_delta = include_bytes!(
+            "../../../../conformance/fixtures/ltx-v2/recovery-chain-4096/delta-2.ltx"
+        );
+        assert!(delta_decode_is_valid(reference_delta));
+        for end in mutation_sample_offsets(reference_delta.len()) {
+            assert!(
+                !delta_decode_is_valid(&reference_delta[..end]),
+                "truncated reference delta unexpectedly decoded at byte {end}"
+            );
+        }
+        for offset in mutation_sample_offsets(reference_delta.len()) {
+            for bit in 0..8 {
+                let mut mutated = reference_delta.to_vec();
                 mutated[offset] ^= 1 << bit;
                 let _ = delta_decode_is_valid(&mutated);
             }
@@ -1213,6 +1246,30 @@ mod tests {
             previous_page = page.page_no;
         }
         true
+    }
+
+    fn mutation_sample_offsets(length: usize) -> Vec<usize> {
+        let candidates = [
+            0,
+            1,
+            7,
+            15,
+            16,
+            31,
+            32,
+            63,
+            length / 2,
+            length - 9,
+            length - 1,
+        ];
+        let mut offsets = Vec::new();
+        for candidate in candidates {
+            let offset = candidate.min(length - 1);
+            if !offsets.contains(&offset) {
+                offsets.push(offset);
+            }
+        }
+        offsets
     }
 
     #[test]
