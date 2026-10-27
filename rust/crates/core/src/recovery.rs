@@ -1279,6 +1279,27 @@ mod tests {
         )
         .expect("restore pinned reference compacted snapshot");
         assert_reference_chain_state(&compacted_restore_path, "updated-middle", 33, true);
+
+        let large_fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../conformance/fixtures/ltx-v2/large-transaction-4096");
+        let large_repository = tempfile::tempdir().expect("create large transaction repository");
+        ensure_repository(large_repository.path())
+            .expect("initialize large transaction fixture repository");
+        for (name, min_txid, max_txid) in [("snapshot-1.ltx", 1, 1), ("large-delta-2.ltx", 2, 2)] {
+            copy_reference_fixture(
+                &large_fixture_root.join(name),
+                &ltx_path(large_repository.path(), min_txid, max_txid),
+            );
+        }
+        let large_restore = tempfile::tempdir().expect("create large transaction restore");
+        let large_restore_path = large_restore.path().join("large-transaction.sqlite");
+        restore_to_target(
+            large_repository.path(),
+            &large_restore_path,
+            RestoreTarget::Txid(2),
+        )
+        .expect("restore pinned reference large transaction");
+        assert_large_reference_transaction_state(&large_restore_path);
     }
 
     #[tokio::test]
@@ -1728,6 +1749,20 @@ mod tests {
             .expect("count reference fixture row 33");
         assert_eq!(row_two_count, if inserted_middle { 1 } else { 0 });
         assert_eq!(row_thirty_three_count, 1);
+    }
+
+    fn assert_large_reference_transaction_state(path: &Path) {
+        let database = Connection::open(path).expect("open restored large transaction fixture");
+        let (row_count, payload_bytes, wrong_length_count): (i64, i64, i64) = database
+            .query_row(
+                "SELECT count(*), sum(length(data)), sum(length(data) != 8192) FROM payloads",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("read restored large transaction fixture");
+        assert_eq!(row_count, 512);
+        assert_eq!(payload_bytes, 512 * 8192);
+        assert_eq!(wrong_length_count, 0);
     }
 
     fn assert_s3_record_value(path: &Path, expected: &str) {

@@ -43,6 +43,16 @@ snapshot and assert logical rows, row counts, and SQLite integrity.
 | `recovery-chain-4096/delta-3.ltx` | Update + delete, TXID 3 | `e0c10009c9d2c5ae55000dcc115642b956eb222de0c24dfcfb80aa8c144340b7` |
 | `recovery-chain-4096/compacted-2.ltx` | Full snapshot for TXIDs 1–2 | `1bff7d5cc264039bb9e0c8660fcbcb8e31964eff32e8c11ff0598fd2074e31d0` |
 
+`large-transaction-4096/` exercises one 4 MiB SQLite transaction: one LTX delta
+inserts 512 rows with 8192-byte deterministic binary payloads. The independent
+Go and Rust restore tests assert all rows and payload lengths after applying the
+single delta.
+
+| File | Meaning | SHA-256 |
+|---|---|---|
+| `large-transaction-4096/snapshot-1.ltx` | Empty `payloads` table, TXID 1 | `796a4c62b239d8dad52a3d4952390bbdb35a35472f4048b71f378b87bd8523b2` |
+| `large-transaction-4096/large-delta-2.ltx` | One 4 MiB insert transaction, TXID 2 | `4dc5710cdeb0ae6e1ffab066a6e9de944b8a7596d8565441a684a3477761f5d7` |
+
 Regenerate missing fixtures with `generate-ltx-v2-fixture.sh PATH PAGE_SIZE`; the
 script refuses to overwrite existing bytes. The conformance runner restores all
 five page sizes in both engines and verifies SQLite integrity and logical
@@ -51,5 +61,6 @@ Go and Rust, applies each chain with the pinned upstream `superfly/ltx v0.4.0`
 CLI, then checks SQLite integrity and compares every restored row with the
 source image. This is local format/restore evidence, not physical-durability
 evidence. Generate the recovery chain fixtures with
-`python3 conformance/generate-recovery-chain-fixtures.py`; it also refuses to
-overwrite an existing fixture directory.
+`python3 conformance/generate-recovery-chain-fixtures.py`; it refuses to
+overwrite existing fixture directories. To generate only the large transaction
+set, pass `--only-large-transaction`.

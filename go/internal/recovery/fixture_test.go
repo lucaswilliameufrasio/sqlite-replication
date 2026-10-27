@@ -52,6 +52,43 @@ func TestPinnedReferenceRecoveryChainFixtures(t *testing.T) {
 		t.Fatalf("restore pinned reference compacted snapshot: %v", err)
 	}
 	assertReferenceChainState(t, compactedRestore, "updated-middle", 33, true)
+
+	largeFixtureRoot := filepath.Join(filepath.Dir(sourceFile), "../../../conformance/fixtures/ltx-v2/large-transaction-4096")
+	largeRepository := filepath.Join(t.TempDir(), "large-transaction")
+	if err := storagefs.EnsureRepository(largeRepository); err != nil {
+		t.Fatalf("initialize large transaction fixture repository: %v", err)
+	}
+	for _, fixture := range []struct {
+		name    string
+		minTXID uint64
+		maxTXID uint64
+	}{
+		{name: "snapshot-1.ltx", minTXID: 1, maxTXID: 1},
+		{name: "large-delta-2.ltx", minTXID: 2, maxTXID: 2},
+	} {
+		copyRecoveryFixture(t, filepath.Join(largeFixtureRoot, fixture.name), storagefs.LTXPath(largeRepository, fixture.minTXID, fixture.maxTXID))
+	}
+	largeRestore := filepath.Join(t.TempDir(), "large-transaction.sqlite")
+	if err := RestoreToTarget(context.Background(), largeRepository, largeRestore, Target{TXID: 2}); err != nil {
+		t.Fatalf("restore pinned reference large transaction: %v", err)
+	}
+	assertLargeReferenceTransactionState(t, largeRestore)
+}
+
+func assertLargeReferenceTransactionState(t *testing.T, databasePath string) {
+	t.Helper()
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open restored large transaction fixture: %v", err)
+	}
+	defer database.Close()
+	var rowCount, payloadBytes, wrongLengthCount int
+	if err := database.QueryRow("SELECT count(*), sum(length(data)), sum(length(data) != 8192) FROM payloads").Scan(&rowCount, &payloadBytes, &wrongLengthCount); err != nil {
+		t.Fatalf("read restored large transaction fixture: %v", err)
+	}
+	if rowCount != 512 || payloadBytes != 512*8192 || wrongLengthCount != 0 {
+		t.Fatalf("large transaction fixture count/bytes/wrong_lengths = %d/%d/%d", rowCount, payloadBytes, wrongLengthCount)
+	}
 }
 
 func copyRecoveryFixture(t *testing.T, sourcePath, destinationPath string) {
