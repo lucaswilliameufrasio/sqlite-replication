@@ -2,14 +2,22 @@
 
 ## Escopo operacional atual
 
-Este runbook cobre somente o vertical público M1: restore offline do snapshot
-LTX inicial para um caminho novo em um repositório filesystem. Restore por TXID/
-instante, compactação e GC foram implementados privadamente para desenvolvimento
-M4 em filesystem e S3 nos engines Go/Rust, mas não são APIs/CLI operacionais nem
-procedimentos aprovados para repositórios ativos. O restore S3 privado baixa o
-repositório inteiro para staging filesystem temporário; o uso de espaço local é
-proporcional ao repositório e provedores externos não foram homologados. CP-01
-segue pendente; não habilite captura WAL nem anuncie recuperação incremental.
+Este runbook cobre o restore offline do snapshot LTX inicial para um caminho
+novo em um repositório filesystem. Go `replicator.CaptureOnce` e Rust
+`capture_once` também expõem um ciclo síncrono de captura para spool local,
+somente em Linux x86-64 com os runtimes SQLite testados e um único escritor
+lógico coordenado. O chamador precisa pausar todos os escritores pelo write-gate
+e manter o spool local; a API não faz upload, checkpoint, restore incremental,
+nem expõe `Status`/`Health`/`Flush`. A garantia exclui perda física de
+energia/cache. ARM64 e outras plataformas/configurações ficam fora até drills
+CP-01 específicos.
+
+Restore por TXID/instante, compactação e GC foram implementados privadamente
+para desenvolvimento M4 em filesystem e S3 nos engines Go/Rust, mas não são
+APIs/CLI operacionais nem procedimentos aprovados para repositórios ativos. O
+restore S3 privado baixa o repositório inteiro para staging filesystem
+temporário; o uso de espaço local é proporcional ao repositório e provedores
+externos não foram homologados.
 
 ## Restore disponível (M1)
 

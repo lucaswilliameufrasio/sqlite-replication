@@ -1,19 +1,16 @@
-//! Synchronous bootstrap and offline restore API for the initial M1 vertical.
-//! This crate deliberately does not expose WAL replication.
+//! Synchronous SQLite snapshot, local WAL capture, and offline restore APIs.
 
 // Recovery planning remains private until the restore contract and CP-01 gate
 // permit it to be wired into public restore operations.
 #[allow(dead_code)]
 mod recovery;
 
-// CP-01 keeps this orchestration compiled and testable, but not wired into the
-// public API until the required crash and platform matrix is complete.
-#[allow(dead_code)]
 pub(crate) mod capture;
 
 use std::fs::{self, File};
 use std::io::{self, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use sqlite_replication_ltx::{decode_snapshot, encode_snapshot};
@@ -21,6 +18,88 @@ use sqlite_replication_sqlite::{create_online_backup, verify_database};
 use sqlite_replication_storage_fs::{
     ensure_repository, ltx_path, promote_if_missing, sync_directory,
 };
+
+/// A caller-provided gate that pauses all application writers before capture.
+pub trait WriteGate {
+    /// Permit type held until local LTX and its watermark are durable.
+    type Permit: WritePermit;
+
+    /// Stops application writes and returns a permit, or leaves the gate closed
+    /// only if it reports an error according to the caller's own contract.
+    fn acquire(&self) -> io::Result<Self::Permit>;
+}
+
+/// A held application write gate. Release must resume writers and report failure.
+pub trait WritePermit {
+    /// Resumes application writes after the capture result is durable or failed.
+    fn release(self) -> io::Result<()>;
+}
+
+/// Durable local progress produced by one WAL capture cycle.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CaptureResult {
+    pub txid: u64,
+    pub transactions: usize,
+    pub wal_frames: u32,
+}
+
+/// Captures the currently observable WAL and durably publishes local LTX files.
+///
+/// The repository must already contain an initial snapshot. The caller must
+/// route every application writer through `gate`; its permit remains held until
+/// all captured LTX files and the local watermark are synced. This operation is
+/// supported only on Linux x86-64 with the SQLite runtime validated by CP-01.
+/// It does not request a checkpoint, upload to remote storage, or promise
+/// survival of physical power loss. Application code is resumed after the local
+/// durability boundary even when the request's cancellation token was set late.
+pub fn capture_once<G: WriteGate>(
+    source_path: impl AsRef<Path>,
+    repository_root: impl AsRef<Path>,
+    gate: &G,
+) -> io::Result<CaptureResult> {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "incremental capture is supported only on Linux x86-64",
+        ));
+    }
+
+    let timestamp_millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(io::Error::other)?
+        .as_millis() as i64;
+    let permit = gate.acquire()?;
+    let cancelled = AtomicBool::new(false);
+    let capture_result = capture::capture_once_cancellable(
+        source_path.as_ref(),
+        repository_root.as_ref(),
+        timestamp_millis,
+        &cancelled,
+        |_, _| Ok(()),
+    );
+    let release_result = permit.release();
+
+    let result = match (capture_result, release_result) {
+        (Ok(result), Ok(())) => result,
+        (Err(capture_error), Ok(())) => return Err(capture_error),
+        (Ok(_), Err(release_error)) => {
+            return Err(io::Error::other(format!(
+                "capture completed durably but releasing the application write gate failed: {release_error}"
+            )));
+        }
+        (Err(capture_error), Err(release_error)) => {
+            return Err(io::Error::other(format!(
+                "capture failed: {capture_error}; releasing the application write gate also failed: {release_error}"
+            )));
+        }
+    };
+
+    Ok(CaptureResult {
+        txid: result.state.database.txid,
+        transactions: result.transactions.len(),
+        wal_frames: result.wal_frames,
+    })
+}
 
 /// Creates and publishes the initial immutable LTX v2 snapshot.
 pub fn snapshot(

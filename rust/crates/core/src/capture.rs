@@ -30,7 +30,8 @@ pub(crate) struct Result {
     pub wal_frames: u32,
 }
 
-pub(crate) fn capture_once(
+#[cfg(test)]
+fn capture_once(
     source_path: &Path,
     repository_root: &Path,
     timestamp_millis: i64,
@@ -43,6 +44,7 @@ pub(crate) fn capture_once(
     )
 }
 
+#[cfg(test)]
 fn capture_once_with_hook<F>(
     source_path: &Path,
     repository_root: &Path,

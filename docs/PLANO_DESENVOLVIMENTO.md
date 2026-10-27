@@ -1,7 +1,7 @@
 # Plano de Desenvolvimento — SQLite Replication para Go e Rust
 
 > **Versão:** 1.0 — 21/10/2026  
-> **Estado em 2026-10-27:** M0 parcial, M1 verificado, M2 bloqueado por CP-01, M3 implementado e verificado localmente, M4 implementado/verificado localmente com fechamento operacional pendente; M5 incompleto e M6 em andamento.
+> **Estado em 2026-10-27:** M0 parcial, M1 verificado, CP-01 aprovado para Linux x86-64 e uma fatia pública de captura local em andamento; M3 implementado/verificado localmente, M4 implementado/verificado localmente com fechamento operacional pendente; M5 incompleto e M6 em andamento.
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.
@@ -1012,10 +1012,10 @@ entregável de benchmarks M6 permanece parcial.
 |---|---|---|---|
 | M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test` completo com Floci usando import path canônico Go | Evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
 | M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test` | Nenhum item novo identificado nesta retomada |
-| M2 — WAL/checkpoint | CP-01 aprovado para Linux x86-64; integração pública pendente | Drills ENOSPC, interrupção FUSE e QEMU passaram para Go/Rust; gates nativos GitHub Actions passaram em Linux/macOS ARM64 (`40592150987`), além do gate normal de push (`40592146552`) | Integrar captura/recovery à API nesse escopo; repetir os drills CP-01 antes de ampliar para ARM64 |
+| M2 — WAL/checkpoint | CP-01 aprovado para Linux x86-64; captura síncrona local em revisão | Drills ENOSPC, interrupção FUSE e QEMU passaram para Go/Rust; gates nativos GitHub Actions passaram em Linux/macOS ARM64 (`40592150987`), além do gate normal de push (`40592146552`) | Fechar API/testes/docs desta fatia; implementar restore incremental e integração remota; repetir os drills CP-01 antes de ampliar para ARM64 |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos; `docs/recovery-runbook.md` documenta o escopo público M1 e mantém M4 explicitamente privado | Operação M4 em repositórios ativos só após contrato/API e gates dependentes de M2; Floci não substitui homologação de provedor |
-| M5 — API/segurança/observabilidade | Base aprovada; implementação pendente | Modo estrito padrão; semântica de alvo/ack/cancelamento de `Flush` confirmada; base em ADR 0011 | Implementar e testar sem expor WAL; fechar `Health`, detalhes de `Status`, limites/defaults, métricas/traces e compatibilidade de drivers; manter APIs incrementais bloqueadas por CP-01 |
+| M5 — API/segurança/observabilidade | Parcial; contratos de operação pendentes | Write-gate estrito exigido pela captura pública; CP-01 restrito aprovado; semântica de `Flush` confirmada em ADR 0011 | Implementar `Status`/`Health`/`Flush`, limites/backpressure, métricas/traces, sync e exemplos; não ampliar além de Linux x86-64 |
 | M6 — stress/bench/release | Em andamento | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust | Chaos/stress amplo, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
 
 ### Pendências que requerem decisão/ação do mantenedor
@@ -1023,12 +1023,15 @@ entregável de benchmarks M6 permanece parcial.
 - **CP-01/M2:** escopo inicial decidido e aprovado para Linux x86-64, Go/Rust nas
   combinações testadas e um escritor coordenado. A Actions passou nos gates
   nativos ARM64, mas não executou os drills CP-01; ARM64 permanece fora até essa
-  bateria ser repetida. Captura e recuperação ainda não foram ligadas à API.
+  bateria ser repetida. Captura síncrona para spool local foi ligada à API Go/Rust;
+  restore incremental e sync remoto integrado permanecem pendentes.
 - **M5:** modo estrito por padrão e base `Status`/`Health`/`Flush` foram
   aprovados em ADR 0011. Faltam implementação/testes e fechar detalhes de
   degradação/concorrência, admissão e limites/defaults de write-gate, mais
   integração concreta de métricas/traces e combinações de drivers (ADR 0012).
-  Não expor captura WAL antes de CP-01.
+  A captura local exige write-gate estrito; faltam implementar/testar
+  `Status`/`Health`/`Flush`, limites de backpressure, métricas/traces e fechar
+  compatibilidade. A superfície atual não faz upload remoto nem restore.
 - **M6/publicação:** caminho Go `github.com/lucaswilliameufrasio/sqlite-replication`
   foi aplicado em `307da59`; Apache-2.0 escolhida (ADRs 0014/D-15), e o nome
   público GitHub “Lucas Eufrasio” foi indicado para o aviso. Falta revisar

@@ -13,9 +13,14 @@ verificados localmente, ainda privados e sem fechamento operacional completo.
 Isso não homologa AWS S3, R2 ou outro provedor. M6 está em andamento: o CI roda
 fuzz-smokes Go para os decoders LTX e parser WAL; testes Rust verificam
 truncamentos/mutações dos decoders LTX e do parser WAL com vetores
-independentes. M5 e o restante de M6 continuam incompletos. Parsers WAL são
-isolados e não habilitam captura incremental. CP-01 segue pendente e bloqueia
-exposição ou qualquer promessa de segurança WAL.
+independentes. CP-01 foi aprovado somente para Linux x86-64, nas combinações de
+SQLite testadas e com um escritor lógico coordenado; ARM64 e perda física de
+energia/cache ficam fora da garantia. Go `replicator.CaptureOnce` e Rust
+`capture_once` agora expõem captura síncrona de um ciclo para spool local nesse
+escopo, exigindo write-gate explícito. Não solicitam checkpoint nem fazem upload
+remoto; restore incremental, sync remoto integrado, `Status`/`Health`/`Flush`,
+backpressure operacional e exemplos completos continuam pendentes. M5 e o
+restante de M6 permanecem incompletos.
 
 ## Documentos
 - [Plano de desenvolvimento](docs/PLANO_DESENVOLVIMENTO.md)

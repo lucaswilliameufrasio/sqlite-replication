@@ -1,5 +1,4 @@
-// Package replication exposes the initial snapshot-to-filesystem vertical.
-// It does not implement incremental WAL replication.
+// Package replication exposes initial snapshot and offline restore operations.
 package replication
 
 import (

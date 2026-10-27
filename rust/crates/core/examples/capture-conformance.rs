@@ -1,18 +1,31 @@
 #![cfg(not(test))]
 
-// Test-only conformance helper. This example includes the private capture
-// implementation without exposing it through the library API.
-#[allow(dead_code)]
-#[path = "../src/capture.rs"]
-mod capture;
-
 use std::env;
 use std::error::Error;
+use std::io;
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::Connection;
-use sqlite_replication_core::snapshot;
+use sqlite_replication_core::{WriteGate, WritePermit, capture_once, snapshot};
+
+struct SingleThreadWriteGate;
+
+struct SingleThreadWritePermit;
+
+impl WriteGate for SingleThreadWriteGate {
+    type Permit = SingleThreadWritePermit;
+
+    fn acquire(&self) -> io::Result<Self::Permit> {
+        Ok(SingleThreadWritePermit)
+    }
+}
+
+impl WritePermit for SingleThreadWritePermit {
+    fn release(self) -> io::Result<()> {
+        Ok(())
+    }
+}
 
 fn main() {
     if let Err(error) = run() {
@@ -31,6 +44,7 @@ fn run() -> Result<(), Box<dyn Error>> {
 
     create_base_database(Path::new(&source_path))?;
     snapshot(&source_path, &repository_path)?;
+    let write_gate = SingleThreadWriteGate;
 
     let mut database = Connection::open(&source_path)?;
     database.busy_timeout(Duration::ZERO)?;
@@ -46,22 +60,20 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         transaction.commit()?;
 
-        let captured = capture::capture_once(
+        let captured = capture_once(
             Path::new(&source_path),
             Path::new(&repository_path),
-            1_700_000_000_001 + index as i64,
+            &write_gate,
         )?;
         let expected_txid = index as u64 + 2;
-        if captured.wal_frames == 0
-            || captured.transactions.len() != 1
-            || captured.state.database.txid != expected_txid
+        if captured.wal_frames == 0 || captured.transactions != 1 || captured.txid != expected_txid
         {
             return Err(format!(
                 "capture {} observed {} WAL frames, produced {} LTX files at TXID {}",
                 index + 1,
                 captured.wal_frames,
-                captured.transactions.len(),
-                captured.state.database.txid
+                captured.transactions,
+                captured.txid
             )
             .into());
         }
