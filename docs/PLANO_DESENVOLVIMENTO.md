@@ -770,7 +770,7 @@ permanece privada.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
 
-**Estado observado em 2026-10-26 (commits `8ad39a0`–`fafd57a`):** as
+**Estado observado em 2026-10-27 (commits `8ad39a0`–`ba208f4`):** as
 implementações privadas Go/Rust validam inventário/header/checksum, planejam
 restore inclusivo por TXID e timestamp UTC, reconstroem em staging com
 verificação SQLite, compactam sem remover fontes e planejam GC apenas com
@@ -809,8 +809,9 @@ habilitação pública de recuperação incremental e operações que dependam d
 garantia; os drills opt-in não aprovam CP-01. Permanecem fora do aceite deste
 trabalho homologação em AWS/outros provedores, fault-injection nas demais
 fronteiras de durabilidade e coordenação operacional com o writer sob
-single-writer. `docs/recovery-runbook.md` registra o procedimento M1 e os limites
-operacionais de M4.
+single-writer. `docs/recovery-runbook.md` registra o procedimento M1 e foi
+ajustado para distinguir a integração M4 privada filesystem/S3 dos procedimentos
+públicos ainda bloqueados (`ba208f4`).
 
 ### Fase 5 — API pública, segurança e observabilidade [M5]
 
