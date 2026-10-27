@@ -425,6 +425,21 @@ func TestGCPlanIsDryRunExplicitAndRevalidated(t *testing.T) {
 	}
 }
 
+func TestSnapshotCadenceRequiresExplicitPositiveInterval(t *testing.T) {
+	if due, err := ShouldCompact(10, 15, SnapshotPolicy{EveryTXIDs: 5}); err != nil || !due {
+		t.Fatalf("ShouldCompact at cadence boundary = %v, %v; want true, nil", due, err)
+	}
+	if due, err := ShouldCompact(10, 14, SnapshotPolicy{EveryTXIDs: 5}); err != nil || due {
+		t.Fatalf("ShouldCompact before cadence = %v, %v; want false, nil", due, err)
+	}
+	if _, err := ShouldCompact(10, 15, SnapshotPolicy{}); err == nil {
+		t.Fatal("zero snapshot cadence was accepted")
+	}
+	if _, err := ShouldCompact(15, 10, SnapshotPolicy{EveryTXIDs: 5}); err == nil {
+		t.Fatal("current TXID before last snapshot was accepted")
+	}
+}
+
 func snapshot(key string, maxTXID uint64, level uint32, checksum uint64) Segment {
 	return Segment{
 		Key:             key,

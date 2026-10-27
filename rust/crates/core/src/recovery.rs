@@ -55,6 +55,11 @@ pub(crate) struct GCPlan {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SnapshotPolicy {
+    pub every_txids: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PlanError {
     InvalidInventory,
     NoRestorePoint,
@@ -398,6 +403,40 @@ pub(crate) fn compact_to_snapshot(
     Ok(final_path)
 }
 
+pub(crate) fn should_compact(
+    last_snapshot_txid: u64,
+    current_txid: u64,
+    policy: SnapshotPolicy,
+) -> io::Result<bool> {
+    if policy.every_txids == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "snapshot cadence must be positive",
+        ));
+    }
+    let distance = current_txid
+        .checked_sub(last_snapshot_txid)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "current TXID precedes last snapshot TXID",
+            )
+        })?;
+    Ok(distance >= policy.every_txids)
+}
+
+pub(crate) fn compact_if_due(
+    root: &Path,
+    last_snapshot_txid: u64,
+    current_txid: u64,
+    policy: SnapshotPolicy,
+) -> io::Result<Option<std::path::PathBuf>> {
+    if !should_compact(last_snapshot_txid, current_txid, policy)? {
+        return Ok(None);
+    }
+    compact_to_snapshot(root, RestoreTarget::Txid(current_txid)).map(Some)
+}
+
 pub(crate) fn build_gc_plan(root: &Path, required_targets: &[RestoreTarget]) -> io::Result<GCPlan> {
     if required_targets.is_empty() {
         return Err(io::Error::new(
@@ -602,8 +641,9 @@ mod tests {
     use sqlite_replication_storage_fs::{ensure_repository, ltx_path, publish};
 
     use super::{
-        PlanError, RestoreTarget, Segment, apply_gc_plan, build_gc_plan, build_restore_plan,
-        build_restore_plan_from_filesystem, compact_to_snapshot, restore_to_target,
+        PlanError, RestoreTarget, Segment, SnapshotPolicy, apply_gc_plan, build_gc_plan,
+        build_restore_plan, build_restore_plan_from_filesystem, compact_to_snapshot,
+        restore_to_target, should_compact,
     };
 
     const FLAG: u64 = 1 << 63;
@@ -877,5 +917,14 @@ mod tests {
         )
         .expect("encode added snapshot");
         assert!(apply_gc_plan(directory.path(), &reviewed).is_err());
+    }
+
+    #[test]
+    fn snapshot_cadence_requires_explicit_positive_interval() {
+        let policy = SnapshotPolicy { every_txids: 5 };
+        assert!(should_compact(10, 15, policy).expect("cadence boundary"));
+        assert!(!should_compact(10, 14, policy).expect("before cadence"));
+        assert!(should_compact(10, 15, SnapshotPolicy { every_txids: 0 }).is_err());
+        assert!(should_compact(15, 10, policy).is_err());
     }
 }
