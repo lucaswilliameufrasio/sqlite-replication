@@ -253,9 +253,25 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 	}
 	assertRecoveryRow(t, restoredDeltaByTime, "updated")
 
-	compactedKey, err := CompactS3ToSnapshot(ctx, store, prefix, Target{TXID: 8})
-	if err != nil {
-		t.Fatalf("compact S3 restore point: %v", err)
+	type compactResult struct {
+		key string
+		err error
+	}
+	compactions := make(chan compactResult, 2)
+	for range 2 {
+		go func() {
+			key, err := CompactS3ToSnapshot(ctx, store, prefix, Target{TXID: 8})
+			compactions <- compactResult{key: key, err: err}
+		}()
+	}
+	first := <-compactions
+	second := <-compactions
+	if first.err != nil || second.err != nil {
+		t.Fatalf("concurrent S3 compaction errors: %v / %v", first.err, second.err)
+	}
+	compactedKey := first.key
+	if second.key != compactedKey {
+		t.Fatalf("concurrent compaction keys differ: %q / %q", compactedKey, second.key)
 	}
 	if compactedKey != remoteKeys[3] {
 		t.Fatalf("compacted S3 key = %q, want %q", compactedKey, remoteKeys[3])

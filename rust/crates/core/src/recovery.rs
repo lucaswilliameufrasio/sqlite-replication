@@ -1368,10 +1368,16 @@ mod tests {
         .expect("restore S3 timestamp after delta");
         assert_s3_record_value(&after_delta, "updated");
 
+        let (first_compaction, second_compaction) = tokio::join!(
+            compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(8)),
+            compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(8)),
+        );
         assert_eq!(
-            compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(8))
-                .await
-                .expect("compact S3 point"),
+            first_compaction.expect("first concurrent S3 compaction"),
+            compacted_key
+        );
+        assert_eq!(
+            second_compaction.expect("second concurrent S3 compaction"),
             compacted_key
         );
         let plan = build_s3_gc_plan(&store, prefix, &[RestoreTarget::Txid(8)])
