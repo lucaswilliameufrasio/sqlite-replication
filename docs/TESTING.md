@@ -32,6 +32,9 @@
 - `make clippy-rust`
 - `make test-go`
 - `make test-rust`
+- `make test-fuzz` (duas execuções nativas de fuzz do Go, com 2 workers e 1 s
+  por decoder: LTX snapshot e delta; também incluído em `make test-native` e
+  `make test`, portanto executado no job CI padrão)
 - `make test-conformance` (Go↔Rust e `superfly/ltx v0.4.0` como oráculo apenas
   de teste; compilação de ambas as toolchains é requisito; inclui a matriz de
   snapshots descrita abaixo, com um milhão de linhas e BLOB de 16 MiB)
