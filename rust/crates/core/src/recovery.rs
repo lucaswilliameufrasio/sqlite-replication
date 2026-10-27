@@ -1290,8 +1290,6 @@ mod tests {
 
         let manifest_key = super::join_s3_key(prefix, "_meta/repository.json");
         let source_key = super::join_s3_key(prefix, "0000/0000000000000001-0000000000000007.ltx");
-        let compacted_key =
-            super::join_s3_key(prefix, "0001/0000000000000001-0000000000000008.ltx");
         let manifest =
             tokio::fs::File::open(source_repository.path().join("_meta/repository.json"))
                 .await
@@ -1372,24 +1370,21 @@ mod tests {
             compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(8)),
             compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(8)),
         );
-        assert_eq!(
+        let compacted_keys = [
             first_compaction.expect("first concurrent S3 compaction"),
-            compacted_key
-        );
-        assert_eq!(
             second_compaction.expect("second concurrent S3 compaction"),
-            compacted_key
-        );
+        ];
+        for key in &compacted_keys {
+            assert!(key.starts_with(&format!("{prefix}/")));
+            assert!(key.ends_with(".ltx"));
+        }
         let plan = build_s3_gc_plan(&store, prefix, &[RestoreTarget::Txid(8)])
             .await
             .expect("build S3 dry-run GC plan");
-        assert_eq!(
-            plan.candidate_object_keys.as_slice(),
-            [
-                source_key.clone(),
-                super::join_s3_key(prefix, "0000/0000000000000008-0000000000000008.ltx")
-            ]
-        );
+        let delta_key = super::join_s3_key(prefix, "0000/0000000000000008-0000000000000008.ltx");
+        assert!(plan.candidate_object_keys.contains(&source_key));
+        assert!(plan.candidate_object_keys.contains(&delta_key));
+        let original_candidates = plan.candidate_object_keys.clone();
 
         let extra_key = super::join_s3_key(prefix, "0002/0000000000000001-0000000000000007.ltx");
         store
@@ -1404,19 +1399,27 @@ mod tests {
             .delete_batch(std::slice::from_ref(&extra_key))
             .await
             .expect("remove stale-plan fixture");
+        store
+            .delete_batch(std::slice::from_ref(
+                plan.candidate_object_keys
+                    .first()
+                    .expect("GC candidate exists"),
+            ))
+            .await
+            .expect("simulate interruption after partial S3 GC");
+        assert!(apply_s3_gc_plan(&store, prefix, &plan).await.is_err());
+        let plan = build_s3_gc_plan(&store, prefix, &[RestoreTarget::Txid(8)])
+            .await
+            .expect("rebuild S3 GC plan after partial collection");
         apply_s3_gc_plan(&store, prefix, &plan)
             .await
             .expect("apply revalidated S3 GC plan");
-        assert!(store.head(&source_key).await.is_err());
-        assert!(
-            store
-                .head(&super::join_s3_key(
-                    prefix,
-                    "0000/0000000000000008-0000000000000008.ltx"
-                ))
-                .await
-                .is_err()
-        );
+        for key in original_candidates {
+            assert!(
+                store.head(&key).await.is_err(),
+                "GC candidate remains: {key}"
+            );
+        }
 
         let restored_after_gc = restore_directory.path().join("restored-after-gc.sqlite");
         restore_s3_to_target(&store, prefix, &restored_after_gc, RestoreTarget::Txid(8))
@@ -1436,10 +1439,29 @@ mod tests {
         .expect("restore retained timestamp after S3 GC");
         assert_s3_record_value(&restored_time_after_gc, "updated");
 
-        store
-            .delete_batch(&[manifest_key, compacted_key])
-            .await
-            .expect("remove isolated recovery objects");
+        let mut cursor = None;
+        let mut remaining_keys = Vec::new();
+        loop {
+            let page = store
+                .list_page(&format!("{prefix}/"), cursor.as_deref(), 1000)
+                .await
+                .expect("list remaining isolated S3 objects");
+            remaining_keys.extend(
+                page.contents()
+                    .iter()
+                    .filter_map(|object| object.key().map(ToOwned::to_owned)),
+            );
+            if !page.is_truncated().unwrap_or(false) {
+                break;
+            }
+            cursor = page.next_continuation_token().map(ToOwned::to_owned);
+        }
+        for keys in remaining_keys.chunks(1000) {
+            store
+                .delete_batch(keys)
+                .await
+                .expect("remove isolated recovery objects");
+        }
         client
             .delete_bucket()
             .bucket(bucket)

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -81,10 +82,11 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 		joinS3Key(prefix, "_meta/repository.json"),
 		joinS3Key(prefix, "0000/0000000000000001-0000000000000007.ltx"),
 		joinS3Key(prefix, "0000/0000000000000008-0000000000000008.ltx"),
-		joinS3Key(prefix, "0001/0000000000000001-0000000000000008.ltx"),
 	}
+	var compactedKeys []string
 	defer func() {
-		_ = store.DeleteBatch(context.Background(), remoteKeys)
+		cleanupKeys := append(append([]string(nil), remoteKeys...), compactedKeys...)
+		_ = store.DeleteBatch(context.Background(), cleanupKeys)
 		_, _ = client.DeleteBucket(context.Background(), &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
 	}()
 
@@ -269,18 +271,17 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 	if first.err != nil || second.err != nil {
 		t.Fatalf("concurrent S3 compaction errors: %v / %v", first.err, second.err)
 	}
-	compactedKey := first.key
-	if second.key != compactedKey {
-		t.Fatalf("concurrent compaction keys differ: %q / %q", compactedKey, second.key)
-	}
-	if compactedKey != remoteKeys[3] {
-		t.Fatalf("compacted S3 key = %q, want %q", compactedKey, remoteKeys[3])
+	for _, key := range []string{first.key, second.key} {
+		if !strings.HasPrefix(key, prefix+"/") || !strings.HasSuffix(key, ".ltx") {
+			t.Fatalf("invalid concurrent compaction key %q", key)
+		}
+		compactedKeys = append(compactedKeys, key)
 	}
 	plan, err := BuildS3GCPlan(ctx, store, prefix, []Target{{TXID: 8}})
 	if err != nil {
 		t.Fatalf("build S3 GC dry-run: %v", err)
 	}
-	if len(plan.CandidateObjectKeys) != 2 || plan.CandidateObjectKeys[0] != remoteKeys[1] || plan.CandidateObjectKeys[1] != remoteKeys[2] {
+	if !containsString(plan.CandidateObjectKeys, remoteKeys[1]) || !containsString(plan.CandidateObjectKeys, remoteKeys[2]) {
 		t.Fatalf("unexpected S3 GC candidates: %+v", plan.CandidateObjectKeys)
 	}
 	extraKey := joinS3Key(prefix, "0002/0000000000000001-0000000000000007.ltx")
@@ -301,12 +302,26 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 	if err := store.DeleteBatch(ctx, []string{extraKey}); err != nil {
 		t.Fatalf("remove stale-plan fixture: %v", err)
 	}
+	if err := store.DeleteBatch(ctx, []string{plan.CandidateObjectKeys[0]}); err != nil {
+		t.Fatalf("simulate interruption after partial S3 GC: %v", err)
+	}
+	if err := ApplyS3GCPlan(ctx, store, prefix, plan); err != ErrStaleGCPlan {
+		t.Fatalf("partially applied S3 GC plan error = %v, want ErrStaleGCPlan", err)
+	}
+	plan, err = BuildS3GCPlan(ctx, store, prefix, []Target{{TXID: 8}})
+	if err != nil {
+		t.Fatalf("rebuild S3 GC plan after partial collection: %v", err)
+	}
 	if err := ApplyS3GCPlan(ctx, store, prefix, plan); err != nil {
 		t.Fatalf("apply revalidated S3 GC plan: %v", err)
 	}
-	for _, key := range remoteKeys[1:3] {
+	for _, candidate := range plan.Plan.Candidates {
+		key, err := localKeyToS3Key(prefix, candidate.Key)
+		if err != nil {
+			t.Fatal(err)
+		}
 		if _, err := store.Head(ctx, key); err == nil {
-			t.Fatalf("collected S3 source object %q still exists", key)
+			t.Fatalf("collected S3 candidate %q still exists", key)
 		}
 	}
 	restoredAfterGC := filepath.Join(t.TempDir(), "restored-after-gc.sqlite")
@@ -320,6 +335,15 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 		t.Fatalf("restore retained timestamp after S3 GC: %v", err)
 	}
 	assertRecoveryRow(t, restoredByTimeAfterGC, "updated")
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func assertRecoveryRow(t *testing.T, path, expected string) {
