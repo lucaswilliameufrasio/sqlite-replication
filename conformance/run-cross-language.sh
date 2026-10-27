@@ -179,6 +179,11 @@ apply_reference_chain() {
     cd "$repository_root/conformance/reference"
     go build -o "$temporary_directory/reference-conformance" .
 )
+for fixture in \
+    "$repository_root"/conformance/fixtures/ltx-v2/recovery-chain-4096/*.ltx \
+    "$repository_root"/conformance/fixtures/ltx-v2/large-transaction-4096/*.ltx; do
+    "$temporary_directory/reference-conformance" verify-ltx "$fixture"
+done
 (
     cd "$repository_root/go"
     go test ./internal/recovery -run '^TestPinnedReferenceRecoveryChainFixtures$' -count=1
