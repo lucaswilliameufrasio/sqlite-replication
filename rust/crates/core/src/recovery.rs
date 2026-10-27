@@ -1236,6 +1236,51 @@ mod tests {
         assert!(s3_key_to_local_key("tenant/db", "tenant/db/../000a/file.ltx").is_err());
     }
 
+    #[test]
+    fn pinned_reference_recovery_chain_fixtures() {
+        let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../conformance/fixtures/ltx-v2/recovery-chain-4096");
+        let chain_repository = tempfile::tempdir().expect("create fixture chain repository");
+        ensure_repository(chain_repository.path()).expect("initialize fixture chain repository");
+        for (name, min_txid, max_txid) in [
+            ("snapshot-1.ltx", 1, 1),
+            ("delta-2.ltx", 2, 2),
+            ("delta-3.ltx", 3, 3),
+        ] {
+            copy_reference_fixture(
+                &fixture_root.join(name),
+                &ltx_path(chain_repository.path(), min_txid, max_txid),
+            );
+        }
+        let chain_restore = tempfile::tempdir().expect("create chain restore directory");
+        let chain_restore_path = chain_restore.path().join("chain.sqlite");
+        restore_to_target(
+            chain_repository.path(),
+            &chain_restore_path,
+            RestoreTarget::Txid(3),
+        )
+        .expect("restore pinned reference snapshot and delta chain");
+        assert_reference_chain_state(&chain_restore_path, "updated-final", 32, false);
+
+        let compacted_repository =
+            tempfile::tempdir().expect("create compacted fixture repository");
+        ensure_repository(compacted_repository.path())
+            .expect("initialize compacted fixture repository");
+        let compacted_path = compacted_repository
+            .path()
+            .join("ltx/1/0000000000000001-0000000000000002.ltx");
+        copy_reference_fixture(&fixture_root.join("compacted-2.ltx"), &compacted_path);
+        let compacted_restore = tempfile::tempdir().expect("create compacted restore directory");
+        let compacted_restore_path = compacted_restore.path().join("compacted.sqlite");
+        restore_to_target(
+            compacted_repository.path(),
+            &compacted_restore_path,
+            RestoreTarget::Txid(2),
+        )
+        .expect("restore pinned reference compacted snapshot");
+        assert_reference_chain_state(&compacted_restore_path, "updated-middle", 33, true);
+    }
+
     #[tokio::test]
     #[ignore = "requires the isolated Floci service from make test-floci"]
     async fn floci_s3_recovery_restore_compaction_and_gc() {
@@ -1648,6 +1693,41 @@ mod tests {
 
     fn assert_s3_record(path: &Path) {
         assert_s3_record_value(path, "source");
+    }
+
+    fn copy_reference_fixture(source: &Path, destination: &Path) {
+        fs::create_dir_all(destination.parent().expect("fixture destination parent"))
+            .expect("create fixture destination directory");
+        fs::copy(source, destination).expect("install pinned reference fixture");
+    }
+
+    fn assert_reference_chain_state(
+        path: &Path,
+        expected_value: &str,
+        expected_rows: i64,
+        inserted_middle: bool,
+    ) {
+        let database = Connection::open(path).expect("open restored reference fixture database");
+        let value: String = database
+            .query_row("SELECT value FROM records WHERE id=7", [], |row| row.get(0))
+            .expect("read updated reference fixture row");
+        assert_eq!(value, expected_value);
+        let row_count: i64 = database
+            .query_row("SELECT count(*) FROM records", [], |row| row.get(0))
+            .expect("count restored reference fixture rows");
+        assert_eq!(row_count, expected_rows);
+        let row_two_count: i64 = database
+            .query_row("SELECT count(*) FROM records WHERE id=2", [], |row| {
+                row.get(0)
+            })
+            .expect("count reference fixture row 2");
+        let row_thirty_three_count: i64 = database
+            .query_row("SELECT count(*) FROM records WHERE id=33", [], |row| {
+                row.get(0)
+            })
+            .expect("count reference fixture row 33");
+        assert_eq!(row_two_count, if inserted_middle { 1 } else { 0 });
+        assert_eq!(row_thirty_three_count, 1);
     }
 
     fn assert_s3_record_value(path: &Path, expected: &str) {

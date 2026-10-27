@@ -1,0 +1,106 @@
+package recovery
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+	"os"
+	"path/filepath"
+	"runtime"
+	"testing"
+
+	_ "modernc.org/sqlite"
+	"sqlite-replication/storagefs"
+)
+
+func TestPinnedReferenceRecoveryChainFixtures(t *testing.T) {
+	_, sourceFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("resolve recovery fixture test source path")
+	}
+	fixtureRoot := filepath.Join(filepath.Dir(sourceFile), "../../../conformance/fixtures/ltx-v2/recovery-chain-4096")
+	chainRepository := filepath.Join(t.TempDir(), "chain")
+	if err := storagefs.EnsureRepository(chainRepository); err != nil {
+		t.Fatalf("initialize fixture chain repository: %v", err)
+	}
+	for _, fixture := range []struct {
+		name    string
+		minTXID uint64
+		maxTXID uint64
+	}{
+		{name: "snapshot-1.ltx", minTXID: 1, maxTXID: 1},
+		{name: "delta-2.ltx", minTXID: 2, maxTXID: 2},
+		{name: "delta-3.ltx", minTXID: 3, maxTXID: 3},
+	} {
+		destination := storagefs.LTXPath(chainRepository, fixture.minTXID, fixture.maxTXID)
+		copyRecoveryFixture(t, filepath.Join(fixtureRoot, fixture.name), destination)
+	}
+	chainRestore := filepath.Join(t.TempDir(), "chain.sqlite")
+	if err := RestoreToTarget(context.Background(), chainRepository, chainRestore, Target{TXID: 3}); err != nil {
+		t.Fatalf("restore pinned reference snapshot + delta chain: %v", err)
+	}
+	assertReferenceChainState(t, chainRestore, "updated-final", 32, false)
+
+	compactedRepository := filepath.Join(t.TempDir(), "compacted")
+	if err := storagefs.EnsureRepository(compactedRepository); err != nil {
+		t.Fatalf("initialize compacted fixture repository: %v", err)
+	}
+	compactedPath := filepath.Join(compactedRepository, "ltx", "1", fmt.Sprintf("%016x-%016x.ltx", 1, 2))
+	copyRecoveryFixture(t, filepath.Join(fixtureRoot, "compacted-2.ltx"), compactedPath)
+	compactedRestore := filepath.Join(t.TempDir(), "compacted.sqlite")
+	if err := RestoreToTarget(context.Background(), compactedRepository, compactedRestore, Target{TXID: 2}); err != nil {
+		t.Fatalf("restore pinned reference compacted snapshot: %v", err)
+	}
+	assertReferenceChainState(t, compactedRestore, "updated-middle", 33, true)
+}
+
+func copyRecoveryFixture(t *testing.T, sourcePath, destinationPath string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(destinationPath), 0o750); err != nil {
+		t.Fatalf("create fixture destination directory: %v", err)
+	}
+	data, err := os.ReadFile(sourcePath)
+	if err != nil {
+		t.Fatalf("read pinned reference fixture %q: %v", sourcePath, err)
+	}
+	if err := os.WriteFile(destinationPath, data, 0o600); err != nil {
+		t.Fatalf("install pinned reference fixture %q: %v", sourcePath, err)
+	}
+}
+
+func assertReferenceChainState(t *testing.T, databasePath, expectedValue string, expectedRows int, insertedMiddle bool) {
+	t.Helper()
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open restored fixture database: %v", err)
+	}
+	defer database.Close()
+	var value string
+	if err := database.QueryRow("SELECT value FROM records WHERE id=7").Scan(&value); err != nil {
+		t.Fatalf("read updated fixture row: %v", err)
+	}
+	if value != expectedValue {
+		t.Fatalf("fixture row value = %q, want %q", value, expectedValue)
+	}
+	var rowCount int
+	if err := database.QueryRow("SELECT count(*) FROM records").Scan(&rowCount); err != nil {
+		t.Fatalf("count restored fixture rows: %v", err)
+	}
+	if rowCount != expectedRows {
+		t.Fatalf("fixture row count = %d, want %d", rowCount, expectedRows)
+	}
+	var rowTwoCount, rowThirtyThreeCount int
+	if err := database.QueryRow("SELECT count(*) FROM records WHERE id=2").Scan(&rowTwoCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := database.QueryRow("SELECT count(*) FROM records WHERE id=33").Scan(&rowThirtyThreeCount); err != nil {
+		t.Fatal(err)
+	}
+	wantRowTwo, wantRowThirtyThree := 0, 1
+	if insertedMiddle {
+		wantRowTwo = 1
+	}
+	if rowTwoCount != wantRowTwo || rowThirtyThreeCount != wantRowThirtyThree {
+		t.Fatalf("fixture row 2/33 counts = %d/%d, want %d/%d", rowTwoCount, rowThirtyThreeCount, wantRowTwo, wantRowThirtyThree)
+	}
+}

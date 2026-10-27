@@ -179,6 +179,14 @@ apply_reference_chain() {
     cd "$repository_root/conformance/reference"
     go build -o "$temporary_directory/reference-conformance" .
 )
+(
+    cd "$repository_root/go"
+    go test ./internal/recovery -run '^TestPinnedReferenceRecoveryChainFixtures$' -count=1
+)
+(
+    cd "$repository_root/rust"
+    cargo test -p sqlite-replication-core recovery::tests::pinned_reference_recovery_chain_fixtures -- --exact
+)
 python3 -B -m unittest discover -s "$repository_root/conformance" -p 'test_*.py'
 python3 -B "$repository_root/conformance/snapshot_matrix.py" \
     --go "$temporary_directory/go-conformance" \
