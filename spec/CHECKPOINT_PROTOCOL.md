@@ -225,10 +225,23 @@ abruptamente; a recuperação foi validada em ext4 sobre virtio-blk. Isso prova
 somente o comportamento observado no harness FUSE e no ambiente virtualizado,
 não perda física de energia/cache nem persistência de hardware real.
 
-`make test-cp01-enospc` não foi executado: a imagem Debian pinada não estava
-presente localmente; o script verifica a imagem e falha sem fazer pull. A matriz
-CP-01 permanece bloqueada pelas combinações e falhas listadas abaixo, e estes
-resultados não autorizam habilitar a captura WAL pública.
+Na primeira reexecução dos drills, `make test-cp01-enospc` não foi executado: a
+imagem Debian pinada não estava presente localmente e o script não faz pull. A
+execução posterior autorizada está registrada a seguir. A matriz CP-01 permanece
+bloqueada pelas combinações e falhas listadas abaixo; nenhum drill isolado
+autoriza habilitar captura WAL pública.
+
+### Drill ENOSPC após autorização de pull — 2026-10-27
+
+Com autorização explícita do mantenedor, foi baixada somente a imagem
+`debian@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad`
+via contexto Docker rootless verificado. Em seguida, `make test-cp01-enospc`
+passou para Go e Rust: ambos recuperaram após ENOSPC real no tmpfs `/cp01` de
+8 MiB dentro de container sem rede, root filesystem read-only, 512 MiB de memória
+e 128 PIDs; o teste limpou seu diretório temporário exclusivo. Este resultado
+valida apenas esse cenário Linux amd64/tmpfs e não simula falha física de
+`fsync`/energia nem filesystem de produção. CP-01 permanece bloqueado pela
+matriz restante e revisão do protocolo.
 
 Após adicionar o drill de interrupção FUSE, o código em `0c977eb` passou as
 suites nativas/conformance em Linux arm64 e macOS arm64 no run `40300871827`;
