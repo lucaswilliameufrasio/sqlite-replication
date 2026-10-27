@@ -1012,7 +1012,7 @@ entregável de benchmarks M6 permanece parcial.
 |---|---|---|---|
 | M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test` completo com Floci usando import path canônico Go | Evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
 | M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test` | Nenhum item novo identificado nesta retomada |
-| M2 — WAL/checkpoint | Aguardando sua revisão CP-01 | ENOSPC, interrupção FUSE e QEMU passaram para Go/Rust; resumo conciso em `docs/cp01-review-summary.md`; captura segue privada | Sua decisão se o suporte inicial fica só em Linux x86-64 ou espera drills CP-01 também no ARM64; sign-off explícito antes de ligar API |
+| M2 — WAL/checkpoint | Escopo inicial aprovado para Linux x86-64; implementação pública pendente | Drills ENOSPC, interrupção FUSE e QEMU passaram para Go/Rust; gates nativos GitHub Actions passaram em Linux/macOS ARM64 (`40592150987`), além do gate normal de push (`40592146552`) | Os gates ARM64 não executam a bateria específica CP-01; repetir esses drills antes de ampliar a garantia para ARM64; concluir implementação/API sem ultrapassar o escopo aprovado |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos; `docs/recovery-runbook.md` documenta o escopo público M1 e mantém M4 explicitamente privado | Operação M4 em repositórios ativos só após contrato/API e gates dependentes de M2; Floci não substitui homologação de provedor |
 | M5 — API/segurança/observabilidade | Base aprovada; implementação pendente | Modo estrito padrão; semântica de alvo/ack/cancelamento de `Flush` confirmada; base em ADR 0011 | Implementar e testar sem expor WAL; fechar `Health`, detalhes de `Status`, limites/defaults, métricas/traces e compatibilidade de drivers; manter APIs incrementais bloqueadas por CP-01 |
@@ -1020,10 +1020,10 @@ entregável de benchmarks M6 permanece parcial.
 
 ### Pendências que requerem decisão/ação do mantenedor
 
-- **CP-01/M2:** o resumo `docs/cp01-review-summary.md` foi preparado para sua
-  revisão. Os três drills passaram para Go/Rust; ainda falta decidir se a
-  primeira garantia fica só em Linux x86-64 ou aguarda repetição dos drills em
-  ARM64. Você fará o sign-off; até lá, a captura continua privada.
+- **CP-01/M2:** escopo inicial decidido e aprovado para Linux x86-64, Go/Rust nas
+  combinações testadas e um escritor coordenado. A Actions passou nos gates
+  nativos ARM64, mas não executou os drills CP-01; ARM64 permanece fora até essa
+  bateria ser repetida. Captura e recuperação ainda não foram ligadas à API.
 - **M5:** modo estrito por padrão e base `Status`/`Health`/`Flush` foram
   aprovados em ADR 0011. Faltam implementação/testes e fechar detalhes de
   degradação/concorrência, admissão e limites/defaults de write-gate, mais
@@ -1032,10 +1032,8 @@ entregável de benchmarks M6 permanece parcial.
 - **M6/publicação:** caminho Go `github.com/lucaswilliameufrasio/sqlite-replication`
   foi aplicado em `307da59`; Apache-2.0 escolhida (ADRs 0014/D-15), e o nome
   público GitHub “Lucas Eufrasio” foi indicado para o aviso. Falta revisar
-  notices/dependências e direitos das fixtures, além de autorizar tag/publicação.
-  Nenhum release será criado a
-  partir deste checkout sem essa revisão/autorização; evidência CI remota também
-  depende de enviar commits ao remoto.
+  notices/dependências e direitos das fixtures. Nenhum release será criado a
+  partir deste checkout sem essa revisão e autorização específica de publicação.
 - **M6/evidência:** campanha atual é fuzz Go de um minuto, não chaos/stress
   prolongado; baseline Go/Rust não é comparação controlada com Litestream. SBOM,
   supply-chain e guia de migração ainda não têm artefatos aprovados.
@@ -1055,3 +1053,15 @@ mudança de harness está separada em `4701deb`; campanha e progresso estão em
 `a0415a2`/`abd7ef7`; a identidade do módulo foi aplicada em `307da59`. A base
 M5 foi aprovada para implementação, mas detalhes finais seguem abertos. M2 e o
 roadmap inteiro continuam incompletos.
+
+### Validação GitHub Actions ARM64 — 2026-10-27
+
+Após scan `gitleaks` sem achados na faixa de 73 commits, a branch foi enviada
+com autorização do mantenedor. O push disparou o gate normal, concluído com
+sucesso em `40592146552`. O dispatch manual `40592150987` passou nos jobs Linux
+ARM64 (6m27s) e macOS ARM64 (10m31s), incluindo verificação da arquitetura
+nativa e `make test-native` (Go, Rust e conformance). Esses jobs não executaram
+`make test-cp01-enospc`, `make test-cp01-fsync-interrupt` nem
+`make test-cp01-qemu-poweroff`; portanto, ARM64 continua fora da garantia inicial
+CP-01, escolhida para Linux x86-64. Detalhes e limites em
+`docs/cp01-review-summary.md`.

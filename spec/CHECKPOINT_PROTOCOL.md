@@ -108,18 +108,21 @@ Referência: [`wal.c`, `sqlite3WalCheckpoint()`](https://github.com/sqlite/sqlit
 
 ## Matriz CP-01 ainda obrigatória
 
-### Escopo restrito para revisão do mantenedor — 2026-10-27
+### Escopo CP-01 decidido pelo mantenedor — 2026-10-27
 
 O mantenedor escolheu avaliar uma garantia inicial delimitada a Linux 64-bit,
 às combinações Go/Rust com SQLite já testadas e a um único writer coordenado
 pela biblioteca. Perda física de energia/cache fica explicitamente fora dessa
-garantia. Isso **não** é sign-off: captura e recovery incremental permanecem
-privados até a revisão do resumo em `docs/cp01-review-summary.md`.
+garantia. O mantenedor aprovou esse escopo x86-64, sem liberar por isso uma
+implementação pública ou um release; esses ainda dependem dos gates de API,
+integração e publicação.
 
 Os drills CP-01 específicos foram executados em Linux amd64; Linux arm64 tem
-resultados de suites nativas, mas não a mesma campanha completa desses drills
-nesta revisão. A decisão final precisa dizer se a primeira garantia se limita a
-amd64 ou aguarda repetir a campanha CP-01 em arm64. Outros sistemas, drivers,
+gates nativos Go/Rust/conformance aprovados na GitHub Actions (`40592150987`),
+mas esse gate não executa a mesma campanha de falhas. O mantenedor aprovou a
+garantia inicial somente para Linux x86-64; ARM64 fica fora até executar e
+revisar os drills CP-01 nessa arquitetura. macOS arm64 também passou o gate
+nativo, sem se tornar parte da garantia incremental. Outros sistemas, drivers,
 VFS, filesystems e escritores não coordenados permanecem fora do escopo.
 
 ### Correção do harness de crash em 2026-10-25

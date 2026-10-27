@@ -30,6 +30,10 @@ bundled via `rusqlite`:
   checkpoint real; a reabertura e as verificações SQLite passaram.
 - O gate local completo, incluindo conformance e Floci local, passou depois da
   troca do caminho público do módulo Go.
+- Após o push autorizado, a GitHub Actions passou nos gates gerais do push
+  (`40592146552`) e nos jobs nativos Linux ARM64 (`40592150987`, 6m27s) e macOS
+  ARM64 (`40592150987`, 10m31s). Os jobs verificaram a arquitetura real e
+  executaram `make test-native` para Go, Rust e conformance.
 
 ## Limites da evidência
 
@@ -37,21 +41,24 @@ bundled via `rusqlite`:
   volátil do host/controlador/dispositivo. Essa garantia está fora do escopo
   escolhido.
 - Os drills CP-01 específicos foram executados em Linux amd64. Linux arm64 tem
-  suites nativas aprovadas, mas não a mesma execução completa dos três drills
-  neste checkout. macOS arm64 também tem suites nativas, não os drills Linux.
+  agora os gates nativos aprovados, mas `make test-native` não executa os três
+  drills de falha CP-01. macOS arm64 também passou o gate nativo, não os drills
+  Linux. A garantia inicial escolhida continua somente Linux x86-64 até que os
+  drills CP-01 apropriados sejam executados e revisados para ARM64.
 - Não foram homologados outros drivers SQLite/VFS, filesystems de produção,
   escritores não coordenados ou gravações diretas no sidecar.
 - O drill de espaço cheio cobre tmpfs limitado, não todos os filesystems.
 - Nenhum teste Floci representa homologação de AWS S3, Cloudflare R2 ou outro
   serviço externo.
 
-## O que a revisão precisa decidir
+## Estado da revisão
 
-1. Se a garantia inicial deve cobrir **somente Linux x86-64**, onde os drills
-   CP-01 foram executados, ou se deve esperar que os mesmos drills também passem
-   em Linux ARM64.
-2. Se o escopo restrito acima e as exclusões desta página são suficientes para
-   aprovar a conexão da recuperação incremental à API pública.
+Você escolheu a garantia inicial restrita a **Linux x86-64** e aprovou esse
+escopo; ARM64 fica fora por enquanto. A validação de Actions amplia a evidência
+de compatibilidade nativa, mas não altera essa fronteira porque não repetiu os
+drills de falha CP-01 em ARM64. A decisão de escopo não cria por si só uma
+implementação pública nem autoriza release/publicação; esses itens continuam
+sujeitos aos gates M5/M6 e às evidências acima.
 
-Até haver sua resposta explícita aos dois pontos, CP-01 permanece bloqueado e
-nenhuma capacidade incremental será ligada à API pública.
+Captura WAL e recuperação incremental continuam privadas até que a implementação
+e os gates correspondentes sejam concluídos.
