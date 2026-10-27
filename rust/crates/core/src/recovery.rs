@@ -1240,6 +1240,8 @@ mod tests {
             .expect("Floci endpoint configured by smoke script");
         let run_id = std::env::var("SQLITE_REPLICATION_FLOCI_RUN_ID")
             .expect("Floci run ID configured by smoke script");
+        let shared_floci =
+            std::env::var("SQLITE_REPLICATION_FLOCI_CROSS_ENGINE").as_deref() == Ok("1");
         let bucket = format!("sqlite-replication-m4-{run_id}");
         let config = aws_sdk_s3::Config::builder()
             .behavior_version_latest()
@@ -1250,14 +1252,34 @@ mod tests {
             .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard())
             .build();
         let client = aws_sdk_s3::Client::from_conf(config);
-        client
-            .create_bucket()
-            .bucket(&bucket)
-            .send()
-            .await
-            .expect("create isolated M4 bucket");
+        if !shared_floci {
+            client
+                .create_bucket()
+                .bucket(&bucket)
+                .send()
+                .await
+                .expect("create isolated M4 bucket");
+        }
         let store = S3Store::new(client.clone(), &bucket).expect("construct S3 store");
-        let prefix = "recovery-test";
+        if shared_floci {
+            let go_restored =
+                tempfile::tempdir().expect("create Go cross-engine restore directory");
+            let go_restored_path = go_restored.path().join("go-restored.sqlite");
+            restore_s3_to_target(
+                &store,
+                "recovery-test",
+                &go_restored_path,
+                RestoreTarget::Txid(8),
+            )
+            .await
+            .expect("restore Go-published S3 repository with Rust");
+            assert_s3_record_value(&go_restored_path, "updated");
+        }
+        let prefix = if shared_floci {
+            "rust-recovery-test"
+        } else {
+            "recovery-test"
+        };
 
         let source_directory = tempfile::tempdir().expect("create source directory");
         let database_path = source_directory.path().join("source.sqlite");
@@ -1439,35 +1461,37 @@ mod tests {
         .expect("restore retained timestamp after S3 GC");
         assert_s3_record_value(&restored_time_after_gc, "updated");
 
-        let mut cursor = None;
-        let mut remaining_keys = Vec::new();
-        loop {
-            let page = store
-                .list_page(&format!("{prefix}/"), cursor.as_deref(), 1000)
-                .await
-                .expect("list remaining isolated S3 objects");
-            remaining_keys.extend(
-                page.contents()
-                    .iter()
-                    .filter_map(|object| object.key().map(ToOwned::to_owned)),
-            );
-            if !page.is_truncated().unwrap_or(false) {
-                break;
+        if !shared_floci {
+            let mut cursor = None;
+            let mut remaining_keys = Vec::new();
+            loop {
+                let page = store
+                    .list_page(&format!("{prefix}/"), cursor.as_deref(), 1000)
+                    .await
+                    .expect("list remaining isolated S3 objects");
+                remaining_keys.extend(
+                    page.contents()
+                        .iter()
+                        .filter_map(|object| object.key().map(ToOwned::to_owned)),
+                );
+                if !page.is_truncated().unwrap_or(false) {
+                    break;
+                }
+                cursor = page.next_continuation_token().map(ToOwned::to_owned);
             }
-            cursor = page.next_continuation_token().map(ToOwned::to_owned);
-        }
-        for keys in remaining_keys.chunks(1000) {
-            store
-                .delete_batch(keys)
+            for keys in remaining_keys.chunks(1000) {
+                store
+                    .delete_batch(keys)
+                    .await
+                    .expect("remove isolated recovery objects");
+            }
+            client
+                .delete_bucket()
+                .bucket(bucket)
+                .send()
                 .await
-                .expect("remove isolated recovery objects");
+                .expect("delete isolated M4 bucket");
         }
-        client
-            .delete_bucket()
-            .bucket(bucket)
-            .send()
-            .await
-            .expect("delete isolated M4 bucket");
     }
 
     fn assert_s3_record(path: &Path) {

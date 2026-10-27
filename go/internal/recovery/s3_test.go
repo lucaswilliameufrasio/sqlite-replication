@@ -70,6 +70,7 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 		options.UsePathStyle = true
 	})
 	bucket := "sqlite-replication-m4-" + runID
+	sharedFloci := os.Getenv("SQLITE_REPLICATION_FLOCI_CROSS_ENGINE") == "1"
 	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucket)}); err != nil {
 		t.Fatalf("create isolated recovery bucket: %v", err)
 	}
@@ -85,6 +86,9 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 	}
 	var compactedKeys []string
 	defer func() {
+		if sharedFloci {
+			return
+		}
 		cleanupKeys := append(append([]string(nil), remoteKeys...), compactedKeys...)
 		_ = store.DeleteBatch(context.Background(), cleanupKeys)
 		_, _ = client.DeleteBucket(context.Background(), &s3.DeleteBucketInput{Bucket: aws.String(bucket)})
@@ -335,6 +339,36 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 		t.Fatalf("restore retained timestamp after S3 GC: %v", err)
 	}
 	assertRecoveryRow(t, restoredByTimeAfterGC, "updated")
+}
+
+func TestFlociS3CrossEngineRestore(t *testing.T) {
+	endpoint := os.Getenv("SQLITE_REPLICATION_FLOCI_ENDPOINT")
+	runID := os.Getenv("SQLITE_REPLICATION_FLOCI_RUN_ID")
+	if endpoint == "" || runID == "" || os.Getenv("SQLITE_REPLICATION_FLOCI_CROSS_ENGINE") != "1" {
+		t.Skip("requires the shared Floci bucket from make test-floci")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	awsConfig, err := config.LoadDefaultConfig(ctx,
+		config.WithRegion("us-east-1"),
+		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("test", "test", "")),
+	)
+	if err != nil {
+		t.Fatalf("load local S3 SDK config: %v", err)
+	}
+	client := s3.NewFromConfig(awsConfig, func(options *s3.Options) {
+		options.BaseEndpoint = aws.String(endpoint)
+		options.UsePathStyle = true
+	})
+	store, err := storages3.New(client, "sqlite-replication-m4-"+runID)
+	if err != nil {
+		t.Fatalf("initialize S3 adapter for cross-engine restore: %v", err)
+	}
+	destination := filepath.Join(t.TempDir(), "rust-restored.sqlite")
+	if err := RestoreS3ToTarget(ctx, store, "rust-recovery-test", destination, Target{TXID: 8}); err != nil {
+		t.Fatalf("restore Rust-published S3 repository with Go: %v", err)
+	}
+	assertRecoveryRow(t, destination, "updated")
 }
 
 func containsString(values []string, target string) bool {

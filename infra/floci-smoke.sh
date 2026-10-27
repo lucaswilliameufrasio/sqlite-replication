@@ -46,6 +46,7 @@ python3 "$repository_root/infra/floci_smoke.py" write "$endpoint" "$run_id"
 export SQLITE_REPLICATION_FLOCI_ENDPOINT="$endpoint"
 export SQLITE_REPLICATION_FLOCI_RUN_ID="$run_id"
 export SQLITE_REPLICATION_FLOCI_FIXTURE="$repository_root/conformance/fixtures/ltx-v2/snapshot-4096.ltx"
+export SQLITE_REPLICATION_FLOCI_CROSS_ENGINE=1
 (
     cd "$repository_root/go"
     go test ./storages3 -run '^TestFlociAdapterConformance$' -count=1
@@ -60,6 +61,10 @@ python3 "$repository_root/infra/floci_smoke.py" wait "$endpoint" "$run_id"
     cd "$repository_root/rust"
     cargo test -p sqlite-replication-storage-s3 tests::floci_adapter_conformance -- --ignored --exact
     cargo test -p sqlite-replication-core recovery::tests::floci_s3_recovery_restore_compaction_and_gc -- --ignored --exact
+)
+(
+    cd "$repository_root/go"
+    go test ./internal/recovery -run '^TestFlociS3CrossEngineRestore$' -count=1
 )
 (
     cd "$repository_root/go"
