@@ -23,6 +23,10 @@ go_reference_chain_restore="$temporary_directory/go-reference-chain-restore.sqli
 rust_capture_source="$temporary_directory/rust-capture-source.sqlite"
 rust_capture_repository="$temporary_directory/rust-capture-repository"
 rust_reference_chain_restore="$temporary_directory/rust-reference-chain-restore.sqlite"
+go_compacted_snapshot="$temporary_directory/go-compacted-42.ltx"
+rust_from_go_compacted="$temporary_directory/rust-from-go-compacted.sqlite"
+rust_compacted_snapshot="$temporary_directory/rust-compacted-77.ltx"
+go_from_rust_compacted="$temporary_directory/go-from-rust-compacted.sqlite"
 fixture="$repository_root/conformance/fixtures/ltx-v2/snapshot-4096.ltx"
 fixture_512="$repository_root/conformance/fixtures/ltx-v2/snapshot-512.ltx"
 fixture_1024="$repository_root/conformance/fixtures/ltx-v2/snapshot-1024.ltx"
@@ -56,6 +60,7 @@ apply_reference_chain() {
     cd "$repository_root/go"
     go run ./cmd/conformance create "$go_source"
     go run ./cmd/conformance snapshot "$go_source" "$go_repository"
+    go run ./cmd/conformance encode-snapshot-at "$go_source" "$go_compacted_snapshot" 42 1700000000042
     go run ./cmd/conformance create-delta "$go_delta"
 )
 (
@@ -92,6 +97,8 @@ apply_reference_chain() {
     cd "$repository_root/rust"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- restore "$go_repository" "$rust_from_go"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- verify "$rust_from_go"
+    cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- decode-ltx "$go_compacted_snapshot" "$rust_from_go_compacted"
+    cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- verify "$rust_from_go_compacted"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- decode-ltx "$reference_ltx" "$rust_from_reference"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- verify "$rust_from_reference"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- decode-ltx "$fixture" "$temporary_directory/rust-from-fixture.sqlite"
@@ -106,6 +113,7 @@ apply_reference_chain() {
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- verify "$temporary_directory/rust-from-fixture-65536.sqlite"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- create "$rust_source"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- snapshot "$rust_source" "$rust_repository"
+    cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- encode-snapshot-at "$rust_source" "$rust_compacted_snapshot" 77 1700000000077
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- create-delta "$rust_delta"
 )
 (
@@ -118,6 +126,8 @@ apply_reference_chain() {
     go run ./cmd/conformance verify "$temporary_directory/reference-verified-rust.sqlite"
     go run ./cmd/conformance restore "$rust_repository" "$go_from_rust"
     go run ./cmd/conformance verify "$go_from_rust"
+    go run ./cmd/conformance decode-ltx "$rust_compacted_snapshot" "$go_from_rust_compacted"
+    go run ./cmd/conformance verify "$go_from_rust_compacted"
 )
 
 (

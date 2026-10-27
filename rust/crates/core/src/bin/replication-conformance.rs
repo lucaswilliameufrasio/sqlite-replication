@@ -6,7 +6,7 @@ use std::path::Path;
 
 use rusqlite::Connection;
 use sqlite_replication_core::{restore_if_missing, snapshot};
-use sqlite_replication_ltx::{Header, Page, decode_snapshot, encode_delta};
+use sqlite_replication_ltx::{Header, Page, decode_snapshot, encode_delta, encode_snapshot_at};
 use sqlite_replication_sqlite::verify_database;
 use sqlite_replication_storage_fs::{promote_if_missing, sync_directory};
 
@@ -35,6 +35,15 @@ fn run() -> Result<(), Box<dyn Error>> {
             }
             snapshot(first, repository)?;
             Ok(())
+        }
+        "encode-snapshot-at" => {
+            let output = arguments.next().ok_or_else(usage_error)?;
+            let txid = arguments.next().ok_or_else(usage_error)?.parse::<u64>()?;
+            let timestamp = arguments.next().ok_or_else(usage_error)?.parse::<i64>()?;
+            if arguments.next().is_some() {
+                return Err(usage_error().into());
+            }
+            encode_snapshot_at_file(Path::new(&first), Path::new(&output), txid, timestamp)
         }
         "create-delta" => {
             if arguments.next().is_some() {
@@ -65,6 +74,25 @@ fn run() -> Result<(), Box<dyn Error>> {
         }
         _ => Err(usage_error().into()),
     }
+}
+
+fn encode_snapshot_at_file(
+    database_path: &Path,
+    output_path: &Path,
+    txid: u64,
+    timestamp_millis: i64,
+) -> Result<(), Box<dyn Error>> {
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut database = File::open(database_path)?;
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(output_path)?;
+    encode_snapshot_at(&mut database, &mut output, txid, timestamp_millis)?;
+    output.sync_all()?;
+    Ok(())
 }
 
 fn create_delta(path: &Path) -> Result<(), Box<dyn Error>> {
@@ -169,6 +197,6 @@ fn decode_ltx(source_path: &Path, destination_path: &Path) -> Result<(), Box<dyn
 fn usage_error() -> std::io::Error {
     std::io::Error::new(
         std::io::ErrorKind::InvalidInput,
-        "usage: replication-conformance <create DATABASE | snapshot DATABASE REPOSITORY | create-delta LTX | restore REPOSITORY DESTINATION | decode-ltx LTX DESTINATION | verify DATABASE>",
+        "usage: replication-conformance <create DATABASE | snapshot DATABASE REPOSITORY | encode-snapshot-at DATABASE LTX TXID TIMESTAMP_MILLIS | create-delta LTX | restore REPOSITORY DESTINATION | decode-ltx LTX DESTINATION | verify DATABASE>",
     )
 }

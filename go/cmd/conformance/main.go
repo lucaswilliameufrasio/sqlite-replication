@@ -50,6 +50,19 @@ func run(args []string) error {
 		}
 		_, err := replication.Snapshot(context.Background(), args[1], args[2])
 		return err
+	case "encode-snapshot-at":
+		if len(args) != 5 {
+			return usageError()
+		}
+		txid, err := strconv.ParseUint(args[3], 10, 64)
+		if err != nil {
+			return fmt.Errorf("parse snapshot TXID: %w", err)
+		}
+		timestamp, err := strconv.ParseInt(args[4], 10, 64)
+		if err != nil {
+			return fmt.Errorf("parse snapshot timestamp: %w", err)
+		}
+		return encodeSnapshotAt(args[1], args[2], txid, timestamp)
 	case "create-delta":
 		if len(args) != 2 {
 			return usageError()
@@ -88,6 +101,37 @@ func run(args []string) error {
 	default:
 		return usageError()
 	}
+}
+
+func encodeSnapshotAt(databasePath, ltxPath string, txid uint64, timestamp int64) error {
+	database, err := os.Open(databasePath)
+	if err != nil {
+		return fmt.Errorf("open SQLite image: %w", err)
+	}
+	defer database.Close()
+	info, err := database.Stat()
+	if err != nil {
+		return fmt.Errorf("stat SQLite image: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(ltxPath), 0o750); err != nil {
+		return fmt.Errorf("create LTX output directory: %w", err)
+	}
+	output, err := os.OpenFile(ltxPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return fmt.Errorf("create LTX output: %w", err)
+	}
+	if _, err := ltx.EncodeSnapshotAt(database, info.Size(), output, txid, timestamp); err != nil {
+		_ = output.Close()
+		return fmt.Errorf("encode snapshot at TXID %d: %w", txid, err)
+	}
+	if err := output.Sync(); err != nil {
+		_ = output.Close()
+		return fmt.Errorf("sync LTX output: %w", err)
+	}
+	if err := output.Close(); err != nil {
+		return fmt.Errorf("close LTX output: %w", err)
+	}
+	return nil
 }
 
 func createDelta(path string) error {
@@ -360,5 +404,5 @@ func verifyDatabase(path string) error {
 }
 
 func usageError() error {
-	return errors.New("usage: conformance <create DATABASE [PAGE_SIZE] | snapshot DATABASE REPOSITORY | create-delta LTX | create-capture-chain DATABASE REPOSITORY | restore REPOSITORY DESTINATION | decode-ltx LTX DESTINATION | verify DATABASE | verify-capture-chain DATABASE | compare-capture-chain SOURCE RESTORED>")
+	return errors.New("usage: conformance <create DATABASE [PAGE_SIZE] | snapshot DATABASE REPOSITORY | encode-snapshot-at DATABASE LTX TXID TIMESTAMP_MILLIS | create-delta LTX | create-capture-chain DATABASE REPOSITORY | restore REPOSITORY DESTINATION | decode-ltx LTX DESTINATION | verify DATABASE | verify-capture-chain DATABASE | compare-capture-chain SOURCE RESTORED>")
 }
