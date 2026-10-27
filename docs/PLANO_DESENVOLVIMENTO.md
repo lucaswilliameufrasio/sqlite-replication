@@ -965,28 +965,36 @@ contra `superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
 **Retomada em 2026-10-27:** os commits `1594687`/`9e9e917`/`54b8d45` ampliaram
 fixtures independentes de cadeia, compactação e transação grande; `a51a613`
 adiciona uma cadeia de 32 deltas restaurada por Go/Rust. O fuzzing Go cobre
-`DecodeSnapshot`/`DecodeDelta`, com seeds válidas e inválidas; execuções de cinco
-segundos completaram 415 mil e 264 mil casos sem falhas. `make test-fuzz` executa
-fuzz-smokes de 1 s por decoder e integra a verificação a
-`make test-native`/`make test` (logo, ao job CI padrão). Rust tem teste de
+`DecodeSnapshot`/`DecodeDelta` e o parser WAL, com seeds independentes/válidas e
+inválidas; as execuções de cinco segundos dos dois decoders LTX completaram 415
+mil e 264 mil casos sem falhas. `make test-fuzz` executa fuzz-smokes de 1 s por
+alvo e integra a verificação a `make test-native`/`make test` (logo, ao job CI
+padrão). Rust tem teste de
 propriedades que percorre truncamentos e mutações em todas as posições dos
 vetores locais pequenos e inclui seeds do oráculo independente: as fixtures
 maiores usam posições representativas para manter o custo do teste limitado.
 `make test-native` passou após adicionar seeds independentes aos decoders Go/Rust
 e fuzzing do parser WAL Go, mais mutações/truncamentos do parser WAL Rust
 (fixtures independentes nos dois formatos), incluindo format, vet/clippy,
-suites, fuzz-smoke e conformance. O smoke WAL completou centenas de execuções
-em 1–2 s com workers limitados; isso é apenas smoke, não fuzz prolongado.
+suites, fuzz-smoke e conformance. `make test-native` passou novamente após
+adicionar o alvo de benchmark Rust, e `make bench-ltx` rodou os dois harnesses.
+O smoke WAL completou
+centenas a milhares de execuções em 1–2 s com workers limitados; isso é apenas
+smoke, não fuzz prolongado.
 `make test` continua sem validação Floci nesta sessão:
 o smoke depende do daemon Docker rootless inacessível; ele não foi iniciado nem
 reconfigurado. Isso não é fuzzing exaustivo nem conclusão de M6. Próximo foco:
 avançar itens independentes restantes de M0/M5/M6; nenhum passo autoriza expor
 captura WAL ou declarar M2 concluído sem CP-01.
 
-**Baseline inicial de decoder (2026-10-27):** `make bench-go-ltx` executou cinco
-amostras de 1 s por fixture em Linux amd64, Go 1.27.1, Ryzen 9 7900. Medianas:
-snapshot independente, 6,1 KiB, 883.491 ns/op, 6,91 MB/s e 3.077.814 B/op;
-delta independente de transação de 4 MiB, 14.572.926 ns/op, 293,11 MB/s e
-77.142.722 B/op. São medições locais do decoder Go, sem baseline de Rust,
-Litestream ou revisão candidata; servem como primeiro ponto repetível e não
-representam capacidade do sistema nem conclusão do entregável de benchmarks M6.
+**Baseline inicial de decoder (2026-10-27):** `make bench-ltx` executou
+sequencialmente cinco amostras de 1 s por fixture em Linux amd64, Go 1.27.1,
+Rust 1.98.1 e Ryzen 9 7900; o bench Rust usa perfil `cargo bench` otimizado.
+Medianas Go/Rust: snapshot independente (6,1 KiB), 752.544/1.009.959 ns/op e
+8,12/6,05 MB/s; delta independente de transação de 4 MiB,
+13.508.305/17.315.460 ns/op e 316,21/246,68 MB/s. Go também reportou medianas
+de 3.076.507 B/op (656 allocs/op) e 77.150.565 B/op (20.172 allocs/op),
+respectivamente. Os harnesses têm overheads distintos e os valores são uma
+comparação local inicial, não uma campanha controlada com Litestream nem
+evidência de capacidade ponta a ponta. Não há baseline de revisão candidata; o
+entregável de benchmarks M6 permanece parcial.
