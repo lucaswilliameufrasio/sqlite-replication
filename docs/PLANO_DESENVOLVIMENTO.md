@@ -770,7 +770,7 @@ permanece privada.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
 
-**Estado observado em 2026-10-26 (commits `8ad39a0`–`e88e60d`):** as
+**Estado observado em 2026-10-26 (commits `8ad39a0`–`de4604e`):** as
 implementações privadas Go/Rust validam inventário/header/checksum, planejam
 restore inclusivo por TXID e timestamp UTC, reconstroem em staging com
 verificação SQLite, compactam sem remover fontes e planejam GC apenas com
@@ -789,9 +789,12 @@ pontos retidos nos dois engines (`bb35b18`), além de compactação concorrente 
 mesmo ponto (`d15b443`) e retomada segura de GC após exclusão parcial simulada:
 plano anterior é rejeitado como stale, o novo plano coleta o restante e o ponto
 retido continua restaurável (`e88e60d`). Duas execuções consecutivas de
-`make test-floci` passaram e `make test` passou com a imagem Floci local cacheada
-no digest conferido. Conformance de snapshots compactados Go→Rust e Rust→Go
-(TXIDs não iniciais) passou em `6e15075`.
+`make test-floci` e uma terceira incluída em `make test` passaram com a imagem
+Floci local cacheada no digest conferido. O smoke agora restaura o mesmo
+repositório S3 publicado pelo Go no Rust, depois publica um repositório Rust e o
+restaura no Go, no bucket isolado compartilhado e após restart do Floci
+(`de4604e`). Conformance de snapshots compactados Go→Rust e Rust→Go (TXIDs não
+iniciais) também passou em `6e15075`.
 
 As rotinas continuam internas, sem API pública. CP-01 segue bloqueando a
 habilitação pública de recuperação incremental e operações que dependam dessa
