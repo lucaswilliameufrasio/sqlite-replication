@@ -957,3 +957,10 @@ validação de todas as novas fixtures pelo decoder independente, restore do del
 de transação grande e smoke S3 persistente Floci; drills CP-01 não foram
 executados nesta validação. A compatibilidade comprovada continua sendo LTX v2
 contra `superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
+
+**Retomada em 2026-10-27:** os commits `1594687`/`9e9e917` ampliaram fixtures
+independentes de cadeia, compactação e transação grande; `54b8d45` conecta a
+validação pelo oráculo ao runner. `make test` passou após esses commits. A
+implementação segue ativa: próximo foco é fechar o item restante de stress M0 e
+então avançar pelas partes independentes de M5/M6; nenhum passo desta sequência
+autoriza expor captura WAL ou declarar M2 concluído sem CP-01.
