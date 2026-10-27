@@ -1012,9 +1012,28 @@ entregável de benchmarks M6 permanece parcial.
 | M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test` | Nenhum item novo identificado nesta retomada |
 | M2 — WAL/checkpoint | Bloqueado por CP-01 | `make test-cp01-fsync-interrupt` e `make test-cp01-qemu-poweroff` passaram para Go/Rust; captura segue privada | ENOSPC drill não executado (imagem Debian pinada ausente localmente; script proíbe pull), além das lacunas da matriz; aprovação explícita antes de habilitar API |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
-| M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos localmente | Fechamento operacional/documentação completa conforme o runbook, sem habilitação pública dependente de M2 |
+| M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos; `docs/recovery-runbook.md` documenta o escopo público M1 e mantém M4 explicitamente privado | Operação M4 em repositórios ativos só após contrato/API e gates dependentes de M2; Floci não substitui homologação de provedor |
 | M5 — API/segurança/observabilidade | Incompleto | Métricas básicas/adapters existentes; não há ainda superfície pública completa de `Status`/`Health`/`Flush` nem exemplos Chi/Axum do aceite | Contrato público, write-gate/flush, integração OTEL, compatibilidade de drivers e exemplos/guias; revisar dependências com M2 e ADRs 0011–0012 antes de expor comportamento |
 | M6 — stress/bench/release | Em andamento | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust | Chaos/stress amplo, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
+
+### Pendências que requerem decisão/ação do mantenedor
+
+- **CP-01/M2:** concluir/revisar a matriz de falhas e combinações do protocolo;
+  os drills locais FUSE/QEMU não substituem essa aprovação. O drill ENOSPC
+  continua sem execução porque a imagem pinada não está no cache e o harness
+  não faz pull.
+- **M5:** congelar o contrato público e as semânticas de `Status`/`Health`/
+  `Flush`, modo estrito/degradado, admissão e limites/defaults de write-gate
+  (ADR 0011), mais a integração concreta de métricas/traces e combinações de
+  drivers (ADR 0012). Não implementar defaults hipotéticos.
+- **M6/publicação:** escolher identidade/nome e caminho canônico do módulo Go
+  (atualmente provisório), confirmar licença e notices das dependências/fixtures,
+  e autorizar processo de tag/publicação. Nenhum release será criado a partir
+  deste checkout sem essa decisão; evidência CI remota também depende de enviar
+  commits ao remoto.
+- **M6/evidência:** campanha atual é fuzz Go de um minuto, não chaos/stress
+  prolongado; baseline Go/Rust não é comparação controlada com Litestream. SBOM,
+  supply-chain e guia de migração ainda não têm artefatos aprovados.
 
 **Verificação da retomada:** `make test-native` (após o último ajuste), `make test`, `make test-fuzz-extended`, `make bench-ltx`,
 `make test-cp01-fsync-interrupt` e `make test-cp01-qemu-poweroff` passaram em
