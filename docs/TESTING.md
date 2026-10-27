@@ -39,6 +39,10 @@
   cada: decoders LTX snapshot/delta e parser WAL; usa seeds independentes para
   ambos os formatos e integra `make test-native`/`make test`, portanto roda no
   job CI padrão)
+- `make bench-go-ltx` (opt-in; cinco amostras de 1 s para decodificação de
+  snapshot e delta independente de 4 MiB, reportando bytes/s e alocações; rode
+  baseline/candidate no mesmo host/runtime e não interprete como capacidade de
+  produção nem comparação com Rust/Litestream)
 - `make test-conformance` (Go↔Rust e `superfly/ltx v0.4.0` como oráculo apenas
   de teste; compilação de ambas as toolchains é requisito; inclui a matriz de
   snapshots descrita abaixo, com um milhão de linhas e BLOB de 16 MiB)
