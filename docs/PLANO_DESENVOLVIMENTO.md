@@ -964,13 +964,15 @@ contra `superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
 **Retomada em 2026-10-27:** os commits `1594687`/`9e9e917` ampliaram fixtures
 independentes de cadeia, compactação e transação grande; `54b8d45` conecta a
 validação pelo oráculo ao runner. `make test` passou após esses commits. A
-implementação segue ativa. O fuzzing baseado no fuzz engine nativo de Go foi
-iniciado para `DecodeSnapshot`/`DecodeDelta`, com seeds válidas e inválidas;
-execuções locais de cinco segundos completaram 415 mil e 264 mil casos sem
-falhas. `make test-fuzz` agora executa fuzz-smokes de 1 s por decoder e integra
-essa verificação a `make test-native`/`make test` (logo, ao job CI padrão). A
-execução `make test-native` passou; a validação completa atual depende de o
-daemon rootless Floci voltar a estar acessível. Isso não é fuzzing exaustivo nem
-conclusão de M6. Próximo foco: ampliar fuzz/property tests nos dois engines e
-avançar pelas partes independentes restantes de M0/M5/M6; nenhum passo autoriza
-expor captura WAL ou declarar M2 concluído sem CP-01.
+implementação segue ativa. O fuzzing baseado no fuzz engine nativo de Go cobre
+`DecodeSnapshot`/`DecodeDelta`, com seeds válidas e inválidas; execuções locais de
+cinco segundos completaram 415 mil e 264 mil casos sem falhas. `make test-fuzz`
+executa fuzz-smokes de 1 s por decoder e integra a verificação a
+`make test-native`/`make test` (logo, ao job CI padrão). Rust ganhou teste de
+propriedades que percorre truncamentos e mutações de bit em cada posição das
+amostras de snapshot/delta e verifica os invariantes quando o decoder aceita a
+entrada. `make test-native` passou após as duas implementações. A validação
+completa atual depende de o daemon rootless Floci voltar a estar acessível. Isso
+não é fuzzing exaustivo nem conclusão de M6. Próximo foco: avançar itens
+independentes restantes de M0/M5/M6; nenhum passo autoriza expor captura WAL ou
+declarar M2 concluído sem CP-01.

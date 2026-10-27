@@ -31,7 +31,9 @@
 - `make vet-go`
 - `make clippy-rust`
 - `make test-go`
-- `make test-rust`
+- `make test-rust` (inclui teste de propriedades Rust que trunca e muta cada
+  byte das amostras LTX de snapshot/delta, verificando os invariantes de toda
+  decodificação aceita)
 - `make test-fuzz` (duas execuções nativas de fuzz do Go, com 2 workers e 1 s
   por decoder: LTX snapshot e delta; também incluído em `make test-native` e
   `make test`, portanto executado no job CI padrão)
