@@ -52,6 +52,7 @@ Construir **dois motores próprios de backup/replicação assíncrona de SQLite*
 | D-16 | Linux amd64/arm64 como primeira matriz de produção | macOS arm64 na integração; Windows 11 amd64 como fase posterior |
 | D-17 | Segurança de dados tem prioridade sobre latência | Falhas explícitas e bloqueio de promoção quando um invariante não for comprovado |
 | D-18 | Caminho canônico Go: `github.com/lucaswilliameufrasio/sqlite-replication` | Alteração pré-publicação registrada na ADR 0014; revisar antes de publicar se owner/path mudar |
+| D-19 | Primeira garantia incremental restrita a Linux 64-bit, Go/Rust e um escritor controlado | Limites e revisão explícitos em `docs/cp01-review-summary.md`; perda física de energia fica fora da garantia inicial |
 
 **Nota sobre formatos:** a documentação do Litestream descreve arquivos LTX v2; o projeto `superfly/ltx` documenta v3 com quadros de página e compressão diferentes, embora ambos usem `LTX1`. Para a v1, os leitores e escritores **v2** precisam interoperar com fixtures reconhecidas da versão de Litestream testada. Suporte de escrita v3 **não** será misturado ao mesmo prefixo e não será anunciado como compatível com leitores v2.
 
@@ -1011,18 +1012,18 @@ entregável de benchmarks M6 permanece parcial.
 |---|---|---|---|
 | M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test` completo com Floci usando import path canônico Go | Evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
 | M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test` | Nenhum item novo identificado nesta retomada |
-| M2 — WAL/checkpoint | Bloqueado por CP-01 | `make test-cp01-enospc`, `make test-cp01-fsync-interrupt` e `make test-cp01-qemu-poweroff` passaram para Go/Rust; captura segue privada | Revisão/aprovação do protocolo e lacunas da matriz; drills locais não aprovam CP-01 |
+| M2 — WAL/checkpoint | Aguardando sua revisão CP-01 | ENOSPC, interrupção FUSE e QEMU passaram para Go/Rust; resumo conciso em `docs/cp01-review-summary.md`; captura segue privada | Sua decisão se o suporte inicial fica só em Linux x86-64 ou espera drills CP-01 também no ARM64; sign-off explícito antes de ligar API |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos; `docs/recovery-runbook.md` documenta o escopo público M1 e mantém M4 explicitamente privado | Operação M4 em repositórios ativos só após contrato/API e gates dependentes de M2; Floci não substitui homologação de provedor |
-| M5 — API/segurança/observabilidade | Base aprovada; implementação pendente | Modo estrito padrão e base de `Status`/`Health`/`Flush` aprovados em ADR 0011 | Implementar em fatias sem expor WAL; fechar semânticas finais, limites/defaults, métricas/traces e compatibilidade de drivers; manter APIs incrementais bloqueadas por CP-01 |
+| M5 — API/segurança/observabilidade | Base aprovada; implementação pendente | Modo estrito padrão; semântica de alvo/ack/cancelamento de `Flush` confirmada; base em ADR 0011 | Implementar e testar sem expor WAL; fechar `Health`, detalhes de `Status`, limites/defaults, métricas/traces e compatibilidade de drivers; manter APIs incrementais bloqueadas por CP-01 |
 | M6 — stress/bench/release | Em andamento | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust | Chaos/stress amplo, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
 
 ### Pendências que requerem decisão/ação do mantenedor
 
-- **CP-01/M2:** concluir/revisar a matriz de falhas e combinações do protocolo.
-  Após autorização explícita para o pull da imagem pinada, `make
-  test-cp01-enospc` passou para Go/Rust no container rootless isolado. Junto com
-FUSE/QEMU, isso amplia evidência; não substitui a revisão/aprovação CP-01.
+- **CP-01/M2:** o resumo `docs/cp01-review-summary.md` foi preparado para sua
+  revisão. Os três drills passaram para Go/Rust; ainda falta decidir se a
+  primeira garantia fica só em Linux x86-64 ou aguarda repetição dos drills em
+  ARM64. Você fará o sign-off; até lá, a captura continua privada.
 - **M5:** modo estrito por padrão e base `Status`/`Health`/`Flush` foram
   aprovados em ADR 0011. Faltam implementação/testes e fechar detalhes de
   degradação/concorrência, admissão e limites/defaults de write-gate, mais

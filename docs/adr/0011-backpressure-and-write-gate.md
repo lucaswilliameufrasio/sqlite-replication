@@ -51,10 +51,14 @@ A API pública que dependa de captura WAL continua bloqueada por CP-01.
   concretos ainda precisam de revisão.
 
 Pontos para fechar antes de declarar a API estável: o que `Health` considera
-degradação, semântica exata do alvo `Flush` para transações concorrentes, nomes
-e tipos das posições de `Status`, limites/defaults e compatibilidade de
-drivers/adapters que conseguem observar e impor admissão. Mudanças necessárias
-encontradas durante testes devem voltar para revisão do contrato.
+degradação, testes da semântica de `Flush` sob concorrência, nomes e tipos das
+posições de `Status`, limites/defaults e compatibilidade de drivers/adapters que
+conseguem observar e impor admissão. Mudanças necessárias encontradas durante
+testes devem voltar para revisão do contrato.
+
+Em 2026-10-27, o mantenedor confirmou a semântica proposta de alvo de `Flush`,
+confirmação local/remota e timeout/cancelamento. A API e suas implementações
+continuam pendentes de testes; a confirmação não libera captura WAL pública.
 
 Definir limites separados para `max_spool_bytes`, `max_wal_bytes`, idade máxima
 sem proteção, workers e bytes em voo. Rejeitar ou aplicar backpressure antes de
