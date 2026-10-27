@@ -1,6 +1,6 @@
 # ADR 0011: limites de trabalho e política de write-gate
 
-- **Status:** modo estrito por padrão decidido; contrato da API, limites e defaults operacionais ainda em proposta
+- **Status:** modo estrito por padrão decidido; base de `Status`/`Health`/`Flush` aprovada para implementação; detalhes finais e limites em aberto
 - **Data:** 2026-10-23
 
 ## Contexto
@@ -24,11 +24,11 @@ Essa escolha fixa somente a política de modo; não aprova ainda as assinaturas,
 os pontos de reserva/liberação de capacidade, os limites numéricos ou a
 semântica de aceitação/cancelamento descritos abaixo.
 
-### Proposta de contrato para revisão — `Status` / `Health` / `Flush`
+### Base de contrato aprovada para implementação — 2026-10-27
 
-Esta seção é uma proposta para revisão, não autorização para implementar ou
-anunciar capacidades incrementais. A API pública que dependa de captura WAL
-continua bloqueada por CP-01.
+O mantenedor aprovou esta base para implementação. Isso não congela os detalhes
+listados como pendentes abaixo, nem autoriza anunciar capacidades incrementais.
+A API pública que dependa de captura WAL continua bloqueada por CP-01.
 
 - `Status` expõe separadamente o progresso que o adapter consegue observar,
   aquele que já está protegido em spool durável e o último TXID confirmado no
@@ -50,10 +50,11 @@ continua bloqueada por CP-01.
   Prometheus seguem os guardrails da ADR 0012; os nomes/convenções e adapters
   concretos ainda precisam de revisão.
 
-Pontos para revisão antes de congelar: o que `Health` considera degradação,
-semântica exata do alvo `Flush` para transações concorrentes, nomes e tipos das
-posições de `Status`, e compatibilidade de drivers/adapters que conseguem
-observar e impor admissão.
+Pontos para fechar antes de declarar a API estável: o que `Health` considera
+degradação, semântica exata do alvo `Flush` para transações concorrentes, nomes
+e tipos das posições de `Status`, limites/defaults e compatibilidade de
+drivers/adapters que conseguem observar e impor admissão. Mudanças necessárias
+encontradas durante testes devem voltar para revisão do contrato.
 
 Definir limites separados para `max_spool_bytes`, `max_wal_bytes`, idade máxima
 sem proteção, workers e bytes em voo. Rejeitar ou aplicar backpressure antes de
