@@ -32,8 +32,9 @@
 - `make clippy-rust`
 - `make test-go`
 - `make test-rust` (inclui teste de propriedades Rust que trunca e muta cada
-  byte das amostras LTX de snapshot/delta, verificando os invariantes de toda
-  decodificação aceita)
+  byte das amostras LTX pequenas de snapshot/delta, verificando os invariantes
+  de toda decodificação aceita; WAL independente LE/BE também é mutado e
+  truncado, com fixture de página máxima em offsets representativos)
 - `make test-fuzz` (três execuções nativas de fuzz do Go, com 2 workers e 1 s
   cada: decoders LTX snapshot/delta e parser WAL; usa seeds independentes para
   ambos os formatos e integra `make test-native`/`make test`, portanto roda no

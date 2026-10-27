@@ -267,6 +267,85 @@ mod tests {
     }
 
     #[test]
+    fn independent_wal_mutations_and_truncations_preserve_scan_invariants() {
+        for name in ["sqlite-le.wal", "sqlite-be.wal"] {
+            let original = fixture(name);
+            let result = scan(&original).expect("scan independent WAL fixture");
+            assert_scan_invariants(&original, &result);
+
+            for end in 0..original.len() {
+                if let Ok(result) = scan(&original[..end]) {
+                    assert_scan_invariants(&original[..end], &result);
+                }
+            }
+            for offset in 0..original.len() {
+                for bit in 0..8 {
+                    let mut mutated = original.clone();
+                    mutated[offset] ^= 1 << bit;
+                    if let Ok(result) = scan(&mutated) {
+                        assert_scan_invariants(&mutated, &result);
+                    }
+                }
+            }
+        }
+
+        let maximum_page_fixture = fixture("sqlite-le-65536.wal");
+        let offsets = [
+            0,
+            7,
+            8,
+            16,
+            24,
+            31,
+            32,
+            55,
+            56,
+            maximum_page_fixture.len() / 2,
+            maximum_page_fixture.len() - 9,
+            maximum_page_fixture.len() - 1,
+        ];
+        for end in offsets {
+            if let Ok(result) = scan(&maximum_page_fixture[..end]) {
+                assert_scan_invariants(&maximum_page_fixture[..end], &result);
+            }
+            for bit in 0..8 {
+                let mut mutated = maximum_page_fixture.clone();
+                mutated[end] ^= 1 << bit;
+                if let Ok(result) = scan(&mutated) {
+                    assert_scan_invariants(&mutated, &result);
+                }
+            }
+        }
+    }
+
+    fn assert_scan_invariants(data: &[u8], result: &super::ScanResult) {
+        assert!(matches!(
+            result.header.page_size,
+            512 | 1024 | 2048 | 4096 | 8192 | 16384 | 32768 | 65536
+        ));
+        assert!(result.committed_frame_count <= result.frames.len());
+        let frame_size = FRAME_HEADER_SIZE + result.header.page_size as usize;
+        assert!(result.incomplete_tail_bytes < frame_size);
+        let mut previous_page_offset = None;
+        for frame in &result.frames {
+            let page_offset = frame.page_offset as usize;
+            assert!(page_offset >= HEADER_SIZE + FRAME_HEADER_SIZE);
+            assert!(page_offset + result.header.page_size as usize <= data.len());
+            if let Some(previous) = previous_page_offset {
+                assert_eq!(page_offset - previous, frame_size);
+            }
+            previous_page_offset = Some(page_offset);
+        }
+        if result.committed_frame_count == 0 {
+            assert_eq!(result.database_size, 0);
+        } else {
+            let last_committed = &result.frames[result.committed_frame_count - 1];
+            assert_ne!(last_committed.database_size, 0);
+            assert_eq!(result.database_size, last_committed.database_size);
+        }
+    }
+
+    #[test]
     fn rejects_unsupported_format_version() {
         let mut content = fixture("sqlite-le.wal");
         content[4] ^= 1;
