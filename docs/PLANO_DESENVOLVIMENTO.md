@@ -955,12 +955,12 @@ reconciliação read-only, falhas/retry/cancelamento testados e métricas básic
 instrumentadas. Em 2026-10-27, `make test-native` passou após a inclusão do
 fuzz-smoke: formatação, vet/clippy, suites Go/Rust, fuzz limitado e conformance,
 incluindo restore cruzado das fixtures e validação pelo decoder independente.
-na execução mais recente `make test` também passou integralmente, incluindo
+na execução mais recente dessa etapa, `make test` passou integralmente, incluindo
 Floci persistente, adapters, restore Go↔Rust e cleanup dos recursos isolados. O
-daemon rootless já estava ativo; não foi iniciado/reconfigurado. Drills CP-01
-ainda não foram executados nesta validação. A compatibilidade comprovada continua
-sendo LTX v2 contra `superfly/ltx v0.4.0`, não qualquer release genérica do
-Litestream.
+daemon rootless já estava ativo; não foi iniciado/reconfigurado. Os drills CP-01
+executados depois estão registrados abaixo e em `spec/CHECKPOINT_PROTOCOL.md`.
+A compatibilidade comprovada continua sendo LTX v2 contra `superfly/ltx v0.4.0`,
+não qualquer release genérica do Litestream.
 
 **Retomada em 2026-10-27:** os commits `1594687`/`9e9e917`/`54b8d45` ampliaram
 fixtures independentes de cadeia, compactação e transação grande; `a51a613`
@@ -981,10 +981,16 @@ adicionar o alvo de benchmark Rust, e `make bench-ltx` rodou os dois harnesses.
 O smoke WAL completou
 centenas a milhares de execuções em 1–2 s com workers limitados; isso é apenas
 smoke, não fuzz prolongado.
-`make test` agora passou com Floci persistente no daemon rootless preexistente.
-Isso não é fuzzing exaustivo nem conclusão de M6. Próximo foco: avançar os itens
-restantes de M0/M5/M6 e verificar os drills CP-01 disponíveis sem expor captura
-WAL; nenhum resultado isolado declara M2 concluído sem satisfazer o protocolo.
+`make test` passou com Floci persistente no daemon rootless preexistente. A
+primeira campanha `make test-fuzz-extended` mostrou longas janelas de zero
+execuções; o dump SIGQUIT apontou o Go fuzz runner em `workerClient.minimize`,
+enquanto cada corpus cacheado reproduziu em menos de 1,4 ms. Limitando a
+minimização a 1 s por tentativa (`-fuzzminimizetime=1s`), os três alvos passaram
+com progresso contínuo: snapshot 5.630.343, delta 7.423.365 e WAL 8.294.326
+execuções em 60 s cada. Isso esclarece o stall do runner, não demonstra
+exaustividade. `make test-native` passou novamente após o ajuste. Os itens
+restantes de M0/M5/M6 e as lacunas CP-01 continuam; nenhuma evidência autoriza
+expor captura WAL ou declarar M2 concluído.
 
 **Baseline inicial de decoder (2026-10-27):** `make bench-ltx` executou
 sequencialmente cinco amostras de 1 s por fixture em Linux amd64, Go 1.27.1,
@@ -1008,13 +1014,14 @@ entregável de benchmarks M6 permanece parcial.
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos localmente | Fechamento operacional/documentação completa conforme o runbook, sem habilitação pública dependente de M2 |
 | M5 — API/segurança/observabilidade | Incompleto | Métricas básicas/adapters existentes; não há ainda superfície pública completa de `Status`/`Health`/`Flush` nem exemplos Chi/Axum do aceite | Contrato público, write-gate/flush, integração OTEL, compatibilidade de drivers e exemplos/guias; revisar dependências com M2 e ADRs 0011–0012 antes de expor comportamento |
-| M6 — stress/bench/release | Em andamento | Fuzz-smokes Go para LTX/WAL, propriedades Rust com fixtures independentes, `make bench-ltx` e baseline Go/Rust | Fuzz/chaos prolongado, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
+| M6 — stress/bench/release | Em andamento | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust | Chaos/stress amplo, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
 
-**Verificação da retomada:** `make test-native`, `make test`, `make bench-ltx`,
+**Verificação da retomada:** `make test-native` (após o último ajuste), `make test`, `make test-fuzz-extended`, `make bench-ltx`,
 `make test-cp01-fsync-interrupt` e `make test-cp01-qemu-poweroff` passaram em
 `d719533`. `make test` usou Floci local persistente pelo daemon rootless já
 ativo; o smoke removeu apenas o projeto/volume próprios. O drill ENOSPC não foi
 executado: a imagem Debian pinada não está presente e o script não baixa imagens.
 FUSE/QEMU aumentam evidência, mas não cobrem falha física de energia/cache,
-filesystems/drivers alternativos nem fecham toda a matriz CP-01. Implementação e
-progresso têm commits separados. M2 e o roadmap inteiro continuam incompletos.
+filesystems/drivers alternativos nem fecham toda a matriz CP-01. A mudança de
+harness está separada em `4701deb`; este registro documenta progresso. M2 e o
+roadmap inteiro continuam incompletos.

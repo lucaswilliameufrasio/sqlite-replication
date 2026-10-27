@@ -39,6 +39,10 @@
   cada: decoders LTX snapshot/delta e parser WAL; usa seeds independentes para
   ambos os formatos e integra `make test-native`/`make test`, portanto roda no
   job CI padrão)
+- `make test-fuzz-extended` (campanha local opt-in de 60 s por alvo para os
+  mesmos três alvos, com minimização de casos interessantes limitada a 1 s por
+  tentativa para evitar que a minimização consuma toda a janela; evidência
+  adicional de fuzz, não prova de exaustividade nem substituto da matriz CP-01)
 - `make bench-ltx` (opt-in; roda cinco amostras de 1 s para snapshot e delta
   independente de 4 MiB em Go e Rust, com warmup de 1 s por fixture; Go reporta
   bytes/s/alocações e Rust bytes/s/ns-op. Para comparação, execute ambos no mesmo
