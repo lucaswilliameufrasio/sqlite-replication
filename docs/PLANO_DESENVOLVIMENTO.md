@@ -955,12 +955,12 @@ reconciliação read-only, falhas/retry/cancelamento testados e métricas básic
 instrumentadas. Em 2026-10-27, `make test-native` passou após a inclusão do
 fuzz-smoke: formatação, vet/clippy, suites Go/Rust, fuzz limitado e conformance,
 incluindo restore cruzado das fixtures e validação pelo decoder independente.
-`make test` executou as mesmas etapas, mas não concluiu o smoke Floci porque o
-daemon Docker rootless deixou de estar acessível (`/run/user/1000/docker.sock`);
-não houve tentativa de iniciar/reconfigurar o daemon. Um `make test` completo
-com Floci passou antes da inclusão do fuzz-smoke. Drills CP-01 não foram
-executados nesta validação. A compatibilidade comprovada continua sendo LTX v2
-contra `superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
+na execução mais recente `make test` também passou integralmente, incluindo
+Floci persistente, adapters, restore Go↔Rust e cleanup dos recursos isolados. O
+daemon rootless já estava ativo; não foi iniciado/reconfigurado. Drills CP-01
+ainda não foram executados nesta validação. A compatibilidade comprovada continua
+sendo LTX v2 contra `superfly/ltx v0.4.0`, não qualquer release genérica do
+Litestream.
 
 **Retomada em 2026-10-27:** os commits `1594687`/`9e9e917`/`54b8d45` ampliaram
 fixtures independentes de cadeia, compactação e transação grande; `a51a613`
@@ -981,11 +981,10 @@ adicionar o alvo de benchmark Rust, e `make bench-ltx` rodou os dois harnesses.
 O smoke WAL completou
 centenas a milhares de execuções em 1–2 s com workers limitados; isso é apenas
 smoke, não fuzz prolongado.
-`make test` continua sem validação Floci nesta sessão:
-o smoke depende do daemon Docker rootless inacessível; ele não foi iniciado nem
-reconfigurado. Isso não é fuzzing exaustivo nem conclusão de M6. Próximo foco:
-avançar itens independentes restantes de M0/M5/M6; nenhum passo autoriza expor
-captura WAL ou declarar M2 concluído sem CP-01.
+`make test` agora passou com Floci persistente no daemon rootless preexistente.
+Isso não é fuzzing exaustivo nem conclusão de M6. Próximo foco: avançar os itens
+restantes de M0/M5/M6 e verificar os drills CP-01 disponíveis sem expor captura
+WAL; nenhum resultado isolado declara M2 concluído sem satisfazer o protocolo.
 
 **Baseline inicial de decoder (2026-10-27):** `make bench-ltx` executou
 sequencialmente cinco amostras de 1 s por fixture em Linux amd64, Go 1.27.1,
@@ -1003,18 +1002,17 @@ entregável de benchmarks M6 permanece parcial.
 
 | Marco | Estado | Evidência atual | Trabalho ainda necessário |
 |---|---|---|---|
-| M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test-native` | Gate Floci completo neste checkout e evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
-| M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test-native` | Nenhum item novo identificado nesta retomada |
+| M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test` completo com Floci | Evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
+| M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test` | Nenhum item novo identificado nesta retomada |
 | M2 — WAL/checkpoint | Bloqueado por CP-01 | Parser e protótipo interno apenas | Prova CP-01 e aprovação explícita; até lá, manter APIs/captura/recovery incremental privadas |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos localmente | Fechamento operacional/documentação completa conforme o runbook, sem habilitação pública dependente de M2 |
 | M5 — API/segurança/observabilidade | Incompleto | Métricas básicas/adapters existentes; não há ainda superfície pública completa de `Status`/`Health`/`Flush` nem exemplos Chi/Axum do aceite | Contrato público, write-gate/flush, integração OTEL, compatibilidade de drivers e exemplos/guias; revisar dependências com M2 e ADRs 0011–0012 antes de expor comportamento |
 | M6 — stress/bench/release | Em andamento | Fuzz-smokes Go para LTX/WAL, propriedades Rust com fixtures independentes, `make bench-ltx` e baseline Go/Rust | Fuzz/chaos prolongado, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
 
-**Verificação da retomada:** `make test-native` passou após os últimos testes e
-harnesses; `make bench-ltx` executou os dois motores com fixtures independentes.
-`make test` não foi concluído porque o daemon Docker rootless necessário ao Floci
-estava inacessível; não foi iniciado nem reconfigurado. Os commits de
-implementação e progresso foram separados e o checkout estava limpo em
-`a0d29a5`. Esta retomada prioriza todos os itens que não dependem de CP-01; não
-marca M2 nem o roadmap inteiro como concluídos.
+**Verificação da retomada:** `make test-native`, `make test` e `make bench-ltx`
+passaram. `make test` usou Floci local persistente pelo daemon rootless já ativo;
+o próprio smoke removeu apenas projeto/volume nomeados por esta execução. Drills
+CP-01 seguem pendentes de execução e avaliação. Implementação e progresso têm
+commits separados. Esta retomada prioriza todos os itens que não dependem de
+CP-01; não marca M2 nem o roadmap inteiro como concluídos.
