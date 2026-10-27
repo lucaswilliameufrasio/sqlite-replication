@@ -1300,6 +1300,32 @@ mod tests {
         )
         .expect("restore pinned reference large transaction");
         assert_large_reference_transaction_state(&large_restore_path);
+
+        let long_fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../conformance/fixtures/ltx-v2/long-chain-4096");
+        let long_repository = tempfile::tempdir().expect("create long-chain fixture repository");
+        ensure_repository(long_repository.path())
+            .expect("initialize long-chain fixture repository");
+        copy_reference_fixture(
+            &long_fixture_root.join("snapshot-1.ltx"),
+            &ltx_path(long_repository.path(), 1, 1),
+        );
+        for txid in 2..=33 {
+            let fixture_name = format!("delta-{txid:03}.ltx");
+            copy_reference_fixture(
+                &long_fixture_root.join(fixture_name),
+                &ltx_path(long_repository.path(), txid, txid),
+            );
+        }
+        let long_restore = tempfile::tempdir().expect("create long-chain restore directory");
+        let long_restore_path = long_restore.path().join("long-chain.sqlite");
+        restore_to_target(
+            long_repository.path(),
+            &long_restore_path,
+            RestoreTarget::Txid(33),
+        )
+        .expect("restore pinned reference 32-delta chain");
+        assert_long_reference_chain_state(&long_restore_path);
     }
 
     #[tokio::test]
@@ -1763,6 +1789,20 @@ mod tests {
         assert_eq!(row_count, 512);
         assert_eq!(payload_bytes, 512 * 8192);
         assert_eq!(wrong_length_count, 0);
+    }
+
+    fn assert_long_reference_chain_state(path: &Path) {
+        let database = Connection::open(path).expect("open restored long-chain fixture");
+        let value: String = database
+            .query_row("SELECT value FROM chain_values WHERE id=1", [], |row| {
+                row.get(0)
+            })
+            .expect("read restored long-chain value");
+        let row_count: i64 = database
+            .query_row("SELECT count(*) FROM chain_values", [], |row| row.get(0))
+            .expect("count restored long-chain rows");
+        assert_eq!(value, "step-033");
+        assert_eq!(row_count, 1);
     }
 
     fn assert_s3_record_value(path: &Path, expected: &str) {

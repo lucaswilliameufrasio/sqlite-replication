@@ -53,6 +53,10 @@ single delta.
 | `large-transaction-4096/snapshot-1.ltx` | Empty `payloads` table, TXID 1 | `796a4c62b239d8dad52a3d4952390bbdb35a35472f4048b71f378b87bd8523b2` |
 | `large-transaction-4096/large-delta-2.ltx` | One 4 MiB insert transaction, TXID 2 | `4dc5710cdeb0ae6e1ffab066a6e9de944b8a7596d8565441a684a3477761f5d7` |
 
+`long-chain-4096/` contains a base snapshot and 32 consecutive one-page deltas.
+Go and Rust restore TXID 33 and verify the final logical row. Every file is
+generated and checked by the pinned oracle; `SHA256SUMS` records all 33 hashes.
+
 Regenerate missing fixtures with `generate-ltx-v2-fixture.sh PATH PAGE_SIZE`; the
 script refuses to overwrite existing bytes. The conformance runner restores all
 five page sizes in both engines and verifies SQLite integrity and logical
@@ -64,3 +68,5 @@ evidence. Generate the recovery chain fixtures with
 `python3 conformance/generate-recovery-chain-fixtures.py`; it refuses to
 overwrite existing fixture directories. To generate only the large transaction
 set, pass `--only-large-transaction`.
+Generate the long chain with `python3 conformance/generate-long-chain-fixtures.py`;
+it refuses to overwrite an existing fixture directory.

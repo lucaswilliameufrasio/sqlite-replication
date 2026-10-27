@@ -73,6 +73,22 @@ func TestPinnedReferenceRecoveryChainFixtures(t *testing.T) {
 		t.Fatalf("restore pinned reference large transaction: %v", err)
 	}
 	assertLargeReferenceTransactionState(t, largeRestore)
+
+	longFixtureRoot := filepath.Join(filepath.Dir(sourceFile), "../../../conformance/fixtures/ltx-v2/long-chain-4096")
+	longRepository := filepath.Join(t.TempDir(), "long-chain")
+	if err := storagefs.EnsureRepository(longRepository); err != nil {
+		t.Fatalf("initialize long-chain fixture repository: %v", err)
+	}
+	copyRecoveryFixture(t, filepath.Join(longFixtureRoot, "snapshot-1.ltx"), storagefs.LTXPath(longRepository, 1, 1))
+	for txid := uint64(2); txid <= 33; txid++ {
+		fixtureName := fmt.Sprintf("delta-%03d.ltx", txid)
+		copyRecoveryFixture(t, filepath.Join(longFixtureRoot, fixtureName), storagefs.LTXPath(longRepository, txid, txid))
+	}
+	longRestore := filepath.Join(t.TempDir(), "long-chain.sqlite")
+	if err := RestoreToTarget(context.Background(), longRepository, longRestore, Target{TXID: 33}); err != nil {
+		t.Fatalf("restore pinned reference 32-delta chain: %v", err)
+	}
+	assertLongReferenceChainState(t, longRestore)
 }
 
 func assertLargeReferenceTransactionState(t *testing.T, databasePath string) {
@@ -88,6 +104,26 @@ func assertLargeReferenceTransactionState(t *testing.T, databasePath string) {
 	}
 	if rowCount != 512 || payloadBytes != 512*8192 || wrongLengthCount != 0 {
 		t.Fatalf("large transaction fixture count/bytes/wrong_lengths = %d/%d/%d", rowCount, payloadBytes, wrongLengthCount)
+	}
+}
+
+func assertLongReferenceChainState(t *testing.T, databasePath string) {
+	t.Helper()
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open restored long-chain fixture: %v", err)
+	}
+	defer database.Close()
+	var value string
+	var rowCount int
+	if err := database.QueryRow("SELECT value FROM chain_values WHERE id=1").Scan(&value); err != nil {
+		t.Fatalf("read restored long-chain value: %v", err)
+	}
+	if err := database.QueryRow("SELECT count(*) FROM chain_values").Scan(&rowCount); err != nil {
+		t.Fatalf("count restored long-chain rows: %v", err)
+	}
+	if value != "step-033" || rowCount != 1 {
+		t.Fatalf("long-chain state = %q/%d rows, want step-033/1", value, rowCount)
 	}
 }
 

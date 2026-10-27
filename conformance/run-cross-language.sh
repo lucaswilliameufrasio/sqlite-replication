@@ -181,7 +181,8 @@ apply_reference_chain() {
 )
 for fixture in \
     "$repository_root"/conformance/fixtures/ltx-v2/recovery-chain-4096/*.ltx \
-    "$repository_root"/conformance/fixtures/ltx-v2/large-transaction-4096/*.ltx; do
+    "$repository_root"/conformance/fixtures/ltx-v2/large-transaction-4096/*.ltx \
+    "$repository_root"/conformance/fixtures/ltx-v2/long-chain-4096/*.ltx; do
     "$temporary_directory/reference-conformance" verify-ltx "$fixture"
 done
 (
