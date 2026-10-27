@@ -780,14 +780,16 @@ identidade do repositório antes de remover objetos. Testes focados cobrem cadei
 real SQLite em Go/Rust, compactação com round-trip, retenção do caminho
 prometido e rejeição de plano stale. Essas funções permanecem internas; ainda
 há avaliador de cadência por TXID com intervalo positivo obrigatório (`6af1f28`),
-mas não há scheduler automático, integração de restore/GC com o adapter S3, nem
-API pública. **Conformance de snapshot compactado Go→Rust e Rust→Go** passou no
+com execução condicional exercitada na cadeia SQLite real (`90125b1`), mas não
+há scheduler automático, integração de restore/GC com o adapter S3, nem API
+pública. **Conformance de snapshot compactado Go→Rust e Rust→Go** passou no
 commit `6e15075`, validando TXIDs não iniciais e integridade/conteúdo SQLite.
 CP-01 continua bloqueando a habilitação pública de recuperação incremental e
 operações que dependam de sua garantia. `docs/recovery-runbook.md` registra o
 procedimento M1 disponível e os limites de M4. `make test` passou após a
-cadência e conformance; os drills CP-01 opt-in permanecem fora desse gate e seu
-resultado anterior continua evidência limitada, não aprovação de CP-01.
+execução condicional e conformance; os drills CP-01 opt-in permanecem fora desse
+gate e seu resultado anterior continua evidência limitada, não aprovação de
+CP-01.
 
 ### Fase 5 — API pública, segurança e observabilidade [M5]
 
