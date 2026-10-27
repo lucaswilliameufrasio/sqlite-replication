@@ -574,12 +574,13 @@ contratos WAL/LTX/layout/restore, snapshots LTX v2 independentes para páginas
 65536, parsers isolados Go/Rust com casos de corrupção/cauda, exemplos de
 snapshot/restore em ambas as linguagens e smoke Floci persistente aprovado. Os
 incrementos de 2026-10-27 adicionaram fixtures LTX v2 fixas e geradas pelo
-oráculo v0.4.0 para snapshot-base, dois deltas, snapshot compactado e um delta
-de uma transação de 4 MiB (512 BLOBs de 8192 bytes); Go e Rust restauram as
-cadeias e validam o conteúdo. O runner também verifica todos esses arquivos com
-o decoder independente `superfly/ltx v0.4.0` em cada execução. M0 permanece
-parcial no escopo amplo por stress ainda pendente e falta de observação de CI
-remoto. O incremento local de 2026-10-25 acrescentou bancos
+oráculo v0.4.0 para snapshot-base, dois deltas, snapshot compactado, um delta de
+uma transação de 4 MiB (512 BLOBs de 8192 bytes) e uma cadeia de 32 deltas; Go e
+Rust restauram os casos e validam o conteúdo. O runner também verifica os
+arquivos com o decoder independente `superfly/ltx v0.4.0` em cada execução. M0
+permanece parcial: a cadeia longa dá cobertura de stress local, mas ainda falta
+a matriz de stress mais ampla e observação de CI remoto. O incremento local de
+2026-10-25 acrescentou bancos
 sem tabelas e tabelas vazias nos cinco tamanhos de página, além de
 1/100 mil/1 milhão de
 linhas, BLOBs de 1/16 MiB, rollback e VACUUM/reutilização em páginas de 4096.
@@ -961,18 +962,17 @@ com Floci passou antes da inclusão do fuzz-smoke. Drills CP-01 não foram
 executados nesta validação. A compatibilidade comprovada continua sendo LTX v2
 contra `superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
 
-**Retomada em 2026-10-27:** os commits `1594687`/`9e9e917` ampliaram fixtures
-independentes de cadeia, compactação e transação grande; `54b8d45` conecta a
-validação pelo oráculo ao runner. `make test` passou após esses commits. A
-implementação segue ativa. O fuzzing baseado no fuzz engine nativo de Go cobre
-`DecodeSnapshot`/`DecodeDelta`, com seeds válidas e inválidas; execuções locais de
-cinco segundos completaram 415 mil e 264 mil casos sem falhas. `make test-fuzz`
-executa fuzz-smokes de 1 s por decoder e integra a verificação a
-`make test-native`/`make test` (logo, ao job CI padrão). Rust ganhou teste de
-propriedades que percorre truncamentos e mutações de bit em cada posição das
-amostras de snapshot/delta e verifica os invariantes quando o decoder aceita a
-entrada. `make test-native` passou após as duas implementações. A validação
-completa atual depende de o daemon rootless Floci voltar a estar acessível. Isso
-não é fuzzing exaustivo nem conclusão de M6. Próximo foco: avançar itens
-independentes restantes de M0/M5/M6; nenhum passo autoriza expor captura WAL ou
-declarar M2 concluído sem CP-01.
+**Retomada em 2026-10-27:** os commits `1594687`/`9e9e917`/`54b8d45` ampliaram
+fixtures independentes de cadeia, compactação e transação grande; `a51a613`
+adiciona uma cadeia de 32 deltas restaurada por Go/Rust. O fuzzing Go cobre
+`DecodeSnapshot`/`DecodeDelta`, com seeds válidas e inválidas; execuções de cinco
+segundos completaram 415 mil e 264 mil casos sem falhas. `make test-fuzz` executa
+fuzz-smokes de 1 s por decoder e integra a verificação a
+`make test-native`/`make test` (logo, ao job CI padrão). Rust tem teste de
+propriedades que percorre truncamentos e mutações em cada posição de snapshot e
+delta. `make test-native` passou após a cadeia longa. `make test` foi tentado no
+checkout atual, mas não concluiu o smoke Floci porque o daemon Docker rootless
+está inacessível; não foi iniciado nem reconfigurado. Isso não é fuzzing
+exaustivo nem conclusão de M6. Próximo foco: avançar itens independentes
+restantes de M0/M5/M6; nenhum passo autoriza expor captura WAL ou declarar M2
+concluído sem CP-01.
