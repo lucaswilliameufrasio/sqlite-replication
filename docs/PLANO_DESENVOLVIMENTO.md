@@ -770,7 +770,7 @@ permanece privada.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
 
-**Estado observado em 2026-10-26:** implementações privadas filesystem em Go e
+**Estado observado em 2026-10-26 (commit `8ad39a0`):** implementações privadas filesystem em Go e
 Rust agora validam inventário/header/checksum, planejam TXID e instante UTC
 inclusivo, reconstroem em staging com verificação SQLite, publicam snapshots
 compactados em nível superior sem remover fontes e calculam GC somente a partir
@@ -782,7 +782,9 @@ prometido e rejeição de plano stale. Essas funções permanecem internas; aind
 não há scheduler periódico, integração de restore/GC com o adapter S3, nem API
 pública. CP-01 continua bloqueando a habilitação pública de recuperação
 incremental e operações que dependam de sua garantia. `docs/recovery-runbook.md`
-registra o procedimento M1 disponível e os limites de M4.
+registra o procedimento M1 disponível e os limites de M4. `make test` passou
+após a implementação; os drills CP-01 opt-in permanecem fora desse gate e seu
+resultado anterior continua evidência limitada, não aprovação de CP-01.
 
 ### Fase 5 — API pública, segurança e observabilidade [M5]
 
