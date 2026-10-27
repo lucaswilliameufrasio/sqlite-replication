@@ -1122,6 +1122,100 @@ mod tests {
     }
 
     #[test]
+    fn decoder_mutation_properties_hold_for_snapshot_and_delta() {
+        let mut database = vec![0_u8; 512];
+        database[..16].copy_from_slice(b"SQLite format 3\0");
+        database[16..18].copy_from_slice(&512_u16.to_be_bytes());
+        database[28..32].copy_from_slice(&1_u32.to_be_bytes());
+        let mut snapshot = Vec::new();
+        encode_snapshot(&mut Cursor::new(database), &mut snapshot, 1234)
+            .expect("encode property-test snapshot");
+        assert!(snapshot_decode_is_valid(&snapshot));
+        for end in 0..snapshot.len() {
+            assert!(
+                !snapshot_decode_is_valid(&snapshot[..end]),
+                "truncated snapshot unexpectedly decoded at byte {end}"
+            );
+        }
+        for offset in 0..snapshot.len() {
+            for bit in 0..8 {
+                let mut mutated = snapshot.clone();
+                mutated[offset] ^= 1 << bit;
+                let _ = snapshot_decode_is_valid(&mutated);
+            }
+        }
+
+        let header = Header {
+            flags: 0,
+            page_size: 512,
+            commit: 1,
+            min_txid: 2,
+            max_txid: 2,
+            timestamp_millis: 1234,
+            pre_apply_checksum: (1_u64 << 63) | 1,
+            wal_offset: 0,
+            wal_size: 0,
+            wal_salt_1: 0,
+            wal_salt_2: 0,
+            node_id: 0,
+        };
+        let pages = vec![Page {
+            page_no: 1,
+            data: vec![0x5a; 512],
+        }];
+        let mut delta = Vec::new();
+        encode_delta(header, &pages, (1_u64 << 63) | 2, &mut delta)
+            .expect("encode property-test delta");
+        assert!(delta_decode_is_valid(&delta));
+        for end in 0..delta.len() {
+            assert!(
+                !delta_decode_is_valid(&delta[..end]),
+                "truncated delta unexpectedly decoded at byte {end}"
+            );
+        }
+        for offset in 0..delta.len() {
+            for bit in 0..8 {
+                let mut mutated = delta.clone();
+                mutated[offset] ^= 1 << bit;
+                let _ = delta_decode_is_valid(&mutated);
+            }
+        }
+    }
+
+    fn snapshot_decode_is_valid(encoded: &[u8]) -> bool {
+        let mut restored = Vec::new();
+        let Ok(header) = decode_snapshot(Cursor::new(encoded), &mut restored) else {
+            return false;
+        };
+        assert_eq!(header.min_txid, 1);
+        assert!(super::valid_page_size(header.page_size));
+        assert_eq!(
+            restored.len(),
+            header.page_size as usize * header.commit as usize
+        );
+        assert!(restored.starts_with(b"SQLite format 3\0"));
+        true
+    }
+
+    fn delta_decode_is_valid(encoded: &[u8]) -> bool {
+        let Ok((header, pages, checksum)) = decode_delta(Cursor::new(encoded)) else {
+            return false;
+        };
+        assert!(header.min_txid > 1);
+        assert!(header.max_txid >= header.min_txid);
+        assert!(super::valid_page_size(header.page_size));
+        assert_ne!(checksum & (1_u64 << 63), 0);
+        let mut previous_page = 0;
+        for page in pages {
+            assert!(page.page_no > previous_page);
+            assert!(page.page_no <= header.commit);
+            assert_eq!(page.data.len(), header.page_size as usize);
+            previous_page = page.page_no;
+        }
+        true
+    }
+
+    #[test]
     fn reference_snapshot_fixture_decodes() {
         let fixture = include_bytes!("../../../../conformance/fixtures/ltx-v2/snapshot-4096.ltx");
         let mut restored = Vec::new();
