@@ -1,7 +1,7 @@
 # Plano de Desenvolvimento — SQLite Replication para Go e Rust
 
 > **Versão:** 1.0 — 21/10/2026  
-> **Estado em 2026-10-26:** M0 parcial, M1 verificado, M2 bloqueado por CP-01, M3 implementado e verificado localmente; M4–M6 incompletos.
+> **Estado em 2026-10-27:** M0 parcial, M1 verificado, M2 bloqueado por CP-01, M3 implementado e verificado localmente, M4 implementado/verificado localmente com fechamento operacional pendente; M5–M6 incompletos.
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.
@@ -572,10 +572,12 @@ capabilities e erros explícitos.
 contratos WAL/LTX/layout/restore, snapshots LTX v2 independentes para páginas
 512/1024/4096/8192/65536, vetores WAL para ambas as ordens de checksum e página
 65536, parsers isolados Go/Rust com casos de corrupção/cauda, exemplos de
-snapshot/restore em ambas as linguagens e smoke Floci persistente aprovado. M0
-permanece parcial no escopo amplo: a matriz da seção 6 ainda não inclui todos
-os casos de deltas/compactados e stress; aquela validação local ainda não tinha
-observação de CI remoto. O incremento local de 2026-10-25 acrescentou bancos
+snapshot/restore em ambas as linguagens e smoke Floci persistente aprovado. O
+incremento de 2026-10-27 adicionou fixtures LTX v2 fixas e geradas pelo oráculo
+v0.4.0 para snapshot-base, dois deltas e snapshot compactado; Go e Rust restauram
+as duas formas e validam o conteúdo. M0 permanece parcial no escopo amplo por
+stress ainda pendente e falta de observação de CI remoto. O incremento local de
+2026-10-25 acrescentou bancos
 sem tabelas e tabelas vazias nos cinco tamanhos de página, além de
 1/100 mil/1 milhão de
 linhas, BLOBs de 1/16 MiB, rollback e VACUUM/reutilização em páginas de 4096.
@@ -941,12 +943,14 @@ Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, 
 
 ---
 
-**Estado do plano em 2026-10-26:** M0 parcial, M1 implementado/verificado, M2
-bloqueado por CP-01, M3 implementado e verificado no gate local Floci; M4–M6
-incompletos. O sub-drill QEMU foi repetido três vezes, mas sua evidência
-limitada não aprova CP-01. Por solicitação do operador, o gate completo fica
-pendente enquanto avançam slices independentes; a captura WAL permanece privada.
-M3 inclui reconciliação read-only, falhas/retry/cancelamento testados e métricas
-básicas instrumentadas. `make test` passou integralmente; drills CP-01 não foram
-executados nesta validação. A compatibilidade comprovada continua sendo LTX v2 contra
-`superfly/ltx v0.4.0`, não qualquer release genérica do Litestream.
+**Estado do plano em 2026-10-27:** M0 parcial, M1 implementado/verificado, M2
+bloqueado por CP-01, M3 implementado e verificado no gate local Floci; M4
+implementado/verificado localmente com fechamento operacional pendente; M5–M6
+incompletos. O sub-drill QEMU anterior foi repetido três vezes, mas sua evidência
+limitada não aprova CP-01. A captura WAL permanece privada. M3 inclui
+reconciliação read-only, falhas/retry/cancelamento testados e métricas básicas
+instrumentadas. Em 2026-10-27, `make test` passou integralmente, incluindo o
+runner de conformance, restore cruzado das fixtures de cadeia/compactação e smoke
+S3 persistente Floci; drills CP-01 não foram executados nesta validação. A
+compatibilidade comprovada continua sendo LTX v2 contra `superfly/ltx v0.4.0`,
+não qualquer release genérica do Litestream.
