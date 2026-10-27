@@ -642,8 +642,8 @@ mod tests {
 
     use super::{
         PlanError, RestoreTarget, Segment, SnapshotPolicy, apply_gc_plan, build_gc_plan,
-        build_restore_plan, build_restore_plan_from_filesystem, compact_to_snapshot,
-        restore_to_target, should_compact,
+        build_restore_plan, build_restore_plan_from_filesystem, compact_if_due, restore_to_target,
+        should_compact,
     };
 
     const FLAG: u64 = 1 << 63;
@@ -850,8 +850,15 @@ mod tests {
         assert_eq!(row_count, 2);
         drop(restored);
 
-        let compacted_path = compact_to_snapshot(directory.path(), RestoreTarget::Txid(2))
-            .expect("compact restore point");
+        assert_eq!(
+            compact_if_due(directory.path(), 1, 2, SnapshotPolicy { every_txids: 2 })
+                .expect("no-op before snapshot cadence"),
+            None
+        );
+        let compacted_path =
+            compact_if_due(directory.path(), 1, 2, SnapshotPolicy { every_txids: 1 })
+                .expect("compact when due")
+                .expect("compaction published");
         assert!(compacted_path.exists());
         assert!(base_path.exists(), "compaction removed the source snapshot");
         assert!(delta_path.exists(), "compaction removed the source delta");

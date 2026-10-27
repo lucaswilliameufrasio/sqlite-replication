@@ -318,9 +318,15 @@ func TestRestoreToTargetReconstructsAndVerifiesLTXChain(t *testing.T) {
 	if count != 2 {
 		t.Fatalf("restored row count = %d, want 2", count)
 	}
-	compactedPath, err := CompactToSnapshot(root, Target{TXID: 2})
+	if compactedPath, due, err := CompactIfDue(root, 1, 2, SnapshotPolicy{EveryTXIDs: 2}); err != nil || due || compactedPath != "" {
+		t.Fatalf("CompactIfDue before cadence = %q, %v, %v; want empty, false, nil", compactedPath, due, err)
+	}
+	compactedPath, due, err := CompactIfDue(root, 1, 2, SnapshotPolicy{EveryTXIDs: 1})
 	if err != nil {
-		t.Fatalf("CompactToSnapshot: %v", err)
+		t.Fatalf("CompactIfDue: %v", err)
+	}
+	if !due {
+		t.Fatal("CompactIfDue did not publish at the configured cadence")
 	}
 	compactedPlan, err := BuildRestorePlanFromFilesystem(root, Target{TXID: 2})
 	if err != nil {
