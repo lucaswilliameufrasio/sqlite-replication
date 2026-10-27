@@ -973,10 +973,11 @@ propriedades que percorre truncamentos e mutações em todas as posições dos
 vetores locais pequenos e inclui seeds do oráculo independente: as fixtures
 maiores usam posições representativas para manter o custo do teste limitado.
 `make test-native` passou após adicionar seeds independentes aos decoders Go/Rust
-e fuzzing do parser WAL Go (fixtures independentes nos dois formatos), incluindo
-format, vet/clippy, suites, fuzz-smoke e conformance. O smoke WAL completou
-aproximadamente 360 execuções em 2 s com workers limitados; isso é apenas smoke,
-não fuzz prolongado. `make test` continua sem validação Floci nesta sessão:
+e fuzzing do parser WAL Go, mais mutações/truncamentos do parser WAL Rust
+(fixtures independentes nos dois formatos), incluindo format, vet/clippy,
+suites, fuzz-smoke e conformance. O smoke WAL completou centenas de execuções
+em 1–2 s com workers limitados; isso é apenas smoke, não fuzz prolongado.
+`make test` continua sem validação Floci nesta sessão:
 o smoke depende do daemon Docker rootless inacessível; ele não foi iniciado nem
 reconfigurado. Isso não é fuzzing exaustivo nem conclusão de M6. Próximo foco:
 avançar itens independentes restantes de M0/M5/M6; nenhum passo autoriza expor

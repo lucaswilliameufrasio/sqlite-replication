@@ -12,10 +12,10 @@ possui restore, compactação, retenção e GC filesystem/S3 implementados e
 verificados localmente, ainda privados e sem fechamento operacional completo.
 Isso não homologa AWS S3, R2 ou outro provedor. M6 está em andamento: o CI roda
 fuzz-smokes Go para os decoders LTX e parser WAL; testes Rust verificam
-truncamentos/mutações dos decoders LTX com vetores independentes. M5 e o restante
-de M6 continuam incompletos. Parsers WAL são isolados e não habilitam captura
-incremental. CP-01 segue pendente e bloqueia exposição ou qualquer promessa de
-segurança WAL.
+truncamentos/mutações dos decoders LTX e do parser WAL com vetores
+independentes. M5 e o restante de M6 continuam incompletos. Parsers WAL são
+isolados e não habilitam captura incremental. CP-01 segue pendente e bloqueia
+exposição ou qualquer promessa de segurança WAL.
 
 ## Documentos
 - [Plano de desenvolvimento](docs/PLANO_DESENVOLVIMENTO.md)
