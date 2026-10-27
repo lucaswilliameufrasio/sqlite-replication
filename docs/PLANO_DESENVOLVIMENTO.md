@@ -792,12 +792,13 @@ retido continua restaurável (`e88e60d`). A recuperação também é exercitada 
 encerrar abruptamente o processo cliente logo depois de uma exclusão S3: o plano
 antigo é rejeitado, o GC é replanejado e o ponto prometido segue restaurável
 (`58dafae`). Duas execuções consecutivas de
-`make test-floci` e uma terceira incluída em `make test` passaram com a imagem
-Floci local cacheada no digest conferido. O smoke agora restaura o mesmo
-repositório S3 publicado pelo Go no Rust, depois publica um repositório Rust e o
-restaura no Go, no bucket isolado compartilhado e após restart do Floci
-(`de4604e`). Conformance de snapshots compactados Go→Rust e Rust→Go (TXIDs não
-iniciais) também passou em `6e15075`.
+`make test-floci` e uma terceira incluída em `make test` passaram antes da
+injeção de crash. Após essa cobertura, `make test-floci` e `make test` passaram
+novamente com a imagem Floci local cacheada no digest conferido. O smoke agora
+restaura o mesmo repositório S3 publicado pelo Go no Rust; depois o Rust publica
+outro repositório e o Go o restaura no bucket isolado compartilhado, após restart
+do Floci (`de4604e`). Conformance de snapshots compactados Go→Rust e Rust→Go
+(TXIDs não iniciais) também passou em `6e15075`.
 
 As rotinas continuam internas, sem API pública. CP-01 segue bloqueando a
 habilitação pública de recuperação incremental e operações que dependam dessa
