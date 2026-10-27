@@ -11,12 +11,12 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/capture"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 	_ "modernc.org/sqlite"
-	"sqlite-replication"
-	"sqlite-replication/internal/capture"
-	"sqlite-replication/internal/sqliteadapter"
-	"sqlite-replication/ltx"
-	"sqlite-replication/storagefs"
 )
 
 func main() {

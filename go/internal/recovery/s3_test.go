@@ -16,10 +16,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storages3"
 	_ "modernc.org/sqlite"
-	"sqlite-replication/ltx"
-	"sqlite-replication/storagefs"
-	"sqlite-replication/storages3"
 )
 
 func TestS3RecoveryKeyMappingAndPrefixValidation(t *testing.T) {

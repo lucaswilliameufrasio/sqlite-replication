@@ -8,11 +8,11 @@ import (
 	"os"
 	"path/filepath"
 
-	"sqlite-replication/internal/spool"
-	"sqlite-replication/internal/sqliteadapter"
-	"sqlite-replication/internal/wal"
-	"sqlite-replication/internal/walcapture"
-	"sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/spool"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/wal"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/walcapture"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
 )
 
 type FaultPoint string

@@ -11,9 +11,9 @@ import (
 
 	"modernc.org/sqlite"
 
-	"sqlite-replication"
-	"sqlite-replication/internal/spool"
-	"sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/spool"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
 
 func TestCaptureCyclePublishesAndRecoversCheckpointedChanges(t *testing.T) {

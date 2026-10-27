@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"sqlite-replication/ltx"
-	"sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
 
 const checksumFlag uint64 = 1 << 63

@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"sqlite-replication/internal/sqliteadapter"
-	"sqlite-replication/ltx"
-	"sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
 
 // RestoreToTarget reconstructs a verified repository point into a new file.

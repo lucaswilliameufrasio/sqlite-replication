@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"sqlite-replication/internal/sqliteadapter"
-	"sqlite-replication/ltx"
-	"sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
 
 // Snapshot creates an LTX v2 snapshot of a WAL-mode SQLite database and

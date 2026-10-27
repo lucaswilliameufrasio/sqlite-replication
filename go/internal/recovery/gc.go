@@ -10,7 +10,7 @@ import (
 	"sort"
 	"strings"
 
-	"sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
 
 var ErrStaleGCPlan = errors.New("garbage-collection plan is stale")

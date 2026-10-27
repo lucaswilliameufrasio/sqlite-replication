@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
 	_ "modernc.org/sqlite"
-	"sqlite-replication"
-	"sqlite-replication/internal/sqliteadapter"
 )
 
 func TestSnapshotAndOfflineRestore(t *testing.T) {

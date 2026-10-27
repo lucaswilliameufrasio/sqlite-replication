@@ -13,10 +13,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 	_ "modernc.org/sqlite"
-	"sqlite-replication/internal/sqliteadapter"
-	"sqlite-replication/ltx"
-	"sqlite-replication/storagefs"
 )
 
 func TestBuildRestorePlanByInclusiveTXID(t *testing.T) {

@@ -10,10 +10,10 @@ import (
 	"strconv"
 	"strings"
 
-	"sqlite-replication/internal/wal"
-	"sqlite-replication/internal/walcapture"
-	"sqlite-replication/ltx"
-	"sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/wal"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/walcapture"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
 
 type deltaFile struct {

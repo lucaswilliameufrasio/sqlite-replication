@@ -12,8 +12,8 @@ import (
 	"strconv"
 	"strings"
 
-	"sqlite-replication/storagefs"
-	"sqlite-replication/storages3"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storages3"
 )
 
 type S3GCPlan struct {

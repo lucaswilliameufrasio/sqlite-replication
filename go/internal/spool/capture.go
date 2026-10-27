@@ -9,9 +9,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"sqlite-replication/internal/walcapture"
-	"sqlite-replication/ltx"
-	"sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/walcapture"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
 
 const captureWatermarkVersion = 1

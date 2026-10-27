@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"sqlite-replication/internal/walcapture"
-	"sqlite-replication/ltx"
-	"sqlite-replication/storagefs"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/walcapture"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
 
 func TestPublishTransactionsDurabilityAndFaultBoundaries(t *testing.T) {

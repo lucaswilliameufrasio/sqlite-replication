@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 	_ "modernc.org/sqlite"
-	"sqlite-replication/storagefs"
 )
 
 func TestPinnedReferenceRecoveryChainFixtures(t *testing.T) {

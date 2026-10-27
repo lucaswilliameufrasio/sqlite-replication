@@ -13,7 +13,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"sqlite-replication"
+	"github.com/lucaswilliameufrasio/sqlite-replication"
 )
 
 func TestCaptureRecoversAfterSIGKILLAtDurabilityBoundaries(t *testing.T) {

@@ -1,4 +1,4 @@
-module sqlite-replication
+module github.com/lucaswilliameufrasio/sqlite-replication
 
 go 1.26.0
 
