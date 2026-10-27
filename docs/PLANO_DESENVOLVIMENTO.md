@@ -998,3 +998,23 @@ respectivamente. Os harnesses têm overheads distintos e os valores são uma
 comparação local inicial, não uma campanha controlada com Litestream nem
 evidência de capacidade ponta a ponta. Não há baseline de revisão candidata; o
 entregável de benchmarks M6 permanece parcial.
+
+### Matriz de fechamento dos marcos — retomada 2026-10-27
+
+| Marco | Estado | Evidência atual | Trabalho ainda necessário |
+|---|---|---|---|
+| M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test-native` | Gate Floci completo neste checkout e evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
+| M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test-native` | Nenhum item novo identificado nesta retomada |
+| M2 — WAL/checkpoint | Bloqueado por CP-01 | Parser e protótipo interno apenas | Prova CP-01 e aprovação explícita; até lá, manter APIs/captura/recovery incremental privadas |
+| M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
+| M4 — compactação/retenção | Implementado/verificado localmente | Restore, compactação e GC filesystem/S3 cobertos localmente | Fechamento operacional/documentação completa conforme o runbook, sem habilitação pública dependente de M2 |
+| M5 — API/segurança/observabilidade | Incompleto | Métricas básicas/adapters existentes; não há ainda superfície pública completa de `Status`/`Health`/`Flush` nem exemplos Chi/Axum do aceite | Contrato público, write-gate/flush, integração OTEL, compatibilidade de drivers e exemplos/guias; revisar dependências com M2 e ADRs 0011–0012 antes de expor comportamento |
+| M6 — stress/bench/release | Em andamento | Fuzz-smokes Go para LTX/WAL, propriedades Rust com fixtures independentes, `make bench-ltx` e baseline Go/Rust | Fuzz/chaos prolongado, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
+
+**Verificação da retomada:** `make test-native` passou após os últimos testes e
+harnesses; `make bench-ltx` executou os dois motores com fixtures independentes.
+`make test` não foi concluído porque o daemon Docker rootless necessário ao Floci
+estava inacessível; não foi iniciado nem reconfigurado. Os commits de
+implementação e progresso foram separados e o checkout estava limpo em
+`a0d29a5`. Esta retomada prioriza todos os itens que não dependem de CP-01; não
+marca M2 nem o roadmap inteiro como concluídos.
