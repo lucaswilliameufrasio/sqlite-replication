@@ -770,7 +770,7 @@ permanece privada.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
 
-**Estado observado em 2026-10-26 (commits `8ad39a0`–`d15b443`):** as
+**Estado observado em 2026-10-26 (commits `8ad39a0`–`e88e60d`):** as
 implementações privadas Go/Rust validam inventário/header/checksum, planejam
 restore inclusivo por TXID e timestamp UTC, reconstroem em staging com
 verificação SQLite, compactam sem remover fontes e planejam GC apenas com
@@ -786,10 +786,12 @@ publicam compactação no layout S3 e oferecem GC dry-run com revalidação ante
 exclusão. O Floci local exercitou snapshot + delta, restore por TXID e timestamp
 antes/depois do delta, compactação, rejeição de plano stale, GC e restore dos
 pontos retidos nos dois engines (`bb35b18`), além de compactação concorrente no
-mesmo ponto com publicação imutável idempotente (`d15b443`). Duas execuções
-consecutivas de `make test-floci` passaram e `make test` passou com a imagem
-Floci local cacheada no digest conferido. Conformance de snapshots compactados
-Go→Rust e Rust→Go (TXIDs não iniciais) passou em `6e15075`.
+mesmo ponto (`d15b443`) e retomada segura de GC após exclusão parcial simulada:
+plano anterior é rejeitado como stale, o novo plano coleta o restante e o ponto
+retido continua restaurável (`e88e60d`). Duas execuções consecutivas de
+`make test-floci` passaram e `make test` passou com a imagem Floci local cacheada
+no digest conferido. Conformance de snapshots compactados Go→Rust e Rust→Go
+(TXIDs não iniciais) passou em `6e15075`.
 
 As rotinas continuam internas, sem API pública. CP-01 segue bloqueando a
 habilitação pública de recuperação incremental e operações que dependam dessa
