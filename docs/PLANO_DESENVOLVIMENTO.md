@@ -218,7 +218,7 @@ Cada linguagem possui sua própria lógica de encode/decode LTX, WAL e máquina 
 ### 6.4 Convenções de restauração
 
 - TXID: limite **inclusivo**; compactados só podem ser aplicados quando seu `MaxTXID` cabe integralmente no alvo.
-- Timestamp: limite **exclusivo** (`arquivo.timestamp < alvo`), documentado explicitamente para manter semântica do perfil de referência.
+- Timestamp: limite **inclusivo**; selecionar o maior TXID disponível cujo timestamp LTX seja `<= alvo`, conforme `spec/RECOVERY_PROTOCOL.md` e ADR 0010.
 - A precisão de recuperação é a fronteira entre LTX preservados, não a de cada COMMIT SQLite, e pode piorar quando a retenção elimina intervalos finos.
 - Nunca tentar aplicar parte de um arquivo LTX compactado para atingir um TXID intermediário.
 
