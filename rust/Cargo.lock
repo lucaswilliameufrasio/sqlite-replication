@@ -1864,6 +1864,8 @@ dependencies = [
 name = "sqlite-replication-core"
 version = "0.1.0"
 dependencies = [
+ "aws-credential-types",
+ "aws-sdk-s3",
  "libc",
  "rusqlite",
  "sha2",
@@ -1871,8 +1873,10 @@ dependencies = [
  "sqlite-replication-spool",
  "sqlite-replication-sqlite",
  "sqlite-replication-storage-fs",
+ "sqlite-replication-storage-s3",
  "sqlite-replication-wal",
  "tempfile",
+ "tokio",
 ]
 
 [[package]]
@@ -1921,7 +1925,8 @@ dependencies = [
  "aws-credential-types",
  "aws-sdk-s3",
  "sha2",
- "sqlite-replication-core",
+ "sqlite-replication-ltx",
+ "sqlite-replication-sqlite",
  "sqlite-replication-storage-fs",
  "tempfile",
  "tokio",

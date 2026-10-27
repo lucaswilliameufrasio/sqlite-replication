@@ -1,6 +1,6 @@
-//! Read-only restore planning from verified immutable LTX segments.
-//!
-//! The planner does not read storage, mutate repositories, or expose WAL capture.
+//! Private restore, compaction, and retention workflows for immutable LTX data.
+//! S3 operations stage objects in a temporary filesystem repository and reuse
+//! the same validated planner; this module is not wired into the public API.
 
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -11,6 +11,8 @@ use sha2::{Digest, Sha256};
 use sqlite_replication_ltx::{DatabaseState, decode_delta, decode_snapshot, encode_snapshot_at};
 use sqlite_replication_sqlite::verify_database;
 use sqlite_replication_storage_fs::{promote_if_missing, read_repository, sync_directory};
+use sqlite_replication_storage_s3::S3Store;
+use tokio::io::AsyncReadExt;
 const CHECKSUM_FLAG: u64 = 1 << 63;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -57,6 +59,14 @@ pub(crate) struct GCPlan {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct SnapshotPolicy {
     pub every_txids: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct S3GCPlan {
+    pub prefix: String,
+    pub plan: GCPlan,
+    pub retained_object_keys: Vec<String>,
+    pub candidate_object_keys: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -437,6 +447,272 @@ pub(crate) fn compact_if_due(
     compact_to_snapshot(root, RestoreTarget::Txid(current_txid)).map(Some)
 }
 
+pub(crate) async fn restore_s3_to_target(
+    store: &S3Store,
+    prefix: &str,
+    destination: &Path,
+    target: RestoreTarget,
+) -> io::Result<()> {
+    let staging = stage_s3_repository(store, prefix).await?;
+    restore_to_target(staging.path(), destination, target)
+}
+
+pub(crate) async fn compact_s3_to_snapshot(
+    store: &S3Store,
+    prefix: &str,
+    target: RestoreTarget,
+) -> io::Result<String> {
+    validate_s3_prefix(prefix)?;
+    let staging = stage_s3_repository(store, prefix).await?;
+    let local_path = compact_to_snapshot(staging.path(), target)?;
+    let local_key = local_path
+        .strip_prefix(staging.path())
+        .map_err(io::Error::other)?
+        .to_string_lossy()
+        .replace(std::path::MAIN_SEPARATOR, "/");
+    let key = local_key_to_s3_key(prefix, &local_key)?;
+    let local_file = tokio::fs::File::open(&local_path).await?;
+    let receipt = store
+        .put_immutable(&key, local_file)
+        .await
+        .map_err(|_| io::Error::other("publish compacted S3 snapshot failed"))?;
+    let output = store
+        .get(&key)
+        .await
+        .map_err(|_| io::Error::other("read back compacted S3 snapshot failed"))?;
+    let mut body = output.body.into_async_read();
+    let mut hasher = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = body.read(&mut buffer).await?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        size = size
+            .checked_add(count as u64)
+            .ok_or_else(|| io::Error::other("S3 snapshot size overflow"))?;
+    }
+    let checksum = format!("{:x}", hasher.finalize());
+    if size != receipt.size || checksum != receipt.sha256 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "compacted S3 snapshot differs after publication",
+        ));
+    }
+    Ok(key)
+}
+
+pub(crate) async fn build_s3_gc_plan(
+    store: &S3Store,
+    prefix: &str,
+    required_targets: &[RestoreTarget],
+) -> io::Result<S3GCPlan> {
+    validate_s3_prefix(prefix)?;
+    let staging = stage_s3_repository(store, prefix).await?;
+    let plan = build_gc_plan(staging.path(), required_targets)?;
+    let retained_object_keys = plan
+        .retained_keys
+        .iter()
+        .map(|key| local_key_to_s3_key(prefix, key))
+        .collect::<io::Result<Vec<_>>>()?;
+    let candidate_object_keys = plan
+        .candidates
+        .iter()
+        .map(|object| local_key_to_s3_key(prefix, &object.key))
+        .collect::<io::Result<Vec<_>>>()?;
+    Ok(S3GCPlan {
+        prefix: prefix.to_owned(),
+        plan,
+        retained_object_keys,
+        candidate_object_keys,
+    })
+}
+
+pub(crate) async fn apply_s3_gc_plan(
+    store: &S3Store,
+    prefix: &str,
+    reviewed: &S3GCPlan,
+) -> io::Result<()> {
+    if prefix != reviewed.prefix {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "S3 garbage-collection plan belongs to another prefix",
+        ));
+    }
+    let current = build_s3_gc_plan(store, prefix, &reviewed.plan.required_targets).await?;
+    if current != *reviewed {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "S3 garbage-collection plan is stale",
+        ));
+    }
+    for keys in current.candidate_object_keys.chunks(1000) {
+        store
+            .delete_batch(keys)
+            .await
+            .map_err(|_| io::Error::other("collect unreferenced S3 LTX objects failed"))?;
+    }
+    Ok(())
+}
+
+async fn stage_s3_repository(store: &S3Store, prefix: &str) -> io::Result<tempfile::TempDir> {
+    validate_s3_prefix(prefix)?;
+    let staging = tempfile::tempdir()?;
+    let manifest_key = join_s3_key(prefix, "_meta/repository.json");
+    download_s3_object(
+        store,
+        &manifest_key,
+        &staging.path().join("_meta/repository.json"),
+    )
+    .await?;
+    read_repository(staging.path()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "S3 repository metadata is invalid",
+        )
+    })?;
+
+    let list_prefix = if prefix.is_empty() {
+        String::new()
+    } else {
+        format!("{prefix}/")
+    };
+    let mut cursor: Option<String> = None;
+    let mut ltx_count = 0_usize;
+    loop {
+        let page = store
+            .list_page(&list_prefix, cursor.as_deref(), 1000)
+            .await
+            .map_err(|_| io::Error::other("list S3 repository objects failed"))?;
+        for object in page.contents() {
+            let key = object.key().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidData, "S3 object has no key")
+            })?;
+            if key == manifest_key || !key.ends_with(".ltx") {
+                continue;
+            }
+            let local_key = s3_key_to_local_key(prefix, key)?;
+            download_s3_object(store, key, &staging.path().join(&local_key)).await?;
+            ltx_count += 1;
+        }
+        if !page.is_truncated().unwrap_or(false) {
+            break;
+        }
+        let next = page.next_continuation_token().ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "S3 listing is truncated without a continuation token",
+            )
+        })?;
+        if cursor.as_deref() == Some(next) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "S3 listing returned a non-advancing cursor",
+            ));
+        }
+        cursor = Some(next.to_owned());
+    }
+    if ltx_count == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "S3 repository contains no LTX restore points",
+        ));
+    }
+    Ok(staging)
+}
+
+async fn download_s3_object(store: &S3Store, key: &str, destination: &Path) -> io::Result<()> {
+    let output = store
+        .get(key)
+        .await
+        .map_err(|_| io::Error::other("download S3 repository object failed"))?;
+    let mut body = output.body.into_async_read();
+    let parent = destination
+        .parent()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "S3 object has no parent"))?;
+    tokio::fs::create_dir_all(parent).await?;
+    let mut file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(destination)
+        .await?;
+    let result = tokio::io::copy(&mut body, &mut file).await;
+    if let Err(error) = result {
+        let _ = tokio::fs::remove_file(destination).await;
+        return Err(error);
+    }
+    if let Err(error) = file.sync_all().await {
+        let _ = tokio::fs::remove_file(destination).await;
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn local_key_to_s3_key(prefix: &str, key: &str) -> io::Result<String> {
+    let parts = key.split('/').collect::<Vec<_>>();
+    if parts.len() != 3 || parts[0] != "ltx" || !parts[2].ends_with(".ltx") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid local LTX key",
+        ));
+    }
+    let level = parts[1]
+        .parse::<u16>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid local LTX level"))?;
+    parse_filename(parts[2])?;
+    Ok(join_s3_key(prefix, &format!("{level:04x}/{}", parts[2])))
+}
+
+fn s3_key_to_local_key(prefix: &str, key: &str) -> io::Result<String> {
+    let relative = if prefix.is_empty() {
+        key
+    } else {
+        key.strip_prefix(&format!("{prefix}/")).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "S3 LTX object is outside repository prefix",
+            )
+        })?
+    };
+    let parts = relative.split('/').collect::<Vec<_>>();
+    if parts.len() != 2 || parts[0].len() != 4 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "invalid S3 LTX key",
+        ));
+    }
+    let level = u16::from_str_radix(parts[0], 16)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid S3 LTX level"))?;
+    parse_filename(parts[1])?;
+    Ok(format!("ltx/{level}/{}", parts[1]))
+}
+
+fn join_s3_key(prefix: &str, suffix: &str) -> String {
+    if prefix.is_empty() {
+        suffix.to_owned()
+    } else {
+        format!("{prefix}/{suffix}")
+    }
+}
+
+fn validate_s3_prefix(prefix: &str) -> io::Result<()> {
+    if prefix.starts_with('/')
+        || prefix.ends_with('/')
+        || prefix.contains('\0')
+        || prefix
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid S3 repository prefix",
+        ));
+    }
+    Ok(())
+}
+
 pub(crate) fn build_gc_plan(root: &Path, required_targets: &[RestoreTarget]) -> io::Result<GCPlan> {
     if required_targets.is_empty() {
         return Err(io::Error::new(
@@ -633,17 +909,21 @@ fn valid_page_size(size: u32) -> bool {
 mod tests {
     use std::fs::{self, File};
     use std::io::{Cursor, Seek, SeekFrom};
+    use std::path::Path;
 
+    use aws_credential_types::Credentials;
     use rusqlite::Connection;
     use sqlite_replication_ltx::{
         DatabaseState, encode_delta, encode_snapshot, encode_snapshot_at,
     };
     use sqlite_replication_storage_fs::{ensure_repository, ltx_path, publish};
+    use sqlite_replication_storage_s3::S3Store;
 
     use super::{
-        PlanError, RestoreTarget, Segment, SnapshotPolicy, apply_gc_plan, build_gc_plan,
-        build_restore_plan, build_restore_plan_from_filesystem, compact_if_due, restore_to_target,
-        should_compact,
+        PlanError, RestoreTarget, Segment, SnapshotPolicy, apply_gc_plan, apply_s3_gc_plan,
+        build_gc_plan, build_restore_plan, build_restore_plan_from_filesystem, build_s3_gc_plan,
+        compact_if_due, compact_s3_to_snapshot, local_key_to_s3_key, restore_s3_to_target,
+        restore_to_target, s3_key_to_local_key, should_compact,
     };
 
     const FLAG: u64 = 1 << 63;
@@ -933,5 +1213,163 @@ mod tests {
         assert!(!should_compact(10, 14, policy).expect("before cadence"));
         assert!(should_compact(10, 15, SnapshotPolicy { every_txids: 0 }).is_err());
         assert!(should_compact(15, 10, policy).is_err());
+    }
+
+    #[test]
+    fn s3_key_mapping_round_trips_and_rejects_traversal() {
+        let local = s3_key_to_local_key(
+            "tenant/db",
+            "tenant/db/000a/0000000000000001-0000000000000007.ltx",
+        )
+        .expect("map S3 key");
+        assert_eq!(local, "ltx/10/0000000000000001-0000000000000007.ltx");
+        assert_eq!(
+            local_key_to_s3_key("tenant/db", &local).expect("map local key"),
+            "tenant/db/000a/0000000000000001-0000000000000007.ltx"
+        );
+        for prefix in ["/absolute", "trailing/", "a//b", "a/../b", "a/./b"] {
+            assert!(super::validate_s3_prefix(prefix).is_err(), "{prefix}");
+        }
+        assert!(s3_key_to_local_key("tenant/db", "tenant/db/../000a/file.ltx").is_err());
+    }
+
+    #[tokio::test]
+    #[ignore = "requires the isolated Floci service from make test-floci"]
+    async fn floci_s3_recovery_restore_compaction_and_gc() {
+        let endpoint = std::env::var("SQLITE_REPLICATION_FLOCI_ENDPOINT")
+            .expect("Floci endpoint configured by smoke script");
+        let run_id = std::env::var("SQLITE_REPLICATION_FLOCI_RUN_ID")
+            .expect("Floci run ID configured by smoke script");
+        let bucket = format!("sqlite-replication-m4-{run_id}");
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version_latest()
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .endpoint_url(endpoint)
+            .force_path_style(true)
+            .credentials_provider(Credentials::new("test", "test", None, None, "m4-test"))
+            .retry_config(aws_sdk_s3::config::retry::RetryConfig::standard())
+            .build();
+        let client = aws_sdk_s3::Client::from_conf(config);
+        client
+            .create_bucket()
+            .bucket(&bucket)
+            .send()
+            .await
+            .expect("create isolated M4 bucket");
+        let store = S3Store::new(client.clone(), &bucket).expect("construct S3 store");
+        let prefix = "recovery-test";
+
+        let source_directory = tempfile::tempdir().expect("create source directory");
+        let database_path = source_directory.path().join("source.sqlite");
+        let database = Connection::open(&database_path).expect("create source database");
+        database
+            .execute_batch(
+                "CREATE TABLE records (id INTEGER PRIMARY KEY, value TEXT NOT NULL); INSERT INTO records VALUES (1, 'source');",
+            )
+            .expect("write source record");
+        drop(database);
+        let database_bytes = fs::read(&database_path).expect("read source database");
+        let source_repository = tempfile::tempdir().expect("create source repository");
+        ensure_repository(source_repository.path()).expect("initialize source repository");
+        let source_snapshot = source_repository
+            .path()
+            .join("ltx/0/0000000000000001-0000000000000007.ltx");
+        fs::create_dir_all(source_snapshot.parent().expect("snapshot parent"))
+            .expect("create snapshot level");
+        let mut snapshot_file = File::create(&source_snapshot).expect("create source snapshot");
+        encode_snapshot_at(
+            &mut Cursor::new(&database_bytes),
+            &mut snapshot_file,
+            7,
+            1_700_000_000_007,
+        )
+        .expect("encode source snapshot");
+        snapshot_file.sync_all().expect("sync source snapshot");
+
+        let manifest_key = super::join_s3_key(prefix, "_meta/repository.json");
+        let source_key = super::join_s3_key(prefix, "0000/0000000000000001-0000000000000007.ltx");
+        let compacted_key =
+            super::join_s3_key(prefix, "0001/0000000000000001-0000000000000007.ltx");
+        let manifest =
+            tokio::fs::File::open(source_repository.path().join("_meta/repository.json"))
+                .await
+                .expect("open repository metadata");
+        store
+            .put_immutable(&manifest_key, manifest)
+            .await
+            .expect("upload repository metadata");
+        let snapshot_input = tokio::fs::File::open(&source_snapshot)
+            .await
+            .expect("open source snapshot");
+        store
+            .put_immutable(&source_key, snapshot_input)
+            .await
+            .expect("upload source snapshot");
+
+        let restore_directory = tempfile::tempdir().expect("create restore directory");
+        let restored_path = restore_directory.path().join("restored.sqlite");
+        restore_s3_to_target(&store, prefix, &restored_path, RestoreTarget::Txid(7))
+            .await
+            .expect("restore S3 TXID");
+        assert_s3_record(&restored_path);
+
+        assert_eq!(
+            compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(7))
+                .await
+                .expect("compact S3 point"),
+            compacted_key
+        );
+        let plan = build_s3_gc_plan(&store, prefix, &[RestoreTarget::Txid(7)])
+            .await
+            .expect("build S3 dry-run GC plan");
+        assert_eq!(
+            plan.candidate_object_keys.as_slice(),
+            std::slice::from_ref(&source_key)
+        );
+
+        let extra_key = super::join_s3_key(prefix, "0002/0000000000000001-0000000000000007.ltx");
+        let extra = tokio::fs::File::open(&source_snapshot)
+            .await
+            .expect("open extra snapshot");
+        store
+            .put_immutable(&extra_key, extra)
+            .await
+            .expect("add object to stale the plan");
+        assert!(apply_s3_gc_plan(&store, prefix, &plan).await.is_err());
+        store
+            .delete_batch(std::slice::from_ref(&extra_key))
+            .await
+            .expect("remove stale-plan fixture");
+        apply_s3_gc_plan(&store, prefix, &plan)
+            .await
+            .expect("apply revalidated S3 GC plan");
+        assert!(store.head(&source_key).await.is_err());
+
+        let restored_after_gc = restore_directory.path().join("restored-after-gc.sqlite");
+        restore_s3_to_target(&store, prefix, &restored_after_gc, RestoreTarget::Txid(7))
+            .await
+            .expect("restore retained point after S3 GC");
+        assert_s3_record(&restored_after_gc);
+
+        store
+            .delete_batch(&[manifest_key, compacted_key])
+            .await
+            .expect("remove isolated recovery objects");
+        client
+            .delete_bucket()
+            .bucket(bucket)
+            .send()
+            .await
+            .expect("delete isolated M4 bucket");
+    }
+
+    fn assert_s3_record(path: &Path) {
+        let database = Connection::open(path).expect("open restored S3 database");
+        let value: String = database
+            .query_row("SELECT value FROM records WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .expect("read restored S3 record");
+        assert_eq!(value, "source");
     }
 }

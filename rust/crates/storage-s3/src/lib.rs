@@ -1326,20 +1326,16 @@ mod tests {
                 .await
                 .expect("read Go-published bytes");
             assert_eq!(go_bytes, fixture, "Go object must survive Floci restart");
-            let restore_root = tempfile::tempdir().expect("create Rust restore repository");
-            sqlite_replication_storage_fs::ensure_repository(restore_root.path())
-                .expect("initialize Rust restore repository");
-            let snapshot_path = sqlite_replication_storage_fs::ltx_path(restore_root.path(), 1, 1);
-            std::fs::create_dir_all(snapshot_path.parent().expect("LTX path parent"))
-                .expect("create Rust LTX level directory");
-            std::fs::write(&snapshot_path, &go_bytes).expect("stage Go-published LTX");
-            let restored_path = restore_root.path().join("restored.sqlite");
-            sqlite_replication_core::restore_if_missing(&restore_root, &restored_path)
-                .expect("restore Go-published S3 LTX with Rust");
-            assert!(
-                restored_path.exists(),
-                "Rust restore must promote the database"
-            );
+            let mut snapshot_input = std::io::Cursor::new(&go_bytes);
+            let mut restored = tempfile::NamedTempFile::new().expect("create Rust restore image");
+            sqlite_replication_ltx::decode_snapshot(&mut snapshot_input, &mut restored)
+                .expect("decode Go-published LTX with Rust");
+            restored
+                .as_file()
+                .sync_all()
+                .expect("sync restored SQLite image");
+            sqlite_replication_sqlite::verify_database(restored.path())
+                .expect("verify Go-published SQLite snapshot");
             shared_store
                 .put_immutable("rust-marker.ltx", Cursor::new(fixture))
                 .await

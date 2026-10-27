@@ -13,5 +13,6 @@ tempfile.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
-sqlite-replication-core = { path = "../core" }
+sqlite-replication-ltx = { path = "../ltx" }
+sqlite-replication-sqlite = { path = "../sqlite-adapter" }
 sqlite-replication-storage-fs = { path = "../storage-fs" }
