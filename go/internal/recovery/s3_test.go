@@ -80,7 +80,8 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 	remoteKeys := []string{
 		joinS3Key(prefix, "_meta/repository.json"),
 		joinS3Key(prefix, "0000/0000000000000001-0000000000000007.ltx"),
-		joinS3Key(prefix, "0001/0000000000000001-0000000000000007.ltx"),
+		joinS3Key(prefix, "0000/0000000000000008-0000000000000008.ltx"),
+		joinS3Key(prefix, "0001/0000000000000001-0000000000000008.ltx"),
 	}
 	defer func() {
 		_ = store.DeleteBatch(context.Background(), remoteKeys)
@@ -112,6 +113,11 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 		_ = source.Close()
 		t.Fatal(err)
 	}
+	baseState, err := ltx.LoadDatabaseState(source, info.Size(), 7)
+	if err != nil {
+		_ = source.Close()
+		t.Fatalf("load source state for S3 delta: %v", err)
+	}
 	localSnapshot := storagefs.LTXPath(localRepository, 1, 7)
 	if err := os.MkdirAll(filepath.Dir(localSnapshot), 0o750); err != nil {
 		_ = source.Close()
@@ -122,7 +128,7 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 		_ = source.Close()
 		t.Fatal(err)
 	}
-	if _, err := ltx.EncodeSnapshotAt(source, info.Size(), staged, 7, 1700000000007); err != nil {
+	if _, err := ltx.EncodeSnapshotAt(source, info.Size(), staged, 7, 1000); err != nil {
 		_ = source.Close()
 		_ = staged.Close()
 		t.Fatalf("encode source snapshot: %v", err)
@@ -166,40 +172,141 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	database, err = sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec("UPDATE records SET value = 'updated' WHERE id = 1"); err != nil {
+		_ = database.Close()
+		t.Fatal(err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Open(databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetInfo, err := target.Stat()
+	if err != nil {
+		_ = target.Close()
+		t.Fatal(err)
+	}
+	deltaHeader, pages, targetState, err := baseState.DeltaToDatabaseImage(target, targetInfo.Size(), 2000)
+	if err != nil {
+		_ = target.Close()
+		t.Fatalf("create S3 delta fixture: %v", err)
+	}
+	if err := target.Close(); err != nil {
+		t.Fatal(err)
+	}
+	deltaPath := storagefs.LTXPath(localRepository, deltaHeader.MinTXID, deltaHeader.MaxTXID)
+	if err := os.MkdirAll(filepath.Dir(deltaPath), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	deltaStage, err := os.CreateTemp(filepath.Dir(deltaPath), ".delta-*.ltx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ltx.EncodeDelta(*deltaHeader, pages, targetState.Checksum, deltaStage); err != nil {
+		_ = deltaStage.Close()
+		t.Fatalf("encode S3 delta fixture: %v", err)
+	}
+	if err := deltaStage.Sync(); err != nil {
+		_ = deltaStage.Close()
+		t.Fatal(err)
+	}
+	deltaStagePath := deltaStage.Name()
+	if err := deltaStage.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := storagefs.Publish(deltaStagePath, deltaPath); err != nil {
+		t.Fatalf("publish S3 delta fixture: %v", err)
+	}
+	delta, err := os.Open(deltaPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutImmutable(ctx, remoteKeys[2], delta); err != nil {
+		_ = delta.Close()
+		t.Fatalf("upload S3 delta: %v", err)
+	}
+	if err := delta.Close(); err != nil {
+		t.Fatal(err)
+	}
+
 	restoredPath := filepath.Join(t.TempDir(), "restored.sqlite")
 	if err := RestoreS3ToTarget(ctx, store, prefix, restoredPath, Target{TXID: 7}); err != nil {
 		t.Fatalf("restore TXID from S3: %v", err)
 	}
-	assertRecoveryRow(t, restoredPath)
+	assertRecoveryRow(t, restoredPath, "source")
+	beforeDelta := int64(1500)
+	restoredByTime := filepath.Join(t.TempDir(), "restored-by-time.sqlite")
+	if err := RestoreS3ToTarget(ctx, store, prefix, restoredByTime, Target{TimestampMillis: &beforeDelta}); err != nil {
+		t.Fatalf("restore timestamp from S3: %v", err)
+	}
+	assertRecoveryRow(t, restoredByTime, "source")
+	afterDelta := int64(2500)
+	restoredDeltaByTime := filepath.Join(t.TempDir(), "restored-delta-by-time.sqlite")
+	if err := RestoreS3ToTarget(ctx, store, prefix, restoredDeltaByTime, Target{TimestampMillis: &afterDelta}); err != nil {
+		t.Fatalf("restore timestamp through S3 delta: %v", err)
+	}
+	assertRecoveryRow(t, restoredDeltaByTime, "updated")
 
-	compactedKey, err := CompactS3ToSnapshot(ctx, store, prefix, Target{TXID: 7})
+	compactedKey, err := CompactS3ToSnapshot(ctx, store, prefix, Target{TXID: 8})
 	if err != nil {
 		t.Fatalf("compact S3 restore point: %v", err)
 	}
-	if compactedKey != remoteKeys[2] {
-		t.Fatalf("compacted S3 key = %q, want %q", compactedKey, remoteKeys[2])
+	if compactedKey != remoteKeys[3] {
+		t.Fatalf("compacted S3 key = %q, want %q", compactedKey, remoteKeys[3])
 	}
-	plan, err := BuildS3GCPlan(ctx, store, prefix, []Target{{TXID: 7}})
+	plan, err := BuildS3GCPlan(ctx, store, prefix, []Target{{TXID: 8}})
 	if err != nil {
 		t.Fatalf("build S3 GC dry-run: %v", err)
 	}
-	if len(plan.CandidateObjectKeys) != 1 || plan.CandidateObjectKeys[0] != remoteKeys[1] {
+	if len(plan.CandidateObjectKeys) != 2 || plan.CandidateObjectKeys[0] != remoteKeys[1] || plan.CandidateObjectKeys[1] != remoteKeys[2] {
 		t.Fatalf("unexpected S3 GC candidates: %+v", plan.CandidateObjectKeys)
+	}
+	extraKey := joinS3Key(prefix, "0002/0000000000000001-0000000000000007.ltx")
+	validExtraSnapshot, err := os.Open(localSnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutImmutable(ctx, extraKey, validExtraSnapshot); err != nil {
+		_ = validExtraSnapshot.Close()
+		t.Fatalf("add object to stale the S3 GC plan: %v", err)
+	}
+	if err := validExtraSnapshot.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := ApplyS3GCPlan(ctx, store, prefix, plan); err != ErrStaleGCPlan {
+		t.Fatalf("stale S3 GC plan error = %v, want ErrStaleGCPlan", err)
+	}
+	if err := store.DeleteBatch(ctx, []string{extraKey}); err != nil {
+		t.Fatalf("remove stale-plan fixture: %v", err)
 	}
 	if err := ApplyS3GCPlan(ctx, store, prefix, plan); err != nil {
 		t.Fatalf("apply revalidated S3 GC plan: %v", err)
 	}
-	if _, err := store.Head(ctx, remoteKeys[1]); err == nil {
-		t.Fatal("collected S3 source snapshot still exists")
+	for _, key := range remoteKeys[1:3] {
+		if _, err := store.Head(ctx, key); err == nil {
+			t.Fatalf("collected S3 source object %q still exists", key)
+		}
 	}
 	restoredAfterGC := filepath.Join(t.TempDir(), "restored-after-gc.sqlite")
-	if err := RestoreS3ToTarget(ctx, store, prefix, restoredAfterGC, Target{TXID: 7}); err != nil {
+	if err := RestoreS3ToTarget(ctx, store, prefix, restoredAfterGC, Target{TXID: 8}); err != nil {
 		t.Fatalf("restore retained S3 point after GC: %v", err)
 	}
-	assertRecoveryRow(t, restoredAfterGC)
+	assertRecoveryRow(t, restoredAfterGC, "updated")
+	retainedTimestamp := int64(2500)
+	restoredByTimeAfterGC := filepath.Join(t.TempDir(), "restored-by-time-after-gc.sqlite")
+	if err := RestoreS3ToTarget(ctx, store, prefix, restoredByTimeAfterGC, Target{TimestampMillis: &retainedTimestamp}); err != nil {
+		t.Fatalf("restore retained timestamp after S3 GC: %v", err)
+	}
+	assertRecoveryRow(t, restoredByTimeAfterGC, "updated")
 }
 
-func assertRecoveryRow(t *testing.T, path string) {
+func assertRecoveryRow(t *testing.T, path, expected string) {
 	t.Helper()
 	database, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -209,8 +316,8 @@ func assertRecoveryRow(t *testing.T, path string) {
 	if err := database.QueryRow("SELECT value FROM records WHERE id = 1").Scan(&value); err != nil {
 		t.Fatal(err)
 	}
-	if value != "source" {
-		t.Fatalf("restored row = %q, want source", value)
+	if value != expected {
+		t.Fatalf("restored row = %q, want %q", value, expected)
 	}
 	if err := database.Close(); err != nil {
 		t.Fatal(err)

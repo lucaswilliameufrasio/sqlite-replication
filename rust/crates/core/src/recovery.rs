@@ -1269,6 +1269,8 @@ mod tests {
             .expect("write source record");
         drop(database);
         let database_bytes = fs::read(&database_path).expect("read source database");
+        let base_state = DatabaseState::load(&mut Cursor::new(database_bytes.as_slice()), 7)
+            .expect("load source LTX state");
         let source_repository = tempfile::tempdir().expect("create source repository");
         ensure_repository(source_repository.path()).expect("initialize source repository");
         let source_snapshot = source_repository
@@ -1278,10 +1280,10 @@ mod tests {
             .expect("create snapshot level");
         let mut snapshot_file = File::create(&source_snapshot).expect("create source snapshot");
         encode_snapshot_at(
-            &mut Cursor::new(&database_bytes),
+            &mut Cursor::new(database_bytes.as_slice()),
             &mut snapshot_file,
             7,
-            1_700_000_000_007,
+            1_000,
         )
         .expect("encode source snapshot");
         snapshot_file.sync_all().expect("sync source snapshot");
@@ -1289,7 +1291,7 @@ mod tests {
         let manifest_key = super::join_s3_key(prefix, "_meta/repository.json");
         let source_key = super::join_s3_key(prefix, "0000/0000000000000001-0000000000000007.ltx");
         let compacted_key =
-            super::join_s3_key(prefix, "0001/0000000000000001-0000000000000007.ltx");
+            super::join_s3_key(prefix, "0001/0000000000000001-0000000000000008.ltx");
         let manifest =
             tokio::fs::File::open(source_repository.path().join("_meta/repository.json"))
                 .await
@@ -1306,33 +1308,89 @@ mod tests {
             .await
             .expect("upload source snapshot");
 
+        let database = Connection::open(&database_path).expect("reopen source database");
+        database
+            .execute("UPDATE records SET value = 'updated' WHERE id = 1", [])
+            .expect("update source record");
+        drop(database);
+        let updated_bytes = fs::read(&database_path).expect("read updated database");
+        let (delta_header, delta_pages, updated_state) = base_state
+            .delta_to_database_image(&mut Cursor::new(updated_bytes.as_slice()), 2_000)
+            .expect("build LTX delta")
+            .expect("database change requires a delta");
+        let delta_path = source_repository
+            .path()
+            .join("ltx/0/0000000000000008-0000000000000008.ltx");
+        let mut delta_file = File::create(&delta_path).expect("create source delta");
+        sqlite_replication_ltx::encode_delta(
+            delta_header,
+            &delta_pages,
+            updated_state.checksum,
+            &mut delta_file,
+        )
+        .expect("encode source delta");
+        delta_file.sync_all().expect("sync source delta");
+        let delta_key = super::join_s3_key(prefix, "0000/0000000000000008-0000000000000008.ltx");
+        store
+            .put_immutable(
+                &delta_key,
+                tokio::fs::File::open(&delta_path)
+                    .await
+                    .expect("open source delta"),
+            )
+            .await
+            .expect("upload source delta");
+
         let restore_directory = tempfile::tempdir().expect("create restore directory");
         let restored_path = restore_directory.path().join("restored.sqlite");
         restore_s3_to_target(&store, prefix, &restored_path, RestoreTarget::Txid(7))
             .await
             .expect("restore S3 TXID");
         assert_s3_record(&restored_path);
+        let before_delta = restore_directory.path().join("before-delta.sqlite");
+        restore_s3_to_target(
+            &store,
+            prefix,
+            &before_delta,
+            RestoreTarget::AtOrBeforeTimestampMillis(1_500),
+        )
+        .await
+        .expect("restore S3 timestamp before delta");
+        assert_s3_record(&before_delta);
+        let after_delta = restore_directory.path().join("after-delta.sqlite");
+        restore_s3_to_target(
+            &store,
+            prefix,
+            &after_delta,
+            RestoreTarget::AtOrBeforeTimestampMillis(2_500),
+        )
+        .await
+        .expect("restore S3 timestamp after delta");
+        assert_s3_record_value(&after_delta, "updated");
 
         assert_eq!(
-            compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(7))
+            compact_s3_to_snapshot(&store, prefix, RestoreTarget::Txid(8))
                 .await
                 .expect("compact S3 point"),
             compacted_key
         );
-        let plan = build_s3_gc_plan(&store, prefix, &[RestoreTarget::Txid(7)])
+        let plan = build_s3_gc_plan(&store, prefix, &[RestoreTarget::Txid(8)])
             .await
             .expect("build S3 dry-run GC plan");
         assert_eq!(
             plan.candidate_object_keys.as_slice(),
-            std::slice::from_ref(&source_key)
+            [
+                source_key.clone(),
+                super::join_s3_key(prefix, "0000/0000000000000008-0000000000000008.ltx")
+            ]
         );
 
         let extra_key = super::join_s3_key(prefix, "0002/0000000000000001-0000000000000007.ltx");
-        let extra = tokio::fs::File::open(&source_snapshot)
-            .await
-            .expect("open extra snapshot");
         store
-            .put_immutable(&extra_key, extra)
+            .put_immutable(
+                &extra_key,
+                Cursor::new(fs::read(&source_snapshot).expect("read valid extra snapshot")),
+            )
             .await
             .expect("add object to stale the plan");
         assert!(apply_s3_gc_plan(&store, prefix, &plan).await.is_err());
@@ -1344,12 +1402,33 @@ mod tests {
             .await
             .expect("apply revalidated S3 GC plan");
         assert!(store.head(&source_key).await.is_err());
+        assert!(
+            store
+                .head(&super::join_s3_key(
+                    prefix,
+                    "0000/0000000000000008-0000000000000008.ltx"
+                ))
+                .await
+                .is_err()
+        );
 
         let restored_after_gc = restore_directory.path().join("restored-after-gc.sqlite");
-        restore_s3_to_target(&store, prefix, &restored_after_gc, RestoreTarget::Txid(7))
+        restore_s3_to_target(&store, prefix, &restored_after_gc, RestoreTarget::Txid(8))
             .await
             .expect("restore retained point after S3 GC");
-        assert_s3_record(&restored_after_gc);
+        assert_s3_record_value(&restored_after_gc, "updated");
+        let restored_time_after_gc = restore_directory
+            .path()
+            .join("restored-time-after-gc.sqlite");
+        restore_s3_to_target(
+            &store,
+            prefix,
+            &restored_time_after_gc,
+            RestoreTarget::AtOrBeforeTimestampMillis(2_500),
+        )
+        .await
+        .expect("restore retained timestamp after S3 GC");
+        assert_s3_record_value(&restored_time_after_gc, "updated");
 
         store
             .delete_batch(&[manifest_key, compacted_key])
@@ -1364,12 +1443,16 @@ mod tests {
     }
 
     fn assert_s3_record(path: &Path) {
+        assert_s3_record_value(path, "source");
+    }
+
+    fn assert_s3_record_value(path: &Path, expected: &str) {
         let database = Connection::open(path).expect("open restored S3 database");
         let value: String = database
             .query_row("SELECT value FROM records WHERE id = 1", [], |row| {
                 row.get(0)
             })
             .expect("read restored S3 record");
-        assert_eq!(value, "source");
+        assert_eq!(value, expected);
     }
 }
