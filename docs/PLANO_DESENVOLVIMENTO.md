@@ -48,7 +48,7 @@ Construir **dois motores próprios de backup/replicação assíncrona de SQLite*
 | D-12 | Sem criação de um formato próprio para substituir LTX | Metadados externos podem complementar layout/versão sem modificar bytes LTX |
 | D-13 | Checkpoint sob política coordenada pelo motor | Não assumir que fazer `tail` do `-wal` é seguro |
 | D-14 | OpenTelemetry + métricas Prometheus | Sem servidor HTTP obrigatório; registrador opcional da aplicação |
-| D-15 | Apache-2.0 escolhida para Go/Rust | Notices, direitos das fixtures e titular do copyright ainda precisam ser confirmados antes da publicação (ADR 0014) |
+| D-15 | Apache-2.0 escolhida para Go/Rust | Nome de aviso veio do perfil público GitHub a pedido do mantenedor; notices e direitos das fixtures ainda precisam ser revisados antes de criar `LICENSE`/publicar (ADR 0014) |
 | D-16 | Linux amd64/arm64 como primeira matriz de produção | macOS arm64 na integração; Windows 11 amd64 como fase posterior |
 | D-17 | Segurança de dados tem prioridade sobre latência | Falhas explícitas e bloqueio de promoção quando um invariante não for comprovado |
 | D-18 | Caminho canônico Go: `github.com/lucaswilliameufrasio/sqlite-replication` | Alteração pré-publicação registrada na ADR 0014; revisar antes de publicar se owner/path mudar |
@@ -1029,9 +1029,10 @@ FUSE/QEMU, isso amplia evidência; não substitui a revisão/aprovação CP-01.
   integração concreta de métricas/traces e combinações de drivers (ADR 0012).
   Não expor captura WAL antes de CP-01.
 - **M6/publicação:** caminho Go `github.com/lucaswilliameufrasio/sqlite-replication`
-  foi aplicado em `307da59`; Apache-2.0 escolhida (ADRs 0014/D-15). Falta
-  confirmar titular do copyright, revisar notices/dependências e direitos das
-  fixtures, além de autorizar tag/publicação. Nenhum release será criado a
+  foi aplicado em `307da59`; Apache-2.0 escolhida (ADRs 0014/D-15), e o nome
+  público GitHub “Lucas Eufrasio” foi indicado para o aviso. Falta revisar
+  notices/dependências e direitos das fixtures, além de autorizar tag/publicação.
+  Nenhum release será criado a
   partir deste checkout sem essa revisão/autorização; evidência CI remota também
   depende de enviar commits ao remoto.
 - **M6/evidência:** campanha atual é fuzz Go de um minuto, não chaos/stress
