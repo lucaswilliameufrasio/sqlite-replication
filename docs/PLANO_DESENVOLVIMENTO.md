@@ -982,3 +982,11 @@ o smoke depende do daemon Docker rootless inacessível; ele não foi iniciado ne
 reconfigurado. Isso não é fuzzing exaustivo nem conclusão de M6. Próximo foco:
 avançar itens independentes restantes de M0/M5/M6; nenhum passo autoriza expor
 captura WAL ou declarar M2 concluído sem CP-01.
+
+**Baseline inicial de decoder (2026-10-27):** `make bench-go-ltx` executou cinco
+amostras de 1 s por fixture em Linux amd64, Go 1.27.1, Ryzen 9 7900. Medianas:
+snapshot independente, 6,1 KiB, 883.491 ns/op, 6,91 MB/s e 3.077.814 B/op;
+delta independente de transação de 4 MiB, 14.572.926 ns/op, 293,11 MB/s e
+77.142.722 B/op. São medições locais do decoder Go, sem baseline de Rust,
+Litestream ou revisão candidata; servem como primeiro ponto repetível e não
+representam capacidade do sistema nem conclusão do entregável de benchmarks M6.
