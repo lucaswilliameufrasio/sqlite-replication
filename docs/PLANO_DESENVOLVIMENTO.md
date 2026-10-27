@@ -770,31 +770,30 @@ permanece privada.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
 
-**Estado observado em 2026-10-26 (commit `8ad39a0`):** implementações privadas filesystem em Go e
-Rust agora validam inventário/header/checksum, planejam TXID e instante UTC
-inclusivo, reconstroem em staging com verificação SQLite, publicam snapshots
-compactados em nível superior sem remover fontes e calculam GC somente a partir
-de restore points explicitamente fornecidos. GC inicia em dry-run; execução é
-uma chamada distinta que refaz o plano e compara SHA-256 do inventário e
-identidade do repositório antes de remover objetos. Testes focados cobrem cadeia
-real SQLite em Go/Rust, compactação com round-trip, retenção do caminho
-prometido e rejeição de plano stale. Essas funções permanecem internas; ainda
-há avaliador de cadência por TXID com intervalo positivo obrigatório (`6af1f28`),
-com execução condicional exercitada na cadeia SQLite real (`90125b1`), mas não
-com execução condicional exercitada na cadeia SQLite real (`90125b1`). A
-integração **privada Go/S3** (`364f281`) agora restaura por TXID/instante via
-staging filesystem validado, publica compactação no layout S3 sem remover fontes
-e oferece GC dry-run com revalidação de inventário/identidade antes da exclusão.
-O teste integrado local Floci cobre restore, compactação, GC e restore do ponto
-retido; `make test` e `make test-floci` passaram nesse commit. Ainda não há
-scheduler automático nem API pública, e a integração equivalente Rust/S3 segue
-pendente. **Conformance de snapshot compactado Go→Rust e Rust→Go** passou no
-commit `6e15075`, validando TXIDs não iniciais e integridade/conteúdo SQLite.
-CP-01 continua bloqueando a habilitação pública de recuperação incremental e
-operações que dependam de sua garantia. `docs/recovery-runbook.md` registra o
-procedimento M1 disponível e os limites de M4. Os drills CP-01 opt-in permanecem
-fora desse gate e seu resultado anterior continua evidência limitada, não
-aprovação de CP-01.
+**Estado observado em 2026-10-26 (commits `8ad39a0`–`469df73`):** as
+implementações privadas Go/Rust validam inventário/header/checksum, planejam
+restore inclusivo por TXID e timestamp UTC, reconstroem em staging com
+verificação SQLite, compactam sem remover fontes e planejam GC apenas com
+restore points explicitamente fornecidos. GC começa em dry-run; aplicação é
+explícita e revalida SHA-256 do inventário e identidade do repositório.
+
+O avaliador de cadência TXID exige intervalo positivo (`6af1f28`) e a execução
+condicional foi exercitada com cadeia SQLite real (`90125b1`). Não há scheduler
+automático, conforme a decisão de não assumir agendamento/default implícito. As
+integrações **privadas Go/S3** (`364f281`) e **Rust/S3** (`469df73`) baixam o
+repositório para staging filesystem temporário, reutilizam validação/restore,
+publicam compactação no layout S3 e oferecem GC dry-run com revalidação antes da
+exclusão. O Floci local exercitou restore, compactação, rejeição de plano stale,
+GC e restore do ponto retido nos dois engines. `make test` e `make test-floci`
+passaram após a implementação Rust. Conformance de snapshots compactados
+Go→Rust e Rust→Go (TXIDs não iniciais) passou em `6e15075`.
+
+As rotinas continuam internas, sem API pública. CP-01 segue bloqueando a
+habilitação pública de recuperação incremental e operações que dependam dessa
+garantia; os drills opt-in não aprovam CP-01. Permanecem fora do aceite deste
+trabalho homologação em AWS/outros provedores e os testes de crash/concurrency
+sob single-writer. `docs/recovery-runbook.md` registra o procedimento M1 e os
+limites operacionais de M4.
 
 ### Fase 5 — API pública, segurança e observabilidade [M5]
 

@@ -44,10 +44,17 @@ privadas filesystem Go/Rust e testes locais cobrem restore por TXID/instante,
 cadeia SQLite real, snapshot compactado round-trip, dry-run, retenção dos
 segmentos prometidos, coleta explícita e rejeição de inventário stale.
 
-Pendente para concluir o gate operacional: conformance cross-language de
-repositórios compactados, backend S3, crash/concurrency sob single-writer,
-política de snapshot periódico/scheduler e homologação CP-01. Até lá, M4 não é
-API pública nem promessa de produto.
+Os adapters S3 Go/Rust são exercitados privadamente via staging em filesystem
+temporário, reutilizando a validação de cadeia existente. Isso consome espaço
+local proporcional ao repositório baixado; não cria cache persistente nem API
+pública. O Floci local cobre restore, compactação, revalidação de GC e
+preservação do ponto prometido, mas não homologa AWS S3, R2 ou outros provedores.
+Cadência é avaliada por intervalo TXID positivo e invocação explícita; scheduler
+automático e defaults continuam deliberadamente ausentes.
+
+Pendente para concluir o gate operacional: crash/concurrency sob single-writer,
+homologação CP-01 e confirmação de semântica nos provedores de produção. Até lá,
+M4 não é API pública nem promessa de produto.
 
 ## Reversão / reconsideração
 
