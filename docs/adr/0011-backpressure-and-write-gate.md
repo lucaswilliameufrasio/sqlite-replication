@@ -80,6 +80,11 @@ O mantenedor decidiu:
   configuração obrigatória da API integrada, com validação estrita e sem
   defaults numéricos implícitos. Os valores da configuração devem ser usados
   para aplicar admission/backpressure, não somente reportados.
+- O adapter também deve fornecer um admission controller obrigatório no modo
+  estrito. O coordenador fecha a admissão e a mantém fechada enquanto a
+  capacidade/segurança estiver excedida ou a captura/sync falhar; reabre somente
+  após verificar que os limites foram novamente satisfeitos. Inicialização
+  estrita falha sem esse contrato de controle.
 
 Permanecem detalhes de nomes/campos públicos e categorias de erro, além dos
 adapters de métricas/traces da ADR 0012. Implementação não deve declarar o gate
