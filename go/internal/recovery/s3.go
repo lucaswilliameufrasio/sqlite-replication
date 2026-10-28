@@ -9,9 +9,12 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/spool"
 	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 	"github.com/lucaswilliameufrasio/sqlite-replication/storages3"
 )
@@ -21,6 +24,119 @@ type S3GCPlan struct {
 	Plan                GCPlan
 	RetainedObjectKeys  []string
 	CandidateObjectKeys []string
+}
+
+type S3SyncResult struct {
+	TXID             uint64
+	DatabaseChecksum uint64
+	ObjectsConfirmed int
+	BytesConfirmed   int64
+}
+
+// SyncFilesystemToS3 validates and uploads the immutable local LTX chain, then
+// persists a destination-scoped acknowledgement. It never deletes local spool
+// data or remote objects.
+func SyncFilesystemToS3(ctx context.Context, root string, store *storages3.Store, prefix, remoteID string) (S3SyncResult, error) {
+	if store == nil {
+		return S3SyncResult{}, fmt.Errorf("S3 store is required")
+	}
+	if err := validateS3Prefix(prefix); err != nil {
+		return S3SyncResult{}, err
+	}
+	if strings.TrimSpace(remoteID) == "" {
+		return S3SyncResult{}, fmt.Errorf("a stable, non-secret remote ID is required")
+	}
+	for _, character := range remoteID {
+		if unicode.IsControl(character) {
+			return S3SyncResult{}, fmt.Errorf("remote ID must not contain control characters")
+		}
+	}
+	state, err := spool.Recover(root, nil)
+	if err != nil {
+		return S3SyncResult{}, fmt.Errorf("validate local LTX chain: %w", err)
+	}
+	if _, err := BuildRestorePlanFromFilesystem(root, Target{TXID: state.Database.TXID}); err != nil {
+		return S3SyncResult{}, fmt.Errorf("validate local restore chain: %w", err)
+	}
+
+	manifestPath := filepath.Join(root, "_meta", "repository.json")
+	manifestObject := struct {
+		path string
+		key  string
+	}{path: manifestPath, key: joinS3Key(prefix, "_meta/repository.json")}
+	objects := make([]struct {
+		path string
+		key  string
+	}, 0)
+	ltxRoot := filepath.Join(root, "ltx")
+	err = filepath.WalkDir(ltxRoot, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("local LTX object is not a regular file")
+		}
+		if filepath.Ext(path) != ".ltx" {
+			return nil
+		}
+		key, err := filesystemLTXKey(prefix, root, path)
+		if err != nil {
+			return err
+		}
+		objects = append(objects, struct {
+			path string
+			key  string
+		}{path: path, key: key})
+		return nil
+	})
+	if err != nil {
+		return S3SyncResult{}, fmt.Errorf("enumerate local LTX objects: %w", err)
+	}
+	if len(objects) == 0 {
+		return S3SyncResult{}, ErrNoRestorePoint
+	}
+	sort.Slice(objects, func(left, right int) bool {
+		return objects[left].key < objects[right].key
+	})
+	objects = append(objects, manifestObject)
+
+	result := S3SyncResult{TXID: state.Database.TXID, DatabaseChecksum: state.Database.Checksum}
+	for _, object := range objects {
+		if err := ctx.Err(); err != nil {
+			return S3SyncResult{}, err
+		}
+		file, err := os.Open(object.path)
+		if err != nil {
+			return S3SyncResult{}, fmt.Errorf("open local object for upload: %w", err)
+		}
+		receipt, putErr := store.PutImmutable(ctx, object.key, file)
+		closeErr := file.Close()
+		if putErr != nil {
+			return S3SyncResult{}, fmt.Errorf("upload immutable repository object: %w", putErr)
+		}
+		if closeErr != nil {
+			return S3SyncResult{}, fmt.Errorf("close uploaded repository object: %w", closeErr)
+		}
+		result.ObjectsConfirmed++
+		result.BytesConfirmed += receipt.Size
+	}
+	if err := spool.WriteRemoteAck(root, spool.RemoteAck{
+		Version:          1,
+		RemoteID:         remoteID,
+		Prefix:           prefix,
+		TXID:             result.TXID,
+		DatabaseChecksum: result.DatabaseChecksum,
+	}); err != nil {
+		return S3SyncResult{}, fmt.Errorf("persist remote acknowledgement: %w", err)
+	}
+	return result, nil
 }
 
 // RestoreS3ToTarget stages the remote repository into a private temporary

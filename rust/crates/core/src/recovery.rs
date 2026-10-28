@@ -1,6 +1,6 @@
-//! Private restore, compaction, and retention workflows for immutable LTX data.
-//! S3 operations stage objects in a temporary filesystem repository and reuse
-//! the same validated planner; this module is not wired into the public API.
+//! Restore, compaction, and retention workflows for immutable LTX data.
+//! S3 restore stages objects in a temporary filesystem repository and reuses the
+//! same validated planner; compaction and retention remain internal.
 
 use std::collections::HashSet;
 use std::fs::{self, File};
@@ -457,6 +457,106 @@ pub(crate) async fn restore_s3_to_target(
     restore_to_target(staging.path(), destination, target)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct S3SyncResult {
+    pub txid: u64,
+    pub database_checksum: u64,
+    pub objects_confirmed: usize,
+    pub bytes_confirmed: u64,
+}
+
+pub(crate) async fn sync_filesystem_to_s3(
+    store: &S3Store,
+    root: &Path,
+    prefix: &str,
+    remote_id: &str,
+) -> io::Result<S3SyncResult> {
+    validate_s3_prefix(prefix)?;
+    if remote_id.trim().is_empty() || remote_id.chars().any(char::is_control) {
+        return Err(invalid_data("a stable, non-secret remote ID is required"));
+    }
+    read_repository(root)?;
+    let state = sqlite_replication_spool::recover(root, &[])?;
+    build_restore_plan_from_filesystem(root, RestoreTarget::Txid(state.database.txid))?;
+
+    let manifest = (
+        root.join("_meta").join("repository.json"),
+        join_s3_key(prefix, "_meta/repository.json"),
+    );
+    let mut objects = Vec::new();
+    let ltx_root = root.join("ltx");
+    let mut levels = fs::read_dir(&ltx_root)?.collect::<Result<Vec<_>, _>>()?;
+    levels.sort_by_key(|entry| entry.file_name());
+    for level in levels {
+        if !level.file_type()?.is_dir() {
+            continue;
+        }
+        let mut files = fs::read_dir(level.path())?.collect::<Result<Vec<_>, _>>()?;
+        files.sort_by_key(|entry| entry.file_name());
+        for entry in files {
+            let file_type = entry.file_type()?;
+            if file_type.is_dir() {
+                continue;
+            }
+            if !file_type.is_file() {
+                return Err(invalid_data("local LTX object is not a regular file"));
+            }
+            let name = entry.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if !name.ends_with(".ltx") {
+                continue;
+            }
+            let local_path = entry.path();
+            let relative = local_path
+                .strip_prefix(root)
+                .map_err(|_| invalid_data("local LTX path escaped repository"))?;
+            let local_key = relative
+                .to_string_lossy()
+                .replace(std::path::MAIN_SEPARATOR, "/");
+            objects.push((local_path, local_key_to_s3_key(prefix, &local_key)?));
+        }
+    }
+    if objects.is_empty() {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "no verified LTX restore point exists",
+        ));
+    }
+    objects.sort_by(|left, right| left.1.cmp(&right.1));
+    objects.push(manifest);
+
+    let mut result = S3SyncResult {
+        txid: state.database.txid,
+        database_checksum: state.database.checksum,
+        objects_confirmed: 0,
+        bytes_confirmed: 0,
+    };
+    for (path, key) in objects {
+        let file = tokio::fs::File::open(&path).await?;
+        let receipt = store.put_immutable(&key, file).await.map_err(|error| {
+            io::Error::other(format!("upload immutable repository object: {error}"))
+        })?;
+        result.objects_confirmed += 1;
+        result.bytes_confirmed = result
+            .bytes_confirmed
+            .checked_add(receipt.size)
+            .ok_or_else(|| invalid_data("uploaded byte count overflow"))?;
+    }
+    sqlite_replication_spool::write_remote_ack(
+        root,
+        &sqlite_replication_spool::RemoteAck {
+            version: 1,
+            remote_id: remote_id.to_owned(),
+            prefix: prefix.to_owned(),
+            txid: result.txid,
+            database_checksum: result.database_checksum,
+        },
+    )?;
+    Ok(result)
+}
+
 pub(crate) async fn compact_s3_to_snapshot(
     store: &S3Store,
     prefix: &str,
@@ -908,7 +1008,7 @@ fn valid_page_size(size: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use std::fs::{self, File};
-    use std::io::{Cursor, Seek, SeekFrom};
+    use std::io::{self, Cursor, Seek, SeekFrom};
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::thread;
@@ -930,6 +1030,24 @@ mod tests {
     };
 
     const FLAG: u64 = 1 << 63;
+
+    struct NoopWriteGate;
+
+    struct NoopWritePermit;
+
+    impl crate::WriteGate for NoopWriteGate {
+        type Permit = NoopWritePermit;
+
+        fn acquire(&self) -> io::Result<Self::Permit> {
+            Ok(NoopWritePermit)
+        }
+    }
+
+    impl crate::WritePermit for NoopWritePermit {
+        fn release(self) -> io::Result<()> {
+            Ok(())
+        }
+    }
 
     fn snapshot(key: &str, max_txid: u64, level: u32, checksum: u64) -> Segment {
         Segment {
@@ -1369,6 +1487,19 @@ mod tests {
             .await
             .expect("restore Go-published S3 repository with Rust");
             assert_s3_record_value(&go_restored_path, "updated");
+
+            let public_sync_restored =
+                tempfile::tempdir().expect("create public sync restore directory");
+            let public_sync_path = public_sync_restored.path().join("restored.sqlite");
+            crate::restore_from_s3(
+                &store,
+                "public-sync-test",
+                &public_sync_path,
+                crate::RestoreTarget::Txid(2),
+            )
+            .await
+            .expect("restore Go public-sync chain with Rust API");
+            assert_s3_record_value(&public_sync_path, "uploaded");
         }
         let prefix = if shared_floci {
             "rust-recovery-test"
@@ -1455,6 +1586,58 @@ mod tests {
             )
             .await
             .expect("upload source delta");
+
+        let public_sync_directory = tempfile::tempdir().expect("create public-sync directory");
+        let public_sync_database = public_sync_directory.path().join("source.sqlite");
+        fs::copy(&database_path, &public_sync_database).expect("copy source for public sync");
+        let public_sync_repository = tempfile::tempdir().expect("create public-sync repository");
+        let public_connection =
+            Connection::open(&public_sync_database).expect("open public-sync database");
+        public_connection
+            .pragma_update(None, "journal_mode", "WAL")
+            .expect("enable WAL for public sync");
+        drop(public_connection);
+        crate::snapshot(&public_sync_database, public_sync_repository.path())
+            .expect("create public-sync snapshot");
+        let public_connection =
+            Connection::open(&public_sync_database).expect("reopen public-sync database");
+        public_connection
+            .execute("UPDATE records SET value = 'uploaded' WHERE id = 1", [])
+            .expect("write public-sync delta");
+        drop(public_connection);
+        crate::capture_once(
+            &public_sync_database,
+            public_sync_repository.path(),
+            &NoopWriteGate,
+        )
+        .expect("capture public-sync delta");
+        let sync_result = crate::sync_to_s3(
+            &store,
+            public_sync_repository.path(),
+            "public-rust-sync-test",
+            &format!("floci-rust-sync-{run_id}"),
+        )
+        .await
+        .expect("sync local repository through public API");
+        assert_eq!(sync_result.txid, 2);
+        assert_eq!(sync_result.objects_confirmed, 3);
+        let remote_ack = sqlite_replication_spool::read_remote_ack(public_sync_repository.path())
+            .expect("read durable remote acknowledgement");
+        assert_eq!(remote_ack.remote_id, format!("floci-rust-sync-{run_id}"));
+        assert_eq!(remote_ack.prefix, "public-rust-sync-test");
+        assert_eq!(remote_ack.txid, 2);
+
+        let public_sync_restore = tempfile::tempdir().expect("create public sync restore");
+        let public_sync_restore_path = public_sync_restore.path().join("restored.sqlite");
+        crate::restore_from_s3(
+            &store,
+            "public-rust-sync-test",
+            &public_sync_restore_path,
+            crate::RestoreTarget::Txid(2),
+        )
+        .await
+        .expect("restore Rust public-sync chain");
+        assert_s3_record_value(&public_sync_restore_path, "uploaded");
 
         let restore_directory = tempfile::tempdir().expect("create restore directory");
         let restored_path = restore_directory.path().join("restored.sqlite");

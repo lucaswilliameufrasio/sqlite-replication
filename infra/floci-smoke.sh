@@ -51,6 +51,7 @@ export SQLITE_REPLICATION_FLOCI_CROSS_ENGINE=1
     cd "$repository_root/go"
     go test ./storages3 -run '^TestFlociAdapterConformance$' -count=1
     go test ./internal/recovery -run '^TestFlociS3RecoveryRestoreCompactionAndGC$' -count=1
+    go test ./replicator -run '^TestFlociPublicS3Sync$' -count=1
     SQLITE_REPLICATION_FLOCI_RESTART_PHASE=write go test ./storages3 -run '^TestFlociRestartMarker$' -count=1
 )
 

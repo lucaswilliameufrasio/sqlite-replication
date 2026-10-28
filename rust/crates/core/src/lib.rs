@@ -49,6 +49,17 @@ pub enum RestoreTarget {
     AtOrBeforeTimestampMillis(i64),
 }
 
+/// Reports a validated chain position and objects confirmed by immutable puts.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SyncResult {
+    pub txid: u64,
+    pub database_checksum: u64,
+    /// Includes matching immutable objects that were already present remotely.
+    pub objects_confirmed: usize,
+    /// Total source bytes whose immutable object writes were confirmed.
+    pub bytes_confirmed: u64,
+}
+
 /// Captures the currently observable WAL and durably publishes local LTX files.
 ///
 /// The repository must already contain an initial snapshot. The caller must
@@ -218,6 +229,26 @@ pub async fn restore_from_s3(
         }
     };
     recovery::restore_s3_to_target(store, prefix, destination.as_ref(), target).await
+}
+
+/// Uploads a validated local LTX chain with immutable keys and persists a
+/// destination-scoped acknowledgement after all object writes are confirmed.
+/// `remote_id` must be stable, non-secret, and unique to the configured
+/// endpoint. Retries upload idempotently and never delete local or remote data.
+pub async fn sync_to_s3(
+    store: &sqlite_replication_storage_s3::S3Store,
+    repository_root: impl AsRef<Path>,
+    prefix: &str,
+    remote_id: &str,
+) -> io::Result<SyncResult> {
+    let result =
+        recovery::sync_filesystem_to_s3(store, repository_root.as_ref(), prefix, remote_id).await?;
+    Ok(SyncResult {
+        txid: result.txid,
+        database_checksum: result.database_checksum,
+        objects_confirmed: result.objects_confirmed,
+        bytes_confirmed: result.bytes_confirmed,
+    })
 }
 
 /// Returns the filesystem LTX path for the initial snapshot.

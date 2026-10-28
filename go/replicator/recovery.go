@@ -35,3 +35,29 @@ func RestoreFromS3(ctx context.Context, store *storages3.Store, prefix, destinat
 		TimestampMillis: target.TimestampMillis,
 	})
 }
+
+// SyncToS3 immutably uploads the validated local LTX chain and persists a
+// destination-scoped acknowledgement only after every object is confirmed.
+// remoteID must be stable, non-secret, and unique to the configured endpoint;
+// retries resend the complete chain and never delete local or remote data.
+func SyncToS3(ctx context.Context, repositoryRoot string, store *storages3.Store, prefix, remoteID string) (SyncResult, error) {
+	result, err := recovery.SyncFilesystemToS3(ctx, repositoryRoot, store, prefix, remoteID)
+	if err != nil {
+		return SyncResult{}, err
+	}
+	return SyncResult{
+		TXID:             result.TXID,
+		DatabaseChecksum: result.DatabaseChecksum,
+		ObjectsConfirmed: result.ObjectsConfirmed,
+		BytesConfirmed:   result.BytesConfirmed,
+	}, nil
+}
+
+// SyncResult reports the validated chain position and objects confirmed by
+// immutable put operations. Counts include matching objects already present.
+type SyncResult struct {
+	TXID             uint64
+	DatabaseChecksum uint64
+	ObjectsConfirmed int
+	BytesConfirmed   int64
+}

@@ -40,6 +40,57 @@ pub struct Watermark {
     pub wal: PersistedPosition,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteAck {
+    pub version: u32,
+    pub remote_id: String,
+    pub prefix: String,
+    pub txid: u64,
+    pub database_checksum: u64,
+}
+
+pub fn read_remote_ack(root: &Path) -> io::Result<RemoteAck> {
+    let path = root.join("_meta").join("remote-ack.json");
+    let file = File::open(path)?;
+    let ack: RemoteAck = serde_json::from_reader(file).map_err(io::Error::other)?;
+    validate_remote_ack(&ack)?;
+    Ok(ack)
+}
+
+pub fn write_remote_ack(root: &Path, ack: &RemoteAck) -> io::Result<()> {
+    validate_remote_ack(ack)?;
+    let metadata_directory = root.join("_meta");
+    fs::create_dir_all(&metadata_directory)?;
+    let mut staged = Builder::new()
+        .prefix(".remote-ack-")
+        .suffix(".tmp")
+        .tempfile_in(&metadata_directory)?;
+    serde_json::to_writer_pretty(staged.as_file_mut(), ack).map_err(io::Error::other)?;
+    staged.as_file_mut().sync_all()?;
+    let (file, staged_path) = staged.keep().map_err(|error| error.error)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(staged_path, metadata_directory.join("remote-ack.json"))?;
+    sync_directory(&metadata_directory)
+}
+
+fn validate_remote_ack(ack: &RemoteAck) -> io::Result<()> {
+    if ack.version != 1
+        || ack.remote_id.trim().is_empty()
+        || ack.txid == 0
+        || ack.database_checksum == 0
+    {
+        return Err(invalid_data("remote acknowledgement is incompatible"));
+    }
+    if ack.remote_id.contains(['\r', '\n', '\0']) {
+        return Err(invalid_data(
+            "remote acknowledgement has an invalid remote ID",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersistedPosition {
@@ -485,9 +536,56 @@ mod tests {
     use sqlite_replication_wal::translate::{Position, State, Transaction};
 
     use super::{
-        Builder, FaultPoint, publish_transactions, publish_transactions_with_sync, read_watermark,
-        recover,
+        Builder, FaultPoint, RemoteAck, publish_transactions, publish_transactions_with_sync,
+        read_remote_ack, read_watermark, recover, write_remote_ack,
     };
+
+    #[test]
+    fn remote_ack_round_trips_durably_and_rejects_unknown_fields() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let expected = RemoteAck {
+            version: 1,
+            remote_id: "production-eu-west-replica".to_owned(),
+            prefix: "tenant/database".to_owned(),
+            txid: 42,
+            database_checksum: 1 << 63,
+        };
+        write_remote_ack(directory.path(), &expected).expect("write remote ack");
+        assert_eq!(
+            read_remote_ack(directory.path()).expect("read remote ack"),
+            expected
+        );
+
+        fs::write(
+            directory.path().join("_meta/remote-ack.json"),
+            r#"{"version":1,"remote_id":"r","prefix":"p","txid":1,"database_checksum":9223372036854775808,"extra":true}"#,
+        )
+        .expect("write malformed remote ack");
+        assert!(read_remote_ack(directory.path()).is_err());
+    }
+
+    #[test]
+    fn remote_ack_rejects_control_identity_and_zero_position() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        for ack in [
+            RemoteAck {
+                version: 1,
+                remote_id: "remote\nname".to_owned(),
+                prefix: String::new(),
+                txid: 1,
+                database_checksum: 1 << 63,
+            },
+            RemoteAck {
+                version: 1,
+                remote_id: "remote".to_owned(),
+                prefix: String::new(),
+                txid: 0,
+                database_checksum: 1 << 63,
+            },
+        ] {
+            assert!(write_remote_ack(directory.path(), &ack).is_err());
+        }
+    }
 
     #[test]
     fn publication_orders_ltx_before_watermark_and_survives_injected_failures() {

@@ -25,11 +25,23 @@ destino precisa ser novo e é verificado antes da promoção. Compactação e GC
 implementados privadamente para desenvolvimento M4 em filesystem e S3 nos
 engines Go/Rust, sem APIs/CLI operacionais nem procedimentos aprovados para
 repositórios ativos. O
-restore S3 privado baixa o repositório inteiro para staging filesystem
-temporário; o uso de espaço local é proporcional ao repositório e provedores
+restore S3 baixa o repositório inteiro para staging filesystem temporário; o
+uso de espaço local é proporcional ao repositório e provedores
 externos não foram homologados.
 
-## Restore disponível (M1)
+## Sync explícito para S3
+
+Go `replicator.SyncToS3(ctx, repositoryRoot, store, prefix, remoteID)` e Rust
+`sync_to_s3(store, repositoryRoot, prefix, remoteID).await` validam e publicam
+todos os LTX locais imutáveis e o manifesto por último. `remoteID` deve ser
+estável, não secreto e escolhido pela aplicação para identificar a configuração
+remota; credenciais/endpoints não são gravados no ACK. O ACK local só avança
+depois da confirmação de todos os objetos. Retry aceita objetos idênticos e
+rejeita conteúdo divergente. Essa operação não remove spool nem faz GC; não
+executar sync concorrente para o mesmo repositório. Compatibilidade foi testada
+somente com Floci, sem homologar AWS S3, R2 ou outros provedores.
+
+## Restore via biblioteca
 
 1. Interrompa novas escritas e preserve uma cópia somente-leitura do repositório
    e dos logs relevantes. Não execute GC nem remova objetos.
@@ -37,9 +49,10 @@ externos não foram homologados.
    O restore público não sobrescreve banco nem sidecar.
 3. Chame a API pública de restore offline na ferramenta/aplicação operacional:
    Go `RestoreSnapshot(ctx, repositoryRoot, destinationPath)` ou Rust
-   `restore_if_missing(repository_root, destination)`, respeitando a assinatura da versão
-   instalada. O repositório deve estar acessível localmente; o adapter S3 ainda
-   não está ligado ao restore. Não use o exemplo em
+   `restore_if_missing(repository_root, destination)` para o snapshot inicial;
+   para um ponto incremental, use `RestoreToTarget`/`restore_to_target`. S3 pode
+   ser restaurado via `RestoreFromS3`/`restore_from_s3`, que baixa o repositório
+   inteiro para staging temporário local. Não use o exemplo em
    `docs/examples/snapshot-restore.md` como comando de desastre: ele primeiro
    publica um snapshot a partir de uma base-fonte e serve apenas como smoke test.
 4. Verifique o banco restaurado com `quick_check` e `integrity_check`, valide
