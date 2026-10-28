@@ -1017,7 +1017,7 @@ entregável de benchmarks M6 permanece parcial.
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Restore público; compactação/GC privados | Restore filesystem e S3 por TXID/timestamp coberto; compactação e GC filesystem/S3 exercitados no Floci, mas ainda sem API operacional pública | Expor compactação/GC somente com contratos e gates próprios; Floci não substitui homologação de provedor |
 | M5 — API/segurança/observabilidade | Parcial; integração de adapters e telemetria pendentes | Coordenador Go/Rust com `Status`/`Health`/`Flush`/`Run`, limites obrigatórios, admission control e sync com ACK; evento/cancelamento Go, contratos Rust e 64 operações concorrentes de `Flush` Rust passam; fluxo Floci passa | Validar adapters de produção; stress/cancelamento do worker Rust, métricas/traces e exemplos; não ampliar além de Linux x86-64 |
-| M6 — stress/bench/release | Em andamento | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust | Chaos/stress amplo, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
+| M6 — stress/bench/release | Em andamento; gate de supply-chain bloqueado por findings | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust; scanners locais executados | Remediar/avaliar findings Go/Rust e repetir audit atualizado; SBOM, chaos/stress amplo, comparação Litestream controlada, release/semver/pacotes e documentação de migração |
 
 ### Pendências que requerem decisão/ação do mantenedor
 
@@ -1044,6 +1044,18 @@ entregável de benchmarks M6 permanece parcial.
 - **M6/evidência:** campanha atual é fuzz Go de um minuto, não chaos/stress
   prolongado; baseline Go/Rust não é comparação controlada com Litestream. SBOM,
   supply-chain e guia de migração ainda não têm artefatos aprovados.
+- **M6/supply-chain — 2026-10-28:** `govulncheck -C go -test ./...` saiu com
+  código 3 e encontrou 10 avisos de vulnerabilidade na standard library Go
+  1.27.1, com caminhos de uso em `crypto/x509`, `net/http`/HTTP2, `crypto/tls`,
+  `mime/multipart` e outros; o relatório indica correções em Go 1.27.2/1.27.3.
+  Também reportou advisories de módulos importados/requeridos. `cargo audit
+  --no-fetch --stale --file rust/Cargo.lock` saiu com código 1: 10 vulnerabilidades
+  (incluindo `rustls`, `rustls-webpki`, `h2`, `time`, `crypto-bigint` e `tokio`)
+  e quatro warnings (`rustls-pemfile`, `lru` e crates AWS transitivos), lidos do
+  advisory DB local. Isto é triagem inicial, não avaliação de explorabilidade
+  nem auditoria com DB atualizado. Atualizar toolchain/dependências e repetir os
+  scans com advisories atuais é pré-requisito do gate; não foram alterados
+  manifests/lockfiles nem criadas exceções.
 
 ### Coordenador M5 — evidência local 2026-10-28
 
