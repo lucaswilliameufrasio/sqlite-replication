@@ -61,6 +61,31 @@ Em 2026-10-27, o mantenedor confirmou a semântica proposta de alvo de `Flush`,
 confirmação local/remota e timeout/cancelamento. A API e suas implementações
 continuam pendentes de testes; a confirmação não substitui os gates de M5.
 
+### Fechamento de decisões de integração — 2026-10-28
+
+O mantenedor decidiu:
+
+- `Flush` será oferecido por um coordenador explícito, sem worker/listener
+  obrigatório. O adapter injetado reporta o maior TXID observado e executa
+  captura durável; o coordenador captura até alcançar o alvo amostrado no começo
+  da chamada e, no modo remoto, sincroniza até esse mesmo alvo. Chamadas Flush
+  concorrentes no mesmo coordenador são serializadas. Cancelamento/deadline só
+  interrompem a espera/operação, nunca revertem publicação já durável.
+- `Health` retorna estados separados por componente, sem status global que a
+  biblioteca use como liveness/readiness. Falha remota é componente remoto
+  degradado; erro local irrecuperável requer intervenção. Ausência de probe é
+  `unknown`, não saudável. Não se infere degradação apenas de atraso/RPO sem
+  limiar configurado.
+- Limites de spool, WAL, idade máxima sem proteção e uploads em voo serão
+  configuração obrigatória da API integrada, com validação estrita e sem
+  defaults numéricos implícitos. Os valores da configuração devem ser usados
+  para aplicar admission/backpressure, não somente reportados.
+
+Permanecem detalhes de nomes/campos públicos e categorias de erro, além dos
+adapters de métricas/traces da ADR 0012. Implementação não deve declarar o gate
+M5 fechado até testes de concorrência, cancelamento, saturação e execução dos
+gates correspondentes.
+
 Definir limites separados para `max_spool_bytes`, `max_wal_bytes`, idade máxima
 sem proteção, workers e bytes em voo. Rejeitar ou aplicar backpressure antes de
 aceitar trabalho fora dos limites; work que precise sobreviver a crash só é
