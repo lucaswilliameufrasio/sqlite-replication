@@ -4,7 +4,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusqlite::Connection;
-use sqlite_replication_core::{WriteGate, WritePermit, capture_once, snapshot};
+use sqlite_replication_core::{
+    RestoreTarget, WriteGate, WritePermit, capture_once, restore_to_target, snapshot,
+};
 use sqlite_replication_spool::read_watermark;
 
 struct TestGate {
@@ -96,6 +98,28 @@ fn capture_requires_supported_platform_and_spools_before_releasing_gate() {
     assert!(result.transactions > 0);
     assert!(gate.acquired.load(Ordering::Acquire));
     assert!(gate.released.load(Ordering::Acquire));
+
+    let by_txid = directory.path().join("restored-txid.sqlite");
+    restore_to_target(&repository, &by_txid, RestoreTarget::Txid(2))
+        .expect("restore incremental TXID");
+    assert_eq!(row_count(&by_txid), 2);
+
+    let by_timestamp = directory.path().join("restored-time.sqlite");
+    restore_to_target(
+        &repository,
+        &by_timestamp,
+        RestoreTarget::AtOrBeforeTimestampMillis(i64::MAX),
+    )
+    .expect("restore latest point by timestamp");
+    assert_eq!(row_count(&by_timestamp), 2);
+
+    let existing_contents = b"preserve existing destination";
+    std::fs::write(&by_timestamp, existing_contents).expect("replace test destination");
+    assert!(restore_to_target(&repository, &by_timestamp, RestoreTarget::Txid(2)).is_err());
+    assert_eq!(
+        std::fs::read(&by_timestamp).expect("read preserved destination"),
+        existing_contents
+    );
 }
 
 #[test]
@@ -161,4 +185,11 @@ fn create_database(path: &Path) {
              INSERT INTO records(value) VALUES ('base');",
         )
         .expect("initialize source database");
+}
+
+fn row_count(path: &Path) -> i64 {
+    Connection::open(path)
+        .expect("open restored database")
+        .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+        .expect("count restored rows")
 }

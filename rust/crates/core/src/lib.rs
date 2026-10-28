@@ -1,7 +1,6 @@
 //! Synchronous SQLite snapshot, local WAL capture, and offline restore APIs.
 
-// Recovery planning remains private until the restore contract and CP-01 gate
-// permit it to be wired into public restore operations.
+// Recovery implementation details remain private behind the checked public API.
 #[allow(dead_code)]
 mod recovery;
 
@@ -41,6 +40,13 @@ pub struct CaptureResult {
     pub txid: u64,
     pub transactions: usize,
     pub wal_frames: u32,
+}
+
+/// Selects an exact TXID or the latest verified point at or before a UTC time.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RestoreTarget {
+    Txid(u64),
+    AtOrBeforeTimestampMillis(i64),
 }
 
 /// Captures the currently observable WAL and durably publishes local LTX files.
@@ -177,6 +183,22 @@ pub fn restore_if_missing(
     restored.as_file_mut().seek(SeekFrom::Start(0))?;
     promote_if_missing(restored, destination)?;
     sync_directory(parent)
+}
+
+/// Restores and verifies an incremental snapshot-plus-delta chain to a new path.
+/// Existing database files and stale SQLite sidecars are never overwritten.
+pub fn restore_to_target(
+    repository_root: impl AsRef<Path>,
+    destination: impl AsRef<Path>,
+    target: RestoreTarget,
+) -> io::Result<()> {
+    let target = match target {
+        RestoreTarget::Txid(txid) => recovery::RestoreTarget::Txid(txid),
+        RestoreTarget::AtOrBeforeTimestampMillis(timestamp) => {
+            recovery::RestoreTarget::AtOrBeforeTimestampMillis(timestamp)
+        }
+    };
+    recovery::restore_to_target(repository_root.as_ref(), destination.as_ref(), target)
 }
 
 /// Returns the filesystem LTX path for the initial snapshot.

@@ -3,18 +3,25 @@
 ## Escopo operacional atual
 
 Este runbook cobre o restore offline do snapshot LTX inicial para um caminho
-novo em um repositório filesystem. Go `replicator.CaptureOnce` e Rust
+novo em um repositório filesystem; o restore incremental público também reconstrói
+uma cadeia local para um TXID exato ou instante UTC inclusivo. Go `replicator.CaptureOnce` e Rust
 `capture_once` também expõem um ciclo síncrono de captura para spool local,
 somente em Linux x86-64 com os runtimes SQLite testados e um único escritor
 lógico coordenado. O chamador precisa pausar todos os escritores pelo write-gate
-e manter o spool local; a API não faz upload, checkpoint, restore incremental,
-nem expõe `Status`/`Health`/`Flush`. A garantia exclui perda física de
+e manter o spool local; a função de captura não faz upload, checkpoint nem
+restore e não expõe `Status`/`Health`/`Flush`. A garantia exclui perda física de
 energia/cache. ARM64 e outras plataformas/configurações ficam fora até drills
 CP-01 específicos.
 
-Restore por TXID/instante, compactação e GC foram implementados privadamente
-para desenvolvimento M4 em filesystem e S3 nos engines Go/Rust, mas não são
-APIs/CLI operacionais nem procedimentos aprovados para repositórios ativos. O
+Restore por TXID/instante é público somente para repositório filesystem local.
+Go: `replicator.RestoreToTarget(ctx, root, destination, replicator.RestoreTarget{TXID: n})`
+ou use `TimestampMillis` em vez de `TXID`. Rust:
+`restore_to_target(root, destination, RestoreTarget::Txid(n))` ou
+`AtOrBeforeTimestampMillis(ms)`. O destino precisa ser novo e é verificado antes
+da promoção. S3 não está ligado a essas APIs. Compactação e GC continuam
+implementados privadamente para desenvolvimento M4 em filesystem e S3 nos
+engines Go/Rust, sem APIs/CLI operacionais nem procedimentos aprovados para
+repositórios ativos. O
 restore S3 privado baixa o repositório inteiro para staging filesystem
 temporário; o uso de espaço local é proporcional ao repositório e provedores
 externos não foram homologados.
