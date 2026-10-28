@@ -547,8 +547,9 @@ aguarda health, assina requests S3 com credenciais sintéticas, cria bucket e
 objeto, para/inicia o mesmo serviço, lê e compara os bytes persistidos, remove
 objeto/bucket e derruba somente o projeto/volume desta execução. A porta host é
 selecionada para a execução e publicada em loopback. Não foram usados AWS S3,
-R2 ou credenciais reais. Evidência corresponde ao smoke do emulador, não a um
-adapter de storage da biblioteca (ainda não implementado).
+R2 ou credenciais reais. O adapter S3 Go/Rust e os fluxos de sync/restore da
+biblioteca também passam no gate Floci; essa evidência local não homologa outros
+provedores S3.
 
 O ambiente inicial é `persistent`, que é a semântica requerida para este
 smoke. Uma suite rápida em modo `memory` pode ser adicionada junto dos testes do
@@ -1015,7 +1016,7 @@ entregável de benchmarks M6 permanece parcial.
 | M2 — WAL/checkpoint | CP-01 aprovado para Linux x86-64; captura e restore locais públicos em revisão | Drills ENOSPC, interrupção FUSE e QEMU passaram para Go/Rust; testes públicos Go/Rust cobrem captura e restore por TXID/timestamp; gates nativos GitHub Actions passaram em Linux/macOS ARM64 (`40592150987`) | Fechar API/testes/docs da captura; repetir os drills CP-01 antes de ampliar para ARM64 |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Restore público; compactação/GC privados | Restore filesystem e S3 por TXID/timestamp coberto; compactação e GC filesystem/S3 exercitados no Floci, mas ainda sem API operacional pública | Expor compactação/GC somente com contratos e gates próprios; Floci não substitui homologação de provedor |
-| M5 — API/segurança/observabilidade | Parcial; integração de adapters e telemetria pendentes | Coordenador Go/Rust com `Status`/`Health`/`Flush`/`Run`, limites obrigatórios, admission control e sync com ACK; testes locais e fluxo Floci passam | Validar adapters reais; fechar enforcement/cancelamento sob stress, métricas/traces e exemplos; não ampliar além de Linux x86-64 |
+| M5 — API/segurança/observabilidade | Parcial; integração de adapters e telemetria pendentes | Coordenador Go/Rust com `Status`/`Health`/`Flush`/`Run`, limites obrigatórios, admission control e sync com ACK; testes de evento/cancelamento Go, contratos Rust e fluxo Floci passam | Validar adapters de produção; stress/cancelamento adicional, métricas/traces e exemplos; não ampliar além de Linux x86-64 |
 | M6 — stress/bench/release | Em andamento | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust | Chaos/stress amplo, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
 
 ### Pendências que requerem decisão/ação do mantenedor
@@ -1026,8 +1027,8 @@ entregável de benchmarks M6 permanece parcial.
   bateria ser repetida. Captura síncrona para spool local e restore incremental
   filesystem por TXID/timestamp e sync S3 explícito com ACK estão ligados à API
   Go/Rust. O fluxo integrado Floci foi repetido com a imagem local do digest
-  fixado; o alvo oficial não completou por falha de rede no pull redundante. Não
-  generalizar para outros provedores.
+  fixado; `make test` passou integralmente nesta revisão. Não generalizar para
+  outros provedores.
 - **M5:** modo estrito por padrão e base `Status`/`Health`/`Flush` foram
   aprovados em ADR 0011. O coordenador oferece `Status`/`Health`/`Flush` e loop
   explícito acionado por eventos, exigindo limites e admission controller. Ainda
@@ -1046,8 +1047,8 @@ entregável de benchmarks M6 permanece parcial.
 
 `make test` passou após a implementação Go/Rust, incluindo formatação,
 `go vet`, Clippy com warnings negados, suites completas Go/Rust, fuzz curto e
-conformance cruzado e Floci,
-`go test -race ./replicator -count=1` também passou. O alvo
+conformance cruzado e integração Floci. `go test -race ./replicator -count=1`
+também passou. O alvo
 `make test-floci` passou com sync público Go, restore interoperável Go/Rust,
 restart persistente, ACK e `Flush` remoto; o teste Go de sync cria bucket próprio
 e o restore Rust usa esse destino isolado. Essas evidências cobrem somente Floci,
