@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -298,6 +299,85 @@ func TestCoordinatorRunPerformsInitialFlushAndClosesAdmissionOnExit(t *testing.T
 	}
 	if !reflect.DeepEqual(admission, []bool{false, false, true, false}) {
 		t.Fatalf("admission transitions = %v, want [false false true false]", admission)
+	}
+}
+
+func TestCoordinatorRunCapturesAfterCoalescibleCommitEvent(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	createSourceDatabase(t, databasePath)
+	repositoryRoot := filepath.Join(directory, "repository")
+	if _, err := replication.Snapshot(context.Background(), databasePath, repositoryRoot); err != nil {
+		t.Fatalf("create initial snapshot: %v", err)
+	}
+	var observed atomic.Uint64
+	observed.Store(1)
+	admissionEvents := make(chan bool, 8)
+	config := coordinatorConfig(repositoryRoot, databasePath, 1)
+	config.ObserveTXID = func(context.Context) (uint64, bool, error) {
+		return observed.Load(), true, nil
+	}
+	config.Capture = func(ctx context.Context) (replicator.CaptureResult, error) {
+		return replicator.CaptureOnce(ctx, databasePath, repositoryRoot, func(context.Context) (func() error, error) {
+			return func() error { return nil }, nil
+		})
+	}
+	config.SetAdmission = func(_ context.Context, enabled bool, _ replicator.Limits) error {
+		admissionEvents <- enabled
+		return nil
+	}
+	coordinator, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatalf("construct coordinator: %v", err)
+	}
+	events := make(chan struct{}, 1)
+	runResult := make(chan error, 1)
+	go func() {
+		runResult <- coordinator.Run(ctx, events)
+	}()
+	awaitAdmission(t, admissionEvents, false)
+	awaitAdmission(t, admissionEvents, false)
+	awaitAdmission(t, admissionEvents, true)
+
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open source database: %v", err)
+	}
+	if _, err := database.ExecContext(context.Background(), "UPDATE records SET value = ? WHERE id = 1", "event-target"); err != nil {
+		t.Fatalf("commit event target: %v", err)
+	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close source database: %v", err)
+	}
+	observed.Store(2)
+	events <- struct{}{}
+	awaitAdmission(t, admissionEvents, false)
+	awaitAdmission(t, admissionEvents, true)
+	cancel()
+	if err := <-runResult; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run result = %v, want context cancellation", err)
+	}
+	awaitAdmission(t, admissionEvents, false)
+	status, err := coordinator.Status(context.Background())
+	if err != nil {
+		t.Fatalf("read status after event capture: %v", err)
+	}
+	if status.LocalDurable == nil || status.LocalDurable.TXID != 2 {
+		t.Fatalf("local durable position after event = %+v, want TXID 2", status.LocalDurable)
+	}
+}
+
+func awaitAdmission(t *testing.T, events <-chan bool, want bool) {
+	t.Helper()
+	select {
+	case got := <-events:
+		if got != want {
+			t.Fatalf("admission state = %t, want %t", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for admission state %t", want)
 	}
 }
 
