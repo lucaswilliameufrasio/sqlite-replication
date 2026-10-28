@@ -85,6 +85,10 @@ O mantenedor decidiu:
   capacidade/segurança estiver excedida ou a captura/sync falhar; reabre somente
   após verificar que os limites foram novamente satisfeitos. Inicialização
   estrita falha sem esse contrato de controle.
+- Enquanto houver TXID observado além do último ponto local durável,
+  `max_unprotected_age` é medido conservadoramente desde o timestamp do último
+  LTX/snapshot durável. Isso pode bloquear antes da idade real do commit, mas não
+  zera o prazo após restart nem exige timestamp de commit do adapter.
 
 Permanecem detalhes de nomes/campos públicos e categorias de erro, além dos
 adapters de métricas/traces da ADR 0012. Implementação não deve declarar o gate
