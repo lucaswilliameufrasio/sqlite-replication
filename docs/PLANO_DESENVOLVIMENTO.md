@@ -1056,6 +1056,9 @@ entregável de benchmarks M6 permanece parcial.
   nem auditoria com DB atualizado. Atualizar toolchain/dependências e repetir os
   scans com advisories atuais é pré-requisito do gate; não foram alterados
   manifests/lockfiles nem criadas exceções.
+  A verificação local também não encontrou `litestream`, `syft`, `cyclonedx` ou
+  `cargo-cyclonedx`; portanto não foi produzido benchmark controlado contra
+  Litestream nem SBOM. Nenhuma ferramenta foi instalada nesta etapa.
 
 ### Coordenador M5 — evidência local 2026-10-28
 
