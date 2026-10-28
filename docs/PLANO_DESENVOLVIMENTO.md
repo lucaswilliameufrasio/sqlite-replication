@@ -1016,7 +1016,7 @@ entregável de benchmarks M6 permanece parcial.
 | M2 — WAL/checkpoint | CP-01 aprovado para Linux x86-64; captura e restore locais públicos em revisão | Drills ENOSPC, interrupção FUSE e QEMU passaram para Go/Rust; testes públicos Go/Rust cobrem captura e restore por TXID/timestamp; gates nativos GitHub Actions passaram em Linux/macOS ARM64 (`40592150987`) | Fechar API/testes/docs da captura; repetir os drills CP-01 antes de ampliar para ARM64 |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Restore público; compactação/GC privados | Restore filesystem e S3 por TXID/timestamp coberto; compactação e GC filesystem/S3 exercitados no Floci, mas ainda sem API operacional pública | Expor compactação/GC somente com contratos e gates próprios; Floci não substitui homologação de provedor |
-| M5 — API/segurança/observabilidade | Parcial; integração de adapters e telemetria pendentes | Coordenador Go/Rust com `Status`/`Health`/`Flush`/`Run`, limites obrigatórios, admission control e sync com ACK; testes de evento/cancelamento Go, contratos Rust e fluxo Floci passam | Validar adapters de produção; stress/cancelamento adicional, métricas/traces e exemplos; não ampliar além de Linux x86-64 |
+| M5 — API/segurança/observabilidade | Parcial; integração de adapters e telemetria pendentes | Coordenador Go/Rust com `Status`/`Health`/`Flush`/`Run`, limites obrigatórios, admission control e sync com ACK; evento/cancelamento Go, contratos Rust e 64 operações concorrentes de `Flush` Rust passam; fluxo Floci passa | Validar adapters de produção; stress/cancelamento do worker Rust, métricas/traces e exemplos; não ampliar além de Linux x86-64 |
 | M6 — stress/bench/release | Em andamento | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust | Chaos/stress amplo, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
 
 ### Pendências que requerem decisão/ação do mantenedor
@@ -1031,9 +1031,11 @@ entregável de benchmarks M6 permanece parcial.
   outros provedores.
 - **M5:** modo estrito por padrão e base `Status`/`Health`/`Flush` foram
   aprovados em ADR 0011. O coordenador oferece `Status`/`Health`/`Flush` e loop
-  explícito acionado por eventos, exigindo limites e admission controller. Ainda
-  faltam homologação de adapters de produção, testes de stress/concorrência e
-  métricas/traces; não amplia o escopo de plataforma do CP-01.
+  explícito acionado por eventos, exigindo limites e admission controller. O
+  teste Rust de stress concorrente verifica 64 `Flush` em quatro lotes de 16 e
+  transições de admissão serializadas. Ainda faltam homologação de adapters de
+  produção, stress/cancelamento do worker Rust e métricas/traces; não amplia o
+  escopo de plataforma do CP-01.
 - **M6/publicação:** caminho Go `github.com/lucaswilliameufrasio/sqlite-replication`
   foi aplicado em `307da59`; Apache-2.0 escolhida (ADRs 0014/D-15), e o nome
   público GitHub “Lucas Eufrasio” foi indicado para o aviso. Falta revisar
@@ -1054,6 +1056,16 @@ restart persistente, ACK e `Flush` remoto; o teste Go de sync cria bucket própr
 e o restore Rust usa esse destino isolado. Essas evidências cobrem somente Floci,
 não homologam outros provedores. Continuam fora do gate fechado stress/chaos do
 worker, adapters de produção e métricas/traces injetáveis.
+
+### Stress concorrente Rust do coordenador — 2026-10-28
+
+`cargo test -p sqlite-replication-core --all-features --test coordinator`
+passou com quatro testes. O teste
+`concurrent_flushes_keep_admission_transitions_serialized_under_stress` executa
+quatro lotes de 16 `Flush` simultâneos contra um snapshot já durável e confirma
+que cada operação mantém o par ordenado de fechamento/reabertura da admissão.
+Não cobre captura SQLite concorrente, cancelamento do worker nem adapters de
+produção; esses gates M5 continuam pendentes.
 
 **Verificação da retomada:** `make test-native` (após o último ajuste), `make test`, `make test-fuzz-extended`, `make bench-ltx`,
 `make test-cp01-fsync-interrupt`, `make test-cp01-qemu-poweroff` e

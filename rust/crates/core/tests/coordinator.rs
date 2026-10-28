@@ -128,6 +128,50 @@ async fn flush_and_run_close_admission_on_limit_and_shutdown() {
     assert_eq!(limited.health().await.local, ComponentState::Degraded);
 }
 
+#[tokio::test]
+async fn concurrent_flushes_keep_admission_transitions_serialized_under_stress() {
+    const BATCHES: usize = 4;
+    const CONCURRENT_FLUSHES: usize = 16;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root)
+        .expect("create initial snapshot");
+
+    let adapter = coordinator_adapter(Some(1));
+    let coordinator = Arc::new(
+        Coordinator::new(CoordinatorConfig {
+            repository_root,
+            database_path,
+            adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+            limits: limits(1 << 30),
+            remote: None,
+        })
+        .expect("construct coordinator"),
+    );
+
+    for _ in 0..BATCHES {
+        let mut tasks = tokio::task::JoinSet::new();
+        for _ in 0..CONCURRENT_FLUSHES {
+            let coordinator = Arc::clone(&coordinator);
+            tasks.spawn(async move { coordinator.flush().await });
+        }
+        while let Some(result) = tasks.join_next().await {
+            result
+                .expect("join concurrent Flush")
+                .expect("concurrent Flush succeeds");
+        }
+    }
+
+    let transitions = adapter.admission.lock().expect("admission lock");
+    assert_eq!(transitions.len(), BATCHES * CONCURRENT_FLUSHES * 2);
+    for pair in transitions.chunks_exact(2) {
+        assert_eq!(pair, [false, true], "each Flush must serialize close/open");
+    }
+}
+
 #[test]
 fn constructor_requires_all_limits() {
     let directory = tempfile::tempdir().expect("temporary directory");
