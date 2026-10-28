@@ -1360,11 +1360,11 @@ mod tests {
             let go_restored =
                 tempfile::tempdir().expect("create Go cross-engine restore directory");
             let go_restored_path = go_restored.path().join("go-restored.sqlite");
-            restore_s3_to_target(
+            crate::restore_from_s3(
                 &store,
                 "recovery-test",
                 &go_restored_path,
-                RestoreTarget::Txid(8),
+                crate::RestoreTarget::Txid(8),
             )
             .await
             .expect("restore Go-published S3 repository with Rust");

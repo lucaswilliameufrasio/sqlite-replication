@@ -65,6 +65,7 @@ python3 "$repository_root/infra/floci_smoke.py" wait "$endpoint" "$run_id"
 (
     cd "$repository_root/go"
     go test ./internal/recovery -run '^TestFlociS3CrossEngineRestore$' -count=1
+    go test ./replicator -run '^TestFlociPublicS3Restore$' -count=1
 )
 (
     cd "$repository_root/go"

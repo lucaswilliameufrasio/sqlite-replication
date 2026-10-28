@@ -201,6 +201,25 @@ pub fn restore_to_target(
     recovery::restore_to_target(repository_root.as_ref(), destination.as_ref(), target)
 }
 
+/// Stages and verifies an S3-compatible repository before restoring a point.
+/// Floci is the only tested implementation; other providers are not implied to
+/// be compatible. Local temporary space proportional to the remote repository
+/// is required. Existing database files and sidecars are never overwritten.
+pub async fn restore_from_s3(
+    store: &sqlite_replication_storage_s3::S3Store,
+    prefix: &str,
+    destination: impl AsRef<Path>,
+    target: RestoreTarget,
+) -> io::Result<()> {
+    let target = match target {
+        RestoreTarget::Txid(txid) => recovery::RestoreTarget::Txid(txid),
+        RestoreTarget::AtOrBeforeTimestampMillis(timestamp) => {
+            recovery::RestoreTarget::AtOrBeforeTimestampMillis(timestamp)
+        }
+    };
+    recovery::restore_s3_to_target(store, prefix, destination.as_ref(), target).await
+}
+
 /// Returns the filesystem LTX path for the initial snapshot.
 pub fn initial_snapshot_path(repository_root: impl AsRef<Path>) -> PathBuf {
     ltx_path(repository_root.as_ref(), 1, 1)

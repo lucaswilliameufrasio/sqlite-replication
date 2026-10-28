@@ -13,12 +13,15 @@ restore e não expõe `Status`/`Health`/`Flush`. A garantia exclui perda física
 energia/cache. ARM64 e outras plataformas/configurações ficam fora até drills
 CP-01 específicos.
 
-Restore por TXID/instante é público somente para repositório filesystem local.
+Restore por TXID/instante é público para repositório filesystem local e via S3
+compatível (testado apenas com Floci).
 Go: `replicator.RestoreToTarget(ctx, root, destination, replicator.RestoreTarget{TXID: n})`
 ou use `TimestampMillis` em vez de `TXID`. Rust:
 `restore_to_target(root, destination, RestoreTarget::Txid(n))` ou
-`AtOrBeforeTimestampMillis(ms)`. O destino precisa ser novo e é verificado antes
-da promoção. S3 não está ligado a essas APIs. Compactação e GC continuam
+`AtOrBeforeTimestampMillis(ms)`. Para S3, Go `replicator.RestoreFromS3(...)` e
+Rust `restore_from_s3(...).await` aceitam store/prefix e o mesmo alvo. O caminho
+S3 foi exercitado somente com Floci; nenhum outro provedor foi homologado. O
+destino precisa ser novo e é verificado antes da promoção. Compactação e GC continuam
 implementados privadamente para desenvolvimento M4 em filesystem e S3 nos
 engines Go/Rust, sem APIs/CLI operacionais nem procedimentos aprovados para
 repositórios ativos. O
