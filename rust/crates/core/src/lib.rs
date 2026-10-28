@@ -1,8 +1,14 @@
 //! Synchronous SQLite snapshot, local WAL capture, and offline restore APIs.
 
 // Recovery implementation details remain private behind the checked public API.
+mod coordinator;
 #[allow(dead_code)]
 mod recovery;
+
+pub use coordinator::{
+    ComponentState, Coordinator, CoordinatorAdapter, CoordinatorConfig, ErrorCategory, Health,
+    Limits, Position, RemoteConfig, Status,
+};
 
 pub(crate) mod capture;
 

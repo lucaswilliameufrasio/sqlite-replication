@@ -98,7 +98,11 @@ func TestFlociPublicS3Sync(t *testing.T) {
 		options.BaseEndpoint = aws.String(endpoint)
 		options.UsePathStyle = true
 	})
-	store, err := storages3.New(client, "sqlite-replication-m4-"+runID)
+	bucketName := "sqlite-replication-sync-" + runID
+	if _, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String(bucketName)}); err != nil {
+		t.Fatalf("create isolated local-test bucket: %v", err)
+	}
+	store, err := storages3.New(client, bucketName)
 	if err != nil {
 		t.Fatalf("initialize S3 adapter: %v", err)
 	}
@@ -138,6 +142,38 @@ func TestFlociPublicS3Sync(t *testing.T) {
 	}
 	if ack.RemoteID != "floci-public-sync-"+runID || ack.Prefix != "public-sync-test" || ack.TXID != result.TXID {
 		t.Fatalf("remote ack = %+v, does not match successful sync", ack)
+	}
+	coordinator, err := replicator.NewCoordinator(replicator.CoordinatorConfig{
+		RepositoryRoot: repositoryRoot,
+		DatabasePath:   databasePath,
+		ObserveTXID: func(context.Context) (uint64, bool, error) {
+			return result.TXID, true, nil
+		},
+		Capture: func(context.Context) (replicator.CaptureResult, error) {
+			return replicator.CaptureResult{TXID: result.TXID}, nil
+		},
+		SetAdmission: func(context.Context, bool, replicator.Limits) error { return nil },
+		Limits: replicator.Limits{
+			MaxSpoolBytes:      1 << 30,
+			MaxWALBytes:        64 << 20,
+			MaxUnprotectedAge:  time.Hour,
+			MaxUploadsInFlight: 1,
+		},
+		Remote: &replicator.RemoteConfig{
+			Store:    store,
+			Prefix:   "public-sync-test",
+			RemoteID: "floci-public-sync-" + runID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("construct remote coordinator: %v", err)
+	}
+	if err := coordinator.Flush(ctx); err != nil {
+		t.Fatalf("flush remote target through coordinator: %v", err)
+	}
+	health := coordinator.Health(ctx)
+	if health.Local != replicator.ComponentHealthy || health.Remote != replicator.ComponentHealthy {
+		t.Fatalf("coordinator component health = %+v", health)
 	}
 
 	retry, err := replicator.SyncToS3(ctx, repositoryRoot, store, "public-sync-test", "floci-public-sync-"+runID)

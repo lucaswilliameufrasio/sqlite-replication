@@ -1,7 +1,7 @@
 # Plano de Desenvolvimento — SQLite Replication para Go e Rust
 
 > **Versão:** 1.0 — 21/10/2026  
-> **Estado em 2026-10-27:** M0 parcial, M1 verificado, CP-01 aprovado para Linux x86-64 e uma fatia pública de captura local em andamento; M3 implementado/verificado localmente, M4 implementado/verificado localmente com fechamento operacional pendente; M5 incompleto e M6 em andamento.
+> **Estado em 2026-10-28:** M0 parcial, M1 verificado, CP-01 aprovado somente para Linux x86-64; M3 implementado/verificado localmente, M4 implementado/verificado localmente com fechamento operacional pendente; coordenador M5 implementado com gates locais/Floci, mas adapters de produção, stress e observabilidade seguem pendentes; M6 em andamento.
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.
@@ -1015,7 +1015,7 @@ entregável de benchmarks M6 permanece parcial.
 | M2 — WAL/checkpoint | CP-01 aprovado para Linux x86-64; captura e restore locais públicos em revisão | Drills ENOSPC, interrupção FUSE e QEMU passaram para Go/Rust; testes públicos Go/Rust cobrem captura e restore por TXID/timestamp; gates nativos GitHub Actions passaram em Linux/macOS ARM64 (`40592150987`) | Fechar API/testes/docs da captura; repetir os drills CP-01 antes de ampliar para ARM64 |
 | M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
 | M4 — compactação/retenção | Restore público; compactação/GC privados | Restore filesystem e S3 por TXID/timestamp coberto; compactação e GC filesystem/S3 exercitados no Floci, mas ainda sem API operacional pública | Expor compactação/GC somente com contratos e gates próprios; Floci não substitui homologação de provedor |
-| M5 — API/segurança/observabilidade | Parcial; contratos de operação pendentes | Write-gate estrito; sync explícito Go/Rust com ACK local por destino; testes unitários e fluxo integrado Floci passam | Implementar `Status`/`Health`/`Flush`, limites/backpressure, métricas/traces e exemplos; não ampliar além de Linux x86-64 |
+| M5 — API/segurança/observabilidade | Parcial; integração de adapters e telemetria pendentes | Coordenador Go/Rust com `Status`/`Health`/`Flush`/`Run`, limites obrigatórios, admission control e sync com ACK; testes locais e fluxo Floci passam | Validar adapters reais; fechar enforcement/cancelamento sob stress, métricas/traces e exemplos; não ampliar além de Linux x86-64 |
 | M6 — stress/bench/release | Em andamento | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust | Chaos/stress amplo, comparação Litestream controlada, SBOM/supply-chain, release/semver/pacotes e documentação de migração |
 
 ### Pendências que requerem decisão/ação do mantenedor
@@ -1029,13 +1029,10 @@ entregável de benchmarks M6 permanece parcial.
   fixado; o alvo oficial não completou por falha de rede no pull redundante. Não
   generalizar para outros provedores.
 - **M5:** modo estrito por padrão e base `Status`/`Health`/`Flush` foram
-  aprovados em ADR 0011. Faltam implementação/testes e fechar detalhes de
-  degradação/concorrência, admissão e limites/defaults de write-gate, mais
-  integração concreta de métricas/traces e combinações de drivers (ADR 0012).
-  A captura local exige write-gate estrito. Sync remoto explícito tem ACK
-  durável, mas falta integração efetiva com `Flush`/`Status`; também faltam
-  backpressure, métricas/traces e fechar compatibilidade. Não amplia o escopo de
-  plataforma do CP-01.
+  aprovados em ADR 0011. O coordenador oferece `Status`/`Health`/`Flush` e loop
+  explícito acionado por eventos, exigindo limites e admission controller. Ainda
+  faltam homologação de adapters de produção, testes de stress/concorrência e
+  métricas/traces; não amplia o escopo de plataforma do CP-01.
 - **M6/publicação:** caminho Go `github.com/lucaswilliameufrasio/sqlite-replication`
   foi aplicado em `307da59`; Apache-2.0 escolhida (ADRs 0014/D-15), e o nome
   público GitHub “Lucas Eufrasio” foi indicado para o aviso. Falta revisar
@@ -1045,9 +1042,21 @@ entregável de benchmarks M6 permanece parcial.
   prolongado; baseline Go/Rust não é comparação controlada com Litestream. SBOM,
   supply-chain e guia de migração ainda não têm artefatos aprovados.
 
+### Coordenador M5 — evidência local 2026-10-28
+
+`make test` passou após a implementação Go/Rust, incluindo formatação,
+`go vet`, Clippy com warnings negados, suites completas Go/Rust, fuzz curto e
+conformance cruzado e Floci,
+`go test -race ./replicator -count=1` também passou. O alvo
+`make test-floci` passou com sync público Go, restore interoperável Go/Rust,
+restart persistente, ACK e `Flush` remoto; o teste Go de sync cria bucket próprio
+e o restore Rust usa esse destino isolado. Essas evidências cobrem somente Floci,
+não homologam outros provedores. Continuam fora do gate fechado stress/chaos do
+worker, adapters de produção e métricas/traces injetáveis.
+
 **Verificação da retomada:** `make test-native` (após o último ajuste), `make test`, `make test-fuzz-extended`, `make bench-ltx`,
 `make test-cp01-fsync-interrupt`, `make test-cp01-qemu-poweroff` e
-`make test-cp01-enospc` passaram em execuções registradas nesta retomada. `make
+ `make test-cp01-enospc` passaram em execuções registradas nesta retomada. `make
 test` usou Floci local persistente pelo daemon rootless já ativo; o smoke removeu
 apenas o projeto/volume próprios. A imagem Debian pinada foi baixada somente
 após autorização explícita e o drill ENOSPC passou em Go/Rust, inclusive após a

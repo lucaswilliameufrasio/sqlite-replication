@@ -21,10 +21,11 @@ escopo, exigindo write-gate explícito. Não solicitam checkpoint nem fazem uplo
 remoto; restores incrementais filesystem e S3 estão disponíveis por TXID ou
 timestamp. Sync explícito local→S3 com ACK durável por destino está implementado
 em Go/Rust, com publicação do manifesto por último e sem apagar spool. O fluxo
-integrado Go/Rust passou no Floci desta revisão usando a imagem local fixada; o
-alvo oficial falhou somente ao tentar um pull redundante da mesma imagem.
-`Status`/`Health`/`Flush`, backpressure operacional e exemplos completos seguem
-pendentes. M5 e o restante de M6 permanecem incompletos.
+integrado Go/Rust e `make test` passaram no Floci desta revisão.
+`Status`/`Health`/`Flush` estão parcialmente disponíveis via coordenador
+explícito Go/Rust; o worker `Run` exige notificações do adapter e admission
+control estrito. Métricas/traces, validação de adapters de produção e exemplos
+completos seguem pendentes. M5 e o restante de M6 permanecem incompletos.
 
 ## Documentos
 - [Plano de desenvolvimento](docs/PLANO_DESENVOLVIMENTO.md)

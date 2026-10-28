@@ -1488,11 +1488,14 @@ mod tests {
             .expect("restore Go-published S3 repository with Rust");
             assert_s3_record_value(&go_restored_path, "updated");
 
+            let public_sync_bucket = format!("sqlite-replication-sync-{run_id}");
+            let public_sync_store = S3Store::new(client.clone(), &public_sync_bucket)
+                .expect("construct public sync S3 store");
             let public_sync_restored =
                 tempfile::tempdir().expect("create public sync restore directory");
             let public_sync_path = public_sync_restored.path().join("restored.sqlite");
             crate::restore_from_s3(
-                &store,
+                &public_sync_store,
                 "public-sync-test",
                 &public_sync_path,
                 crate::RestoreTarget::Txid(2),

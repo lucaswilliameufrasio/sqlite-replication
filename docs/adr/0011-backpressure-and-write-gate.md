@@ -1,6 +1,6 @@
 # ADR 0011: limites de trabalho e política de write-gate
 
-- **Status:** modo estrito por padrão decidido; base de `Status`/`Health`/`Flush` aprovada para implementação; detalhes finais e limites em aberto
+- **Status:** decisões de contrato aceitas; coordenador explícito implementado em Go/Rust; homologação de adapters, stress/cancelamento e telemetria pendentes
 - **Data:** 2026-10-23
 
 ## Contexto
@@ -51,11 +51,11 @@ anunciar cobertura mais ampla.
   Prometheus seguem os guardrails da ADR 0012; os nomes/convenções e adapters
   concretos ainda precisam de revisão.
 
-Pontos para fechar antes de declarar a API estável: o que `Health` considera
-degradação, testes da semântica de `Flush` sob concorrência, nomes e tipos das
-posições de `Status`, limites/defaults e compatibilidade de drivers/adapters que
-conseguem observar e impor admissão. Mudanças necessárias encontradas durante
-testes devem voltar para revisão do contrato.
+Pontos ainda necessários antes de declarar a API estável: testes adicionais da
+semântica de `Flush` sob concorrência/cancelamento, compatibilidade de drivers e
+adapters reais que conseguem observar e impor admissão, e telemetria injetável.
+Mudanças necessárias encontradas durante testes devem voltar para revisão do
+contrato.
 
 Em 2026-10-27, o mantenedor confirmou a semântica proposta de alvo de `Flush`,
 confirmação local/remota e timeout/cancelamento. A API e suas implementações
@@ -84,7 +84,10 @@ O mantenedor decidiu:
   estrito. O coordenador fecha a admissão e a mantém fechada enquanto a
   capacidade/segurança estiver excedida ou a captura/sync falhar; reabre somente
   após verificar que os limites foram novamente satisfeitos. Inicialização
-  estrita falha sem esse contrato de controle.
+  estrita falha sem esse contrato de controle. A política e os limites
+  configurados são entregues ao callback de admissão, que deve reservar
+  capacidade atomicamente antes de aceitar novas escritas e manter a admissão
+  fechada se falhar ao habilitá-la.
 - O trabalho contínuo será iniciado explicitamente pela aplicação via `Run`,
   sem intervalo de polling fixo. O adapter fornece notificações coalescíveis de
   commits/estado de capacidade; o worker observa o TXID mais recente e processa
@@ -97,10 +100,10 @@ O mantenedor decidiu:
   LTX/snapshot durável. Isso pode bloquear antes da idade real do commit, mas não
   zera o prazo após restart nem exige timestamp de commit do adapter.
 
-Permanecem detalhes de nomes/campos públicos e categorias de erro, além dos
+Permanecem ajustes de nomes/campos públicos e categorias de erro, além dos
 adapters de métricas/traces da ADR 0012. Implementação não deve declarar o gate
-M5 fechado até testes de concorrência, cancelamento, saturação e execução dos
-gates correspondentes.
+M5 fechado até validação dos adapters, testes de concorrência, cancelamento,
+saturação e execução dos gates correspondentes.
 
 Definir limites separados para `max_spool_bytes`, `max_wal_bytes`, idade máxima
 sem proteção, workers e bytes em voo. Rejeitar ou aplicar backpressure antes de
@@ -126,10 +129,11 @@ estabelecidos.
 
 ## Consequências e evidência pendente
 
-Antes de implementar, mapear produtor → espera → worker → storage → ACK,
-definir semântica de aceitação, cancelamento e liberação de capacidade. Testar
-fila cheia, storage lento, cancelamento, erros, recuperação de quotas e
-isolamento por banco. Nenhuma dessas funções existe em M1.
+Mapear produtor → admissão → captura → spool → storage → ACK continua necessário
+para cada adapter suportado. Testar fila cheia, storage lento, cancelamento,
+erros, recuperação de quotas e isolamento por banco. A implementação atual tem
+testes locais de contrato, mas ainda não demonstra saturação/stress com adapters
+de produção.
 
 ## Reversão / reconsideração
 

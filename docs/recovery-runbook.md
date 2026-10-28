@@ -9,7 +9,8 @@ uma cadeia local para um TXID exato ou instante UTC inclusivo. Go `replicator.Ca
 somente em Linux x86-64 com os runtimes SQLite testados e um único escritor
 lógico coordenado. O chamador precisa pausar todos os escritores pelo write-gate
 e manter o spool local; a função de captura não faz upload, checkpoint nem
-restore e não expõe `Status`/`Health`/`Flush`. A garantia exclui perda física de
+restore. O coordenador separado expõe `Status`/`Health`/`Flush`/`Run`. A
+garantia exclui perda física de
 energia/cache. ARM64 e outras plataformas/configurações ficam fora até drills
 CP-01 específicos.
 
@@ -40,6 +41,19 @@ depois da confirmação de todos os objetos. Retry aceita objetos idênticos e
 rejeita conteúdo divergente. Essa operação não remove spool nem faz GC; não
 executar sync concorrente para o mesmo repositório. Compatibilidade foi testada
 somente com Floci, sem homologar AWS S3, R2 ou outros provedores.
+
+## Coordenador e flush
+
+O coordenador não é iniciado implicitamente. Go `replicator.NewCoordinator`
+exige callbacks de observação de TXID, captura e admission control, além de
+limites positivos explícitos para spool, WAL, idade sem proteção e uploads em
+voo; `Run(ctx, events)` faz reconciliação inicial e reage a notificações
+coalescíveis do adapter. Rust expõe `Coordinator::new`, `flush().await` e
+`run(events, cancellation)`. Inicie com admissão de escrita fechada e só permita
+escritas depois do primeiro flush/reconciliação bem-sucedido. Limites excedidos,
+falha de captura/sync ou encerramento do worker mantêm escritas bloqueadas. O
+adapter deve aplicar atomicamente o admission controller também antes de
+ultrapassar limites, incluindo crescimento do WAL dentro de transações.
 
 ## Restore via biblioteca
 
