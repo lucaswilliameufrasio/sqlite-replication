@@ -85,6 +85,13 @@ O mantenedor decidiu:
   capacidade/segurança estiver excedida ou a captura/sync falhar; reabre somente
   após verificar que os limites foram novamente satisfeitos. Inicialização
   estrita falha sem esse contrato de controle.
+- O trabalho contínuo será iniciado explicitamente pela aplicação via `Run`,
+  sem intervalo de polling fixo. O adapter fornece notificações coalescíveis de
+  commits/estado de capacidade; o worker observa o TXID mais recente e processa
+  até esse alvo. O admission controller continua responsável por impedir
+  atomicamente novas escritas quando não há capacidade, inclusive antes de um
+  limite rígido ser ultrapassado. A aplicação deve iniciar fechada e só abrir
+  admissão após o primeiro `Flush`/reconciliação bem-sucedido.
 - Enquanto houver TXID observado além do último ponto local durável,
   `max_unprotected_age` é medido conservadoramente desde o timestamp do último
   LTX/snapshot durável. Isso pode bloquear antes da idade real do commit, mas não
