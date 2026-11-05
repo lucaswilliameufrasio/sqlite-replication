@@ -1110,6 +1110,15 @@ Cancelamento durante captura/sync em voo e stress do worker ainda estão
 pendentes; a correção não torna a captura bloqueante cancelável nem amplia o
 escopo CP-01.
 
+**Eventos do worker — 2026-11-05:** teste adicional envia 16 notificações ao
+`Run` Rust, aguarda cada ciclo e verifica que o cancelamento ao final fecha a
+admissão. Passou 10 execuções consecutivas em container isolado. Ele usa o
+adapter de teste com alvo já durável: não comprova captura SQLite real, evento
+coalescido sob sobrecarga nem cancelamento durante captura ou sync em voo. Após
+adicionar o teste, `make test-native` passou novamente (alguns testes Go usaram
+cache); o smoke Floci havia passado após a última alteração de código, antes da
+adição apenas do teste. `make test` literal segue não executado por isolamento.
+
 `make test` passou após a implementação Go/Rust, incluindo formatação,
 `go vet`, Clippy com warnings negados, suites completas Go/Rust, fuzz curto e
 conformance cruzado e integração Floci. `go test -race ./replicator -count=1`

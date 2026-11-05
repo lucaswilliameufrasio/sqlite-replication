@@ -159,6 +159,56 @@ async fn run_with_preexisting_cancellation_never_opens_admission() {
 }
 
 #[tokio::test]
+async fn worker_handles_repeated_events_and_closes_on_cancellation() {
+    const EVENTS: usize = 16;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root)
+        .expect("create initial snapshot");
+    let adapter = coordinator_adapter(Some(1));
+    let coordinator = Arc::new(
+        Coordinator::new(CoordinatorConfig {
+            repository_root,
+            database_path,
+            adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+            limits: limits(1 << 30),
+            remote: None,
+        })
+        .expect("construct coordinator"),
+    );
+    let (cancel_sender, mut cancellation) = tokio::sync::watch::channel(false);
+    let (event_sender, mut events) = tokio::sync::mpsc::channel(1);
+    let worker = tokio::spawn(async move { coordinator.run(&mut events, &mut cancellation).await });
+
+    for index in 0..EVENTS {
+        event_sender.send(()).await.expect("send event");
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if adapter.admission.lock().expect("admission lock").len() >= 3 + (index + 1) * 2 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("worker processes event");
+    }
+    cancel_sender.send(true).expect("signal cancellation");
+    tokio::time::timeout(Duration::from_secs(5), worker)
+        .await
+        .expect("worker stops after cancellation")
+        .expect("worker task succeeds")
+        .expect("worker closes admission");
+    assert_eq!(
+        adapter.admission.lock().expect("admission lock").last(),
+        Some(&false)
+    );
+}
+
+#[tokio::test]
 async fn concurrent_flushes_keep_admission_transitions_serialized_under_stress() {
     const BATCHES: usize = 4;
     const CONCURRENT_FLUSHES: usize = 16;
