@@ -51,6 +51,20 @@ Smithy legado habilitado pelo SDK; não foi criada exceção nem declarado o gat
 supply-chain aprovado. `govulncheck` não concluiu, então a verificação Go também
 permanece pendente.
 
+### Revisão posterior das features do SDK
+
+O SDK agora desabilita suas features padrão e seleciona explicitamente `sigv4a`,
+`http-1x`, `rt-tokio` e `default-https-client`. Isso preserva o cliente HTTPS
+moderno e SigV4a sem ativar `rustls`, cujo nome no SDK habilita também o
+conector legado. A auditoria com banco atualizado não encontrou advisories no
+lockfile atual, os nove testes locais do adapter e a conformance específica do
+adapter contra Floci 2.3.0 passaram isoladamente, sem rede externa. Após a
+alteração, `make test-native` e os comandos do smoke Floci passaram em containers
+isolados; o comando literal `make test` não foi executado, pois exige acesso ao
+socket Docker no processo testado.
+Consumidores podem reativar a feature legada por unificação de features do
+Cargo e devem auditar sua própria árvore de dependências.
+
 O decoder Go usa `github.com/pierrec/lz4/v4` 4.1.22: a 4.1.33 falha ao ler o
 frame LZ4 por página do formato LTX, enquanto o teste isolado passa com 4.1.22.
 Não atualizar essa dependência até que uma versão corrigida passe a mesma

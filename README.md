@@ -29,6 +29,7 @@ completos seguem pendentes. M5 e o restante de M6 permanecem incompletos.
 
 ## Documentos
 - [Development plan](docs/development-plan.md)
+- [Migração da toolchain Rust](docs/migration-rust-toolchain.md)
 - [Prompt de execução](docs/PROMPT_EXECUCAO.md)
 - [Contrato LTX v2](spec/LTX_V2.md)
 - [Como testar](docs/TESTING.md)

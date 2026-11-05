@@ -1076,6 +1076,25 @@ entregável de benchmarks M6 permanece parcial.
   conformance (16 casos/96 restores) e integração Floci com restart do serviço.
   Nenhuma ferramenta de SBOM foi instalada e nenhum release/tag/push foi feito.
 
+- **M6/supply-chain — investigação posterior:** `go run
+  golang.org/x/vuln/cmd/govulncheck@latest -C . -test ./...`, executado em
+  `go/` com `GOMAXPROCS=2`, retornou `No vulnerabilities found`. O SDK S3 Rust
+  agora seleciona explicitamente o cliente HTTPS padrão moderno, HTTP 1.x,
+  Tokio e SigV4a, sem a feature `rustls` legada. `cargo audit --file Cargo.lock`
+  atualizou o banco para 1.409 advisories e encerrou sem findings para as 231
+  dependências do lockfile. O adapter Rust compilou offline e seus nove testes
+  locais passaram em container rootless isolado, com rede externa desabilitada.
+  `cargo test --offline --workspace --all-features -j 2` também passou nesse
+  ambiente; os testes de drills e de integração opt-in permaneceram ignorados.
+  `make test-native` passou após a mudança, incluindo as 16 fixtures de snapshot
+  e 96 restores. Os comandos do smoke Floci foram executados separadamente no
+  mesmo ambiente isolado, com a imagem 2.3.0 pinada, e passaram antes e depois
+  de SIGKILL/restart: adapters e recovery Go/Rust, sync, restores cruzados e
+  marcador persistente. O comando literal `make test` não foi executado nessa
+  revisão, pois seu script invoca Docker e o socket do daemon não foi exposto ao
+  processo testado; a orquestração foi feita fora dos containers de teste. A
+  unificação de features em consumidores pode reativar o conector legado.
+
 ### Coordenador M5 — evidência local 2026-10-28
 
 `make test` passou após a implementação Go/Rust, incluindo formatação,
