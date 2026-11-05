@@ -129,6 +129,36 @@ async fn flush_and_run_close_admission_on_limit_and_shutdown() {
 }
 
 #[tokio::test]
+async fn run_with_preexisting_cancellation_never_opens_admission() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root)
+        .expect("create initial snapshot");
+    let adapter = coordinator_adapter(Some(1));
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("construct coordinator");
+    let (_cancel_sender, mut cancellation) = tokio::sync::watch::channel(true);
+    let (_event_sender, mut events) = tokio::sync::mpsc::channel(1);
+
+    tokio::time::timeout(
+        Duration::from_millis(500),
+        coordinator.run(&mut events, &mut cancellation),
+    )
+    .await
+    .expect("pre-cancelled worker exits promptly")
+    .expect("worker closes admission");
+    assert_eq!(*adapter.admission.lock().expect("admission lock"), [false]);
+}
+
+#[tokio::test]
 async fn concurrent_flushes_keep_admission_transitions_serialized_under_stress() {
     const BATCHES: usize = 4;
     const CONCURRENT_FLUSHES: usize = 16;

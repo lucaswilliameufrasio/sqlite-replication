@@ -1097,6 +1097,19 @@ entregável de benchmarks M6 permanece parcial.
 
 ### Coordenador M5 — evidência local 2026-10-28
 
+**Regressão de cancelamento inicial — 2026-11-05:** `Run` Rust com
+`watch::Receiver` inicialmente `true` ficava aguardando uma alteração e podia
+reabrir a admissão. O teste `run_with_preexisting_cancellation_never_opens_admission`
+falhou por timeout antes da correção; após verificar o valor inicial antes de
+`Flush`, passou junto dos cinco testes do coordinator em container isolado.
+Após a alteração, `make test-native` passou, incluindo 16 casos/96 restores.
+Os comandos do smoke Floci passaram separadamente antes e depois de SIGKILL e
+restart do serviço isolado; `make test` literal não foi executado porque o
+script exige o socket Docker, que não foi exposto ao processo testado.
+Cancelamento durante captura/sync em voo e stress do worker ainda estão
+pendentes; a correção não torna a captura bloqueante cancelável nem amplia o
+escopo CP-01.
+
 `make test` passou após a implementação Go/Rust, incluindo formatação,
 `go vet`, Clippy com warnings negados, suites completas Go/Rust, fuzz curto e
 conformance cruzado e integração Floci. `go test -race ./replicator -count=1`

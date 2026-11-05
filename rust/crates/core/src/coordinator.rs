@@ -315,6 +315,9 @@ impl Coordinator {
         self.config
             .adapter
             .set_write_admission(false, self.config.limits)?;
+        if *cancellation.borrow() {
+            return Ok(());
+        }
         self.flush().await?;
         loop {
             tokio::select! {
