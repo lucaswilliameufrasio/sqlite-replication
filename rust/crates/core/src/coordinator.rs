@@ -111,10 +111,10 @@ impl Coordinator {
                 "all replication limits must be explicitly positive",
             ));
         }
-        if let Some(remote) = &config.remote {
-            if remote.remote_id.trim().is_empty() {
-                return Err(invalid_input("a stable remote ID is required"));
-            }
+        if let Some(remote) = &config.remote
+            && remote.remote_id.trim().is_empty()
+        {
+            return Err(invalid_input("a stable remote ID is required"));
         }
         Ok(Self {
             config,

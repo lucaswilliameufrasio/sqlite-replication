@@ -167,8 +167,10 @@ async fn concurrent_flushes_keep_admission_transitions_serialized_under_stress()
 
     let transitions = adapter.admission.lock().expect("admission lock");
     assert_eq!(transitions.len(), BATCHES * CONCURRENT_FLUSHES * 2);
-    for pair in transitions.chunks_exact(2) {
-        assert_eq!(pair, [false, true], "each Flush must serialize close/open");
+    let (pairs, remainder) = transitions.as_slice().as_chunks::<2>();
+    assert!(remainder.is_empty(), "every Flush has two transitions");
+    for pair in pairs {
+        assert_eq!(*pair, [false, true], "each Flush must serialize close/open");
     }
 }
 

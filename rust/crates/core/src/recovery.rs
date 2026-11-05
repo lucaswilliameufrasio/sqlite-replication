@@ -594,7 +594,7 @@ pub(crate) async fn compact_s3_to_snapshot(
             .checked_add(count as u64)
             .ok_or_else(|| io::Error::other("S3 snapshot size overflow"))?;
     }
-    let checksum = format!("{:x}", hasher.finalize());
+    let checksum = hex::encode(hasher.finalize());
     if size != receipt.size || checksum != receipt.sha256 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

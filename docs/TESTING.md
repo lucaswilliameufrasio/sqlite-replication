@@ -2,8 +2,9 @@
 
 ## Ferramentas
 
-- Go 1.27.1 ou posterior compatível com `go.mod`.
-- Rust/Cargo 1.98.1 ou posterior compatível com `Cargo.toml`.
+- Go 1.27.3 ou posterior compatível com `go.mod`.
+- Rust/Cargo 1.99.1 ou posterior compatível com `Cargo.toml` (MSRV declarado:
+  Rust 1.94.1).
 - M1 usa filesystem local e SQLite embutido; não requer credenciais nem S3.
 - O conformance requer Python 3 com módulo padrão `sqlite3`. Python cria e
   verifica somente fixtures offline; snapshots e restores das bibliotecas usam

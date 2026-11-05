@@ -170,7 +170,8 @@ fn wal_checksum(
     mut checksum_2: u32,
     little_endian: bool,
 ) -> (u32, u32) {
-    for words in data.chunks_exact(8) {
+    let (words_list, _) = data.as_chunks::<8>();
+    for words in words_list {
         let first = if little_endian {
             u32::from_le_bytes(words[..4].try_into().expect("fixed-width checksum word"))
         } else {

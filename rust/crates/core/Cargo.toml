@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+hex.workspace = true
 sqlite-replication-ltx = { path = "../ltx" }
 sqlite-replication-sqlite = { path = "../sqlite-adapter" }
 sqlite-replication-spool = { path = "../spool" }

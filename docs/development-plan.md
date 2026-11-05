@@ -1,7 +1,7 @@
-# Plano de Desenvolvimento — SQLite Replication para Go e Rust
+# Development Plan — SQLite Replication for Go and Rust
 
 > **Versão:** 1.0 — 21/10/2026  
-> **Estado em 2026-10-28:** M0 parcial, M1 verificado, CP-01 aprovado somente para Linux x86-64; M3 implementado/verificado localmente, M4 implementado/verificado localmente com fechamento operacional pendente; coordenador M5 implementado com gates locais/Floci, mas adapters de produção, stress e observabilidade seguem pendentes; M6 em andamento.
+> **Status on 2026-11-05:** M0 partial, M1 verified, CP-01 approved only for Linux x86-64; M3 implemented/locally verified, M4 implemented/locally verified with operational closure pending; M5 coordinator implemented with local/Floci gates, but production adapters, stress and observability remain pending; M6 in progress.
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.
@@ -1044,7 +1044,7 @@ entregável de benchmarks M6 permanece parcial.
 - **M6/evidência:** campanha atual é fuzz Go de um minuto, não chaos/stress
   prolongado; baseline Go/Rust não é comparação controlada com Litestream. SBOM,
   supply-chain e guia de migração ainda não têm artefatos aprovados.
-- **M6/supply-chain — 2026-10-28:** `govulncheck -C go -test ./...` saiu com
+- **M6/supply-chain — 2026-10-28 (baseline histórica):** `govulncheck -C go -test ./...` saiu com
   código 3 e encontrou 10 avisos de vulnerabilidade na standard library Go
   1.27.1, com caminhos de uso em `crypto/x509`, `net/http`/HTTP2, `crypto/tls`,
   `mime/multipart` e outros; o relatório indica correções em Go 1.27.2/1.27.3.
@@ -1059,6 +1059,22 @@ entregável de benchmarks M6 permanece parcial.
   A verificação local também não encontrou `litestream`, `syft`, `cyclonedx` ou
   `cargo-cyclonedx`; portanto não foi produzido benchmark controlado contra
   Litestream nem SBOM. Nenhuma ferramenta foi instalada nesta etapa.
+
+- **M6/supply-chain — atualização 2026-11-05:** toolchains atualizadas para Go
+  1.27.3 e Rust/Cargo 1.99.1; dependências Go e crates Rust atualizados para as
+  versões compatíveis mais recentes, exceto LZ4 Go 4.1.22 por regressão de
+  compatibilidade LTX. `go mod tidy -diff`, `go vet ./...` e `cargo fmt --check`
+  passaram. `cargo audit --no-fetch --stale` agora reporta 7 vulnerabilidades
+  concentradas no conector TLS legado de `aws-smithy-http-client` (inclui
+  `h2` 0.3 e `rustls` 0.21); portanto o gate supply-chain segue bloqueado. O
+  `govulncheck` instalado não concluiu: o processo encerrou com código 2 durante
+  construção SSA e produziu stack trace; o resultado Go permanece sem
+  verificação. Clippy 1.99 apontou o lint novo `chunks_exact_to_as_chunks` em
+  `wal_checksum`; os usos foram adaptados para `as_chunks::<N>()` preservando o
+  tratamento do resto já existente. Depois desses ajustes, `make test` passou
+  integralmente: format, vet, Clippy, suites Go/Rust, fuzz smoke, matriz de
+  conformance (16 casos/96 restores) e integração Floci com restart do serviço.
+  Nenhuma ferramenta de SBOM foi instalada e nenhum release/tag/push foi feito.
 
 ### Coordenador M5 — evidência local 2026-10-28
 

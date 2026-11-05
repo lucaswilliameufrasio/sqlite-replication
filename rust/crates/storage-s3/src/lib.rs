@@ -198,7 +198,8 @@ impl S3Store {
                 "object exceeds S3 limit",
             ));
         }
-        let sha256 = format!("{:x}", hasher.finalize());
+        let digest = hasher.finalize();
+        let sha256 = hex::encode(digest);
         let mut metadata = user_metadata.clone();
         metadata.insert("content-sha256".to_owned(), sha256.clone());
         metadata.insert("content-length".to_owned(), size.to_string());
@@ -390,10 +391,9 @@ impl S3Store {
         if let Some(remote_hash) = object
             .metadata()
             .and_then(|metadata| metadata.get("content-sha256"))
+            && remote_hash != expected_sha256
         {
-            if remote_hash != expected_sha256 {
-                return Ok(false);
-            }
+            return Ok(false);
         }
         let mut body = object.body.into_async_read();
         let mut hasher = Sha256::new();
@@ -408,7 +408,8 @@ impl S3Store {
             }
             hasher.update(&buffer[..count]);
         }
-        Ok(format!("{:x}", hasher.finalize()) == expected_sha256)
+        let digest = hasher.finalize();
+        Ok(hex::encode(digest) == expected_sha256)
     }
 
     pub async fn get(
@@ -875,7 +876,7 @@ mod tests {
             ObjectDescriptor {
                 key: "other/object".into(),
                 size: 1,
-                sha256: format!("{:x}", Sha256::digest(b"x")),
+                sha256: hex::encode(Sha256::digest(b"x")),
             },
         ];
         assert!(store.reconcile("test/", &cases[..1]).await.is_err());
@@ -888,12 +889,12 @@ mod tests {
                         ObjectDescriptor {
                             key: "test/object".into(),
                             size: 1,
-                            sha256: format!("{:x}", Sha256::digest(b"x")),
+                            sha256: hex::encode(Sha256::digest(b"x")),
                         },
                         ObjectDescriptor {
                             key: "test/object".into(),
                             size: 1,
-                            sha256: format!("{:x}", Sha256::digest(b"x")),
+                            sha256: hex::encode(Sha256::digest(b"x")),
                         },
                     ],
                 )
@@ -1088,7 +1089,7 @@ mod tests {
             .await
             .expect("PUT should verify remote content after a lost response");
         assert_eq!(receipt.size, content.len() as u64);
-        assert_eq!(receipt.sha256, format!("{:x}", Sha256::digest(content)));
+        assert_eq!(receipt.sha256, hex::encode(Sha256::digest(content)));
         assert_eq!(server.join().expect("test server thread"), content);
     }
 
@@ -1397,7 +1398,7 @@ mod tests {
             .put_immutable("test/empty.ltx", Cursor::new(&[]))
             .await
             .map_err(|error| format!("empty object PUT failed: {error}"))?;
-        if empty_receipt.size != 0 || empty_receipt.sha256 != format!("{:x}", Sha256::digest([])) {
+        if empty_receipt.size != 0 || empty_receipt.sha256 != hex::encode(Sha256::digest([])) {
             return Err("empty object returned incorrect size or SHA-256".into());
         }
         let range = store
@@ -1443,8 +1444,8 @@ mod tests {
             .send()
             .await
             .map_err(|error| format!("create unexpected reconciliation fixture: {error}"))?;
-        let missing_hash = format!("{:x}", Sha256::digest(b"x"));
-        let divergent_hash = format!("{:x}", Sha256::digest(b"safe"));
+        let missing_hash = hex::encode(Sha256::digest(b"x"));
+        let divergent_hash = hex::encode(Sha256::digest(b"safe"));
         let report = store
             .reconcile(
                 "test/",

@@ -28,7 +28,7 @@ control estrito. Métricas/traces, validação de adapters de produção e exemp
 completos seguem pendentes. M5 e o restante de M6 permanecem incompletos.
 
 ## Documentos
-- [Plano de desenvolvimento](docs/PLANO_DESENVOLVIMENTO.md)
+- [Development plan](docs/development-plan.md)
 - [Prompt de execução](docs/PROMPT_EXECUCAO.md)
 - [Contrato LTX v2](spec/LTX_V2.md)
 - [Como testar](docs/TESTING.md)
