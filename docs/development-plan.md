@@ -1119,6 +1119,19 @@ adicionar o teste, `make test-native` passou novamente (alguns testes Go usaram
 cache); o smoke Floci havia passado após a última alteração de código, antes da
 adição apenas do teste. `make test` literal segue não executado por isolamento.
 
+**Cancelamento durante captura — 2026-11-05:** teste determinístico no
+coordenador Rust suspende `capture_once` no write-gate de teste, sinaliza
+cancelamento e libera a captura real. Antes da mudança, a admissão foi reaberta
+após o cancelamento; após a checagem em `flush_internal`, a admissão ficou
+fechada na sequência testada e o restore do TXID 2 confirmou a linha persistida.
+O teste passou cinco repetições e a suíte do coordinator passou (7 testes).
+`make test-native` e os comandos do smoke Floci, executados separadamente em
+containers isolados, passaram após a mudança; não se executou `make test` literal.
+Ainda há uma janela entre consultar o sinal e reabrir a admissão: o teste não
+prova exclusão mútua nessa janela. Captura bloqueante também não é interrompida
+nem tem prazo garantido, o gate de teste não é adapter de produção e cancelamento
+durante sync remoto permanece sem cobertura. M5 não está fechado.
+
 `make test` passou após a implementação Go/Rust, incluindo formatação,
 `go vet`, Clippy com warnings negados, suites completas Go/Rust, fuzz curto e
 conformance cruzado e integração Floci. `go test -race ./replicator -count=1`

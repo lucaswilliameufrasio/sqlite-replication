@@ -1,12 +1,68 @@
 use std::io;
-use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use rusqlite::Connection;
 use sqlite_replication_core::{
     CaptureResult, ComponentState, Coordinator, CoordinatorAdapter, CoordinatorConfig, Limits,
+    RestoreTarget, WriteGate, WritePermit,
 };
+
+struct BlockingCaptureAdapter {
+    database_path: PathBuf,
+    repository_root: PathBuf,
+    admission: Mutex<Vec<bool>>,
+    started: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+    release: Arc<(Mutex<bool>, Condvar)>,
+}
+
+struct BlockingCaptureGate<'a>(&'a BlockingCaptureAdapter);
+struct CapturePermit;
+
+impl WriteGate for BlockingCaptureGate<'_> {
+    type Permit = CapturePermit;
+
+    fn acquire(&self) -> io::Result<Self::Permit> {
+        if let Some(started) = self.0.started.lock().expect("started lock").take() {
+            let _ = started.send(());
+        }
+        let (lock, wake) = &*self.0.release;
+        let released = lock.lock().expect("release lock");
+        let (released, _) = wake
+            .wait_timeout_while(released, Duration::from_secs(10), |released| !*released)
+            .expect("wait for release");
+        if !*released {
+            return Err(io::Error::other("test capture release timed out"));
+        }
+        Ok(CapturePermit)
+    }
+}
+
+impl WritePermit for CapturePermit {
+    fn release(self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+impl CoordinatorAdapter for BlockingCaptureAdapter {
+    fn observe_txid(&self) -> io::Result<Option<u64>> {
+        Ok(Some(2))
+    }
+
+    fn capture(&self) -> io::Result<CaptureResult> {
+        sqlite_replication_core::capture_once(
+            &self.database_path,
+            &self.repository_root,
+            &BlockingCaptureGate(self),
+        )
+    }
+
+    fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
+        self.admission.lock().expect("admission lock").push(enabled);
+        Ok(())
+    }
+}
 
 struct TestAdapter {
     observed_txid: Option<u64>,
@@ -156,6 +212,80 @@ async fn run_with_preexisting_cancellation_never_opens_admission() {
     .expect("pre-cancelled worker exits promptly")
     .expect("worker closes admission");
     assert_eq!(*adapter.admission.lock().expect("admission lock"), [false]);
+}
+
+#[tokio::test]
+async fn cancellation_during_capture_preserves_durable_data_and_closed_admission() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root)
+        .expect("create initial snapshot");
+    let connection = Connection::open(&database_path).expect("open source");
+    connection
+        .execute("INSERT INTO records (value) VALUES ('captured')", [])
+        .expect("commit row");
+    drop(connection);
+
+    let (started_sender, started_receiver) = tokio::sync::oneshot::channel();
+    let release = Arc::new((Mutex::new(false), Condvar::new()));
+    let adapter = Arc::new(BlockingCaptureAdapter {
+        database_path: database_path.clone(),
+        repository_root: repository_root.clone(),
+        admission: Mutex::new(Vec::new()),
+        started: Mutex::new(Some(started_sender)),
+        release: Arc::clone(&release),
+    });
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root: repository_root.clone(),
+        database_path,
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("construct coordinator");
+    let (cancel_sender, mut cancellation) = tokio::sync::watch::channel(false);
+    let (_event_sender, mut events) = tokio::sync::mpsc::channel(1);
+    let worker = tokio::spawn(async move { coordinator.run(&mut events, &mut cancellation).await });
+    tokio::time::timeout(Duration::from_secs(5), started_receiver)
+        .await
+        .expect("capture starts")
+        .expect("capture signal");
+    cancel_sender
+        .send(true)
+        .expect("cancel while capture is in flight");
+    assert_eq!(
+        adapter.admission.lock().expect("admission lock").last(),
+        Some(&false)
+    );
+    let (lock, wake) = &*release;
+    *lock.lock().expect("release lock") = true;
+    wake.notify_all();
+    tokio::time::timeout(Duration::from_secs(10), worker)
+        .await
+        .expect("worker drains capture")
+        .expect("worker task")
+        .expect("worker closes admission");
+    assert!(
+        adapter
+            .admission
+            .lock()
+            .expect("admission lock")
+            .iter()
+            .all(|enabled| !enabled)
+    );
+    let restored = directory.path().join("restored.sqlite");
+    sqlite_replication_core::restore_to_target(&repository_root, &restored, RestoreTarget::Txid(2))
+        .expect("restore durable capture after cancellation");
+    let count: i64 = Connection::open(restored)
+        .expect("open restored database")
+        .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+        .expect("count restored rows");
+    assert_eq!(count, 1);
 }
 
 #[tokio::test]

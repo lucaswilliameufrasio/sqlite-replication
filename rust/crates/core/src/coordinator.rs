@@ -224,6 +224,10 @@ impl Coordinator {
     /// Flushes the TXID observed at call start. Any error leaves write admission
     /// closed; success reopens it only after configured limits are satisfied.
     pub async fn flush(&self) -> io::Result<()> {
+        self.flush_internal(None).await
+    }
+
+    async fn flush_internal(&self, cancellation: Option<&watch::Receiver<bool>>) -> io::Result<()> {
         let _guard = self.flush_lock.lock().await;
         let target = match self.config.adapter.observe_txid() {
             Ok(Some(target)) => target,
@@ -299,6 +303,11 @@ impl Coordinator {
         {
             return Err(invalid_data("matching remote acknowledgement is missing"));
         }
+        if let Some(cancellation) = cancellation
+            && (*cancellation.borrow() || cancellation.has_changed().is_err())
+        {
+            return Ok(());
+        }
         self.config
             .adapter
             .set_write_admission(true, self.config.limits)
@@ -318,7 +327,7 @@ impl Coordinator {
         if *cancellation.borrow() {
             return Ok(());
         }
-        self.flush().await?;
+        self.flush_internal(Some(cancellation)).await?;
         loop {
             tokio::select! {
                 changed = cancellation.changed() => {
@@ -332,7 +341,7 @@ impl Coordinator {
                         self.config.adapter.set_write_admission(false, self.config.limits)?;
                         return Ok(());
                     }
-                    self.flush().await?;
+                    self.flush_internal(Some(cancellation)).await?;
                 }
             }
         }
