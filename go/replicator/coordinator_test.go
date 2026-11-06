@@ -377,6 +377,46 @@ func TestCoordinatorFlushLeavesWritesBlockedWhenSpoolLimitIsExceeded(t *testing.
 	}
 }
 
+func TestCoordinatorRejectsCapturePositionWithoutDurableSpool(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		txid uint64
+	}{
+		{name: "zero", txid: 0},
+		{name: "ahead of spool", txid: 2},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			directory := t.TempDir()
+			databasePath := filepath.Join(directory, "source.sqlite")
+			createSourceDatabase(t, databasePath)
+			repositoryRoot := filepath.Join(directory, "repository")
+			if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+				t.Fatalf("create initial snapshot: %v", err)
+			}
+			var admission []bool
+			config := coordinatorConfig(repositoryRoot, databasePath, 1)
+			config.Capture = func(context.Context) (replicator.CaptureResult, error) {
+				return replicator.CaptureResult{TXID: test.txid}, nil
+			}
+			config.SetAdmission = func(_ context.Context, enabled bool, _ replicator.Limits) error {
+				admission = append(admission, enabled)
+				return nil
+			}
+			coordinator, err := replicator.NewCoordinator(config)
+			if err != nil {
+				t.Fatalf("construct coordinator: %v", err)
+			}
+			if err := coordinator.Flush(ctx); !errors.Is(err, replicator.ErrNoProgress) {
+				t.Fatalf("flush error = %v, want ErrNoProgress", err)
+			}
+			if !reflect.DeepEqual(admission, []bool{false}) {
+				t.Fatalf("admission transitions = %v, want closed only", admission)
+			}
+		})
+	}
+}
+
 func TestCoordinatorFlushLeavesWritesBlockedAfterCaptureErrorOrCancellation(t *testing.T) {
 	ctx := context.Background()
 	directory := t.TempDir()
