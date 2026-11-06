@@ -74,6 +74,29 @@ outros módulos, versões, plataformas ou tags. Cache local ainda não foi
 comparado com archives upstream nesta etapa. Não houve aprovação jurídica nem
 publicação.
 
+#### Cabeçalhos selecionados AWS/Smithy
+
+No checkout `1d00c19`, `go list -mod=readonly -deps` selecionou 443 arquivos
+`GoFiles` dos módulos `github.com/aws/` para `./replicator`, Go 1.27.3 em
+Linux amd64, sem `-test`. Uma busca sem distinção de maiúsculas nas primeiras
+40 linhas por `copyright`, `SPDX` ou `license` encontrou quatro arquivos:
+
+| Arquivo selecionado | Aviso observado |
+|---|---|
+| AWS `internal/sync/singleflight/singleflight.go` | Copyright 2013 The Go Authors e referência a `LICENSE` BSD-style. |
+| Smithy `internal/sync/singleflight/singleflight.go` | Mesmo copyright e referência; as licenças aninhadas dos dois diretórios estão registradas acima. |
+| Smithy `encoding/xml/element.go` | Copyright 2009 The Go Authors, referência a licença BSD-style e comentário de cópia modificada de `encoding/xml` da stdlib Go 1.14. |
+| Smithy `encoding/xml/escape.go` | Mesmo copyright, referência e comentário de cópia modificada. |
+
+Os textos dos quatro cabeçalhos foram inspecionados; a busca anterior por
+basename não encontrou `LICENSE` aninhado no diretório `encoding/xml` do
+Smithy. O arquivo `LICENSE` na raiz desse módulo é Apache-2.0; não se deve
+presumir que sua classificação resolva o aviso BSD dos arquivos copiados.
+É necessário revisar o texto e os avisos Go pertinentes ao artefato final.
+O resultado limita-se às primeiras 40 linhas dos arquivos selecionados, não
+examina outros tipos de arquivo, comentários posteriores, dependências de
+teste, outros targets ou código retido em binários; não é conclusão jurídica.
+
 `go version -m` do executável Go lista nove módulos de terceiros: `go-humanize`
 1.1.0, `google/uuid` 1.6.0, `pierrec/lz4/v4` 4.1.22, `bigfft` na revisão
 `24d4a6f8daec`, `golang.org/x/sys` 0.49.0, `modernc.org/libc` 1.80.1,
