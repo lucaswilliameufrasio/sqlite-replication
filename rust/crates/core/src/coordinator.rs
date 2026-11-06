@@ -393,6 +393,15 @@ impl Coordinator {
         self.config
             .adapter
             .set_write_admission(true, self.config.limits)?;
+        if let Some(cancellation) = cancellation
+            && (*cancellation.borrow() || cancellation.has_changed().is_err())
+        {
+            self.admission.cancel()?;
+            self.config
+                .adapter
+                .set_write_admission(false, self.config.limits)?;
+            return Ok(());
+        }
         if self.admission.is_cancelled()? {
             self.config
                 .adapter

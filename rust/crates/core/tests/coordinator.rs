@@ -6,7 +6,8 @@ use std::time::Duration;
 use rusqlite::Connection;
 use sqlite_replication_core::{
     AdmissionGate, CapacityGate, CaptureResult, ComponentState, ConservativeBudget, Coordinator,
-    CoordinatorAdapter, CoordinatorConfig, Limits, RestoreTarget, WriteGate, WritePermit,
+    CoordinatorAdapter, CoordinatorConfig, CoordinatorMetrics, FlushOutcome, Limits, RestoreTarget,
+    WriteGate, WritePermit,
 };
 
 struct BlockingCaptureAdapter {
@@ -111,6 +112,19 @@ struct CapturePermit;
 struct CancelOnOpenAdapter {
     cancellation: tokio::sync::watch::Sender<bool>,
     admission: Mutex<Vec<bool>>,
+}
+
+struct AdmissionObservation {
+    gate: Mutex<Option<AdmissionGate>>,
+    accepted: Mutex<Option<bool>>,
+}
+
+impl CoordinatorMetrics for AdmissionObservation {
+    fn observe_flush(&self, _duration: Duration, _outcome: FlushOutcome) {
+        let gate = self.gate.lock().expect("gate lock");
+        let accepted = gate.as_ref().expect("shared gate").try_accept().is_ok();
+        *self.accepted.lock().expect("observation lock") = Some(accepted);
+    }
 }
 
 struct StrictCancelOnOpenAdapter {
@@ -528,6 +542,10 @@ async fn legacy_independent_cancellation_can_reopen_adapter_admission() {
         cancellation: cancel_sender,
         admission: Mutex::new(Vec::new()),
     });
+    let observation = Arc::new(AdmissionObservation {
+        gate: Mutex::new(None),
+        accepted: Mutex::new(None),
+    });
     let coordinator = Coordinator::new(CoordinatorConfig {
         repository_root,
         database_path,
@@ -535,7 +553,9 @@ async fn legacy_independent_cancellation_can_reopen_adapter_admission() {
         limits: limits(1 << 30),
         remote: None,
     })
-    .expect("construct coordinator");
+    .expect("construct coordinator")
+    .with_metrics(observation.clone());
+    *observation.gate.lock().expect("gate lock") = Some(coordinator.admission_gate());
     let (_event_sender, mut events) = tokio::sync::mpsc::channel(1);
     tokio::time::timeout(
         Duration::from_secs(5),
@@ -548,6 +568,10 @@ async fn legacy_independent_cancellation_can_reopen_adapter_admission() {
     assert!(
         transitions.contains(&true),
         "this legacy API deliberately characterizes the unsafe callback transition"
+    );
+    assert_eq!(
+        *observation.accepted.lock().expect("observation lock"),
+        Some(false)
     );
 }
 

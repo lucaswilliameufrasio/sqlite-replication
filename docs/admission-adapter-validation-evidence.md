@@ -7,6 +7,14 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+Na regressão de cancelamento legado, o callback de métricas observa o gate
+após o flush e antes da próxima iteração do worker. Com cancelamento dentro do
+callback de abertura do adapter, o teste observou aceitação antes da mudança;
+após uma segunda verificação do receiver, observou rejeição. O adapter ainda
+recebe `true` temporariamente, e cancelamentos posteriores à segunda verificação
+podem competir com a abertura: o receiver independente não fornece garantia
+atômica. Para garantia estrita, usar o gate compartilhado e `run`.
+
 Na investigação da API legada, observar `try_accept` apenas no callback de
 fechamento após o cancelamento não detectou a janela de reabertura: nesse
 instante o coordenador já havia cancelado o gate. Uma verificação experimental
