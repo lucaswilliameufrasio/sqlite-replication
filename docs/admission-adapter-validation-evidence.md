@@ -7,6 +7,13 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+O cenário `failed_reconciliation_keeps_admission_closed_after_real_capture`
+também injeta falha na primeira medição do adapter de teste: o primeiro flush
+falha sem aceitar reservas; após retry bem-sucedido, um produtor confirma uma
+alteração SQLite e a captura e a recuperação são exercitadas. Isto testa uma
+instância nova, não um restart de processo ou recuperação de estado persistido;
+os valores usados não comprovam quotas reais.
+
 `legacy_receiver_cancellation_does_not_atomically_close_gate` força outra ordem:
 após o flush abrir o gate, o callback de métricas envia `true` ao receiver
 legado e tenta aceitar uma escrita antes de retornar ao worker. A aceitação

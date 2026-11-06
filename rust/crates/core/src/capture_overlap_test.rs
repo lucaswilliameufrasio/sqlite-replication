@@ -118,7 +118,7 @@ async fn failed_reconciliation_keeps_admission_closed_after_real_capture() {
             admission: Mutex::new(Vec::new()),
             budget: Mutex::new(None),
         },
-        measurement_fails: AtomicBool::new(false),
+        measurement_fails: AtomicBool::new(true),
     });
     let coordinator = Coordinator::new(CoordinatorConfig {
         repository_root: repository.clone(),
@@ -135,6 +135,18 @@ async fn failed_reconciliation_keeps_admission_closed_after_real_capture() {
     .expect("coordinator");
     let budget = ConservativeBudget::new(coordinator.admission_gate(), 1 << 30).expect("budget");
     *adapter.inner.budget.lock().expect("budget reference") = Some(budget.clone());
+    let initial_error = coordinator
+        .flush()
+        .await
+        .expect_err("initial measurement failure prevents admission");
+    assert!(
+        initial_error
+            .to_string()
+            .contains("injected WAL measurement failure")
+    );
+    assert!(coordinator.admission_gate().try_accept().is_err());
+    assert!(budget.try_reserve(Some(1)).is_err());
+    adapter.measurement_fails.store(false, Ordering::SeqCst);
     coordinator
         .flush()
         .await
