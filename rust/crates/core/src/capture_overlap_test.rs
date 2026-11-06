@@ -175,6 +175,48 @@ impl WritePermit for ObservedGate {
 
 struct FailingReleaseGate;
 
+struct FailingAcquireGate;
+
+impl WriteGate for FailingAcquireGate {
+    type Permit = Self;
+
+    fn acquire(&self) -> io::Result<Self::Permit> {
+        Err(io::Error::other("injected acquire failure"))
+    }
+}
+
+impl WritePermit for FailingAcquireGate {
+    fn release(self) -> io::Result<()> {
+        panic!("no permit was acquired");
+    }
+}
+
+#[test]
+fn failed_gate_acquire_invalidates_budget_even_with_active_writer() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let admission = crate::AdmissionGate::new();
+    admission.open().expect("open admission");
+    let budget = ConservativeBudget::new(admission, 100).expect("budget");
+    budget.reconcile_with(|| Ok(Some(0))).expect("baseline");
+    let reservation = budget.try_reserve(Some(1)).expect("active writer");
+    let error = crate::capture_once_with_budget(
+        directory.path().join("source.sqlite"),
+        directory.path().join("repository"),
+        &FailingAcquireGate,
+        &budget,
+    )
+    .expect_err("gate acquisition fails");
+    assert!(error.to_string().contains("injected acquire failure"));
+    assert!(
+        budget.try_reserve(Some(1)).is_err(),
+        "acquire failure must invalidate occupancy"
+    );
+    assert!(
+        reservation.settle(Some(0)).is_err(),
+        "settlement must not restore unknown occupancy"
+    );
+}
+
 struct ReconcileThenFailGate(ConservativeBudget);
 
 struct ReconcileOnReleaseGate(ConservativeBudget);

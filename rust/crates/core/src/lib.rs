@@ -92,7 +92,8 @@ pub fn capture_once<G: WriteGate>(
 /// The gate is acquired before the budget mutex and released after that mutex
 /// is unlocked. Mutation invalidates occupancy; a capture or gate-release
 /// error also triggers invalidation after the release callback, including when
-/// active reservations prevented mutation. Callers must reconcile before
+/// active reservations prevented mutation. A gate acquisition error likewise
+/// triggers invalidation. Callers must reconcile before
 /// accepting further reservations. Every relevant producer and
 /// occupancy mutation must use the same budget; external writers and bypasses
 /// are not protected. This is not a filesystem quota or a production adapter.
@@ -131,7 +132,22 @@ fn capture_once_inner<G: WriteGate>(
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?
         .as_millis() as i64;
-    let permit = gate.acquire()?;
+    let permit = match gate.acquire() {
+        Ok(permit) => permit,
+        Err(acquire_error) => {
+            if let Some(budget) = budget
+                && let Err(invalidate_error) = budget.reconcile(None)
+            {
+                return Err(io::Error::new(
+                    acquire_error.kind(),
+                    format!(
+                        "{acquire_error}; invalidating the budget also failed: {invalidate_error}"
+                    ),
+                ));
+            }
+            return Err(acquire_error);
+        }
+    };
     let cancelled = AtomicBool::new(false);
     let capture = || {
         capture::capture_once_cancellable(

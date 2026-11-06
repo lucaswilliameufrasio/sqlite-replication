@@ -7,6 +7,14 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`failed_gate_acquire_invalidates_budget_even_with_active_writer` reproduziu uma
+falha de aquisição do gate com reserva ativa: antes da mudança, outra reserva
+era aceita. A captura cooperativa agora tenta invalidar o orçamento nesse erro,
+mesmo com reserva ativa, e preserva o erro de aquisição caso a invalidação também
+falhe. A liquidação da reserva anterior não restaura ocupação desconhecida. O
+gate é simulado e não houve captura; não prova quotas nem revoga trabalho aceito.
+Uma reconciliação independente posterior ainda exige coordenação da aplicação.
+
 O teste `budgeted_public_capture_drains_application_writer_before_capture` foi
 ampliado para um segundo ciclo: após reabrir o gate de aplicação de teste, o
 orçamento desconhecido ainda rejeita a reserva; após reconciliação lógica, uma
