@@ -1,5 +1,23 @@
 # Matriz de notices — candidato local Rust, não aprovado
 
+## Manifests e avisos textuais do candidato poison
+
+Inspeção direta de `candidate-20261106-poison-a.tar.gz`, SHA-256
+`0354c5ad73181bb207cec3f8f99ab4d837070f9966b204aa6f161c534e036ab6`:
+os sete manifests de `rust/crates/` usam `license.workspace = true`; o
+`rust/Cargo.toml` dessa archive declara `workspace.package.license = "Apache-2.0"`.
+Já `rust/examples/coordinator-telemetry/Cargo.toml` não declara `license` nem
+`license-file`: é workspace separado, portanto a declaração do workspace principal
+não deve ser atribuída automaticamente ao exemplo. Confirmar direitos e licença
+do exemplo é pendência específica; não alterar o manifesto para presumir aprovação.
+
+Uma busca limitada aos 30 arquivos `.rs` incluídos, insensível a maiúsculas, por
+`copyright`, `spdx`, `license`, `licensed` ou `attribution`, não encontrou
+correspondências. Isso não identifica trechos copiados sem esses termos, não
+examina binários nem resolve proveniência ou obrigações. Este registro é
+posterior à archive e não integra o candidato inspecionado; nenhuma distribuição
+está autorizada.
+
 ## Candidato com teste de sobreposição de captura
 
 `candidate-20261106-overlap-a.tar.gz`, SHA-256
