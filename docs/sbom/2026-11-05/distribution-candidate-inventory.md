@@ -10,6 +10,27 @@ Os SBOMs e notices existentes são evidência preliminar, não aprovação legal
 
 ## Crates Rust
 
+### Candidato local do commit `5b2adfc`
+
+As duas archives locais geradas a partir de `5b2adfc` tiveram SHA-256 idêntico
+`eb17ad79b8eb636a7358538d81af0b00accf3f17004aa512c9cfdbce82234676`.
+Antes de extrair, foram verificados 120 hashes, 122 membros regulares, ausência
+de membros duplicados ou extras e caminhos absolutos ou com `..`. As archives
+estão em `/tmp/opencode/sqlite-candidate-5b2adfc-review/`; são temporárias e
+não aprovadas para distribuição. A nota presente é posterior à sua geração.
+
+A primeira compilação em target novo no tmpfs falhou com ENOSPC e não valida o
+candidato. Apenas o target incompleto criado naquela tentativa foi removido; as
+archives e candidatos anteriores foram preservados. A segunda execução usou
+target novo em `/home` e `cargo test --offline --locked --workspace
+--all-features`, com Rust 1.99.1 e dependências do cache local. A compilação
+terminou e todos os testes não ignorados passaram, incluindo 54 do core, 29 do
+coordenador e duas regressões locais de barreira. Os testes Floci e drills CP-01
+opt-in ficaram ignorados nessa execução. A evidência não valida instalação offline
+em outro host, o módulo Go, um artefato final ou direitos/notices de terceiros.
+O mantenedor confirmou os direitos das contribuições e fixtures; revisão técnica
+de notices e autorização explícita de distribuição permanecem separadas.
+
 ### Candidato local do commit `341d682`
 
 As archives locais `candidate-341d682-a.tar.gz` e `-b.tar.gz`, geradas a
