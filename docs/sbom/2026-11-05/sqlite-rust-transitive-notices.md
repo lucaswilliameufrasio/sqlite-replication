@@ -14,6 +14,19 @@ consumidores. Não é parecer jurídico nem aprovação de distribuição.
 
 ## Seleção e textos nos pacotes locais
 
+Na revisão posterior do candidato `341d682`, os checksums das archives `.crate`
+do cache coincidiram com o `rust/Cargo.lock` incluído: `rusqlite 0.41.1`,
+`da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594`,
+e `libsqlite3-sys 0.39.1`,
+`14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3`.
+Busca em todos os 72 e 22 membros, respectivamente, por basename iniciado por
+`LICENSE`, `NOTICE` ou `COPYING`, sem distinção de maiúsculas, encontrou apenas
+o `LICENSE` de cada pacote, com o hash MIT da tabela abaixo. O `sqlite3.c`
+na archive de `libsqlite3-sys` também corresponde ao hash abaixo. A busca por
+nomes não exclui avisos embutidos; o MIT do wrapper não resolve os termos da
+amalgamação. Essas dependências não são vendorizadas na archive-fonte do
+candidato e sua presença num binário final não é estabelecida por esta revisão.
+
 | Componente | Papel no grafo | Licença no manifesto / evidência local |
 |---|---|---|
 | `rusqlite 0.41.1` | wrapper normal | `MIT`; `LICENSE`, SHA-256 `c10c1f27337546471e5f7e4e97fdd398b35b9d4e126115dcd22de8d8e65abf6f` |
