@@ -24,9 +24,14 @@ admissão não foi reaberta nessa sequência e o acknowledgement registra TXID 1
 prefixo e identificador do destino. Um restore a partir do armazenamento Floci
 recupera o valor confirmado. O teste remove os objetos e o bucket únicos após o
 sucesso; falhas podem deixar recursos, portanto execute-o apenas com Floci
-descartável isolado em `127.0.0.1:4566`:
+descartável isolado. O `make test-floci` cria um serviço e volume próprios e
+passa seu endpoint de porta dinâmica ao teste. Para execução manual, é
+obrigatório configurar `SQLITE_REPLICATION_FLOCI_ENDPOINT` explicitamente como
+`http://127.0.0.1:PORTA`; loopback sozinho não prova que o serviço seja
+descartável. Por exemplo, somente após iniciar um Floci isolado na porta 4566:
 
 ```sh
+SQLITE_REPLICATION_FLOCI_ENDPOINT=http://127.0.0.1:4566 \
 cargo test --offline -p sqlite-replication-core --test remote_cancellation \
   cancellation_during_successful_remote_sync_drains_and_confirms -- --ignored --exact
 ```

@@ -154,7 +154,13 @@ async fn cancellation_during_failed_remote_sync_keeps_local_snapshot_and_no_ack(
     assert_eq!(value, "durable");
 }
 
-fn isolated_floci_address(endpoint: &str) -> io::Result<SocketAddr> {
+fn isolated_floci_address(endpoint: Option<&str>) -> io::Result<SocketAddr> {
+    let endpoint = endpoint.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "explicit Floci endpoint required",
+        )
+    })?;
     let address: SocketAddr = endpoint
         .strip_prefix("http://")
         .ok_or_else(|| {
@@ -176,7 +182,8 @@ fn isolated_floci_address(endpoint: &str) -> io::Result<SocketAddr> {
 
 #[test]
 fn floci_test_endpoint_rejects_non_loopback_and_invalid_addresses() {
-    assert!(isolated_floci_address("http://127.0.0.1:12345").is_ok());
+    assert!(isolated_floci_address(None).is_err());
+    assert!(isolated_floci_address(Some("http://127.0.0.1:12345")).is_ok());
     for endpoint in [
         "http://127.0.0.1:0",
         "http://localhost:4566",
@@ -184,7 +191,10 @@ fn floci_test_endpoint_rejects_non_loopback_and_invalid_addresses() {
         "https://127.0.0.1:4566",
         "http://127.0.0.1:4566/path",
     ] {
-        assert!(isolated_floci_address(endpoint).is_err(), "{endpoint}");
+        assert!(
+            isolated_floci_address(Some(endpoint)).is_err(),
+            "{endpoint}"
+        );
     }
 }
 
@@ -193,8 +203,8 @@ fn floci_test_endpoint_rejects_non_loopback_and_invalid_addresses() {
 #[ignore = "requires disposable isolated Floci on 127.0.0.1"]
 async fn cancellation_during_successful_remote_sync_drains_and_confirms() {
     let endpoint = std::env::var("SQLITE_REPLICATION_FLOCI_ENDPOINT")
-        .unwrap_or_else(|_| "http://127.0.0.1:4566".to_owned());
-    let floci_address = isolated_floci_address(&endpoint).expect("isolated Floci endpoint");
+        .expect("set SQLITE_REPLICATION_FLOCI_ENDPOINT to a disposable isolated Floci");
+    let floci_address = isolated_floci_address(Some(&endpoint)).expect("isolated Floci endpoint");
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("source.sqlite");
     let repository = directory.path().join("repository");
