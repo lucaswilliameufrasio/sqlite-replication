@@ -396,6 +396,23 @@ mod tests {
 
     #[test]
     fn cooperative_capture_waits_for_real_ltx_measurement() {
+        struct NotifyGate(std::sync::mpsc::Sender<()>);
+
+        impl crate::WriteGate for NotifyGate {
+            type Permit = Self;
+
+            fn acquire(&self) -> io::Result<Self::Permit> {
+                self.0.send(()).map_err(io::Error::other)?;
+                Ok(Self(self.0.clone()))
+            }
+        }
+
+        impl crate::WritePermit for NotifyGate {
+            fn release(self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
         fn ltx_bytes(path: &std::path::Path) -> io::Result<u64> {
             if path.is_file() {
                 return Ok(path.metadata()?.len());
@@ -422,6 +439,7 @@ mod tests {
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (release_tx, release_rx) = std::sync::mpsc::channel();
         let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel();
         thread::scope(|scope| {
             let measurement = budget.clone();
             let ltx = repository.join("ltx");
@@ -430,7 +448,9 @@ mod tests {
                     .reconcile_with(|| {
                         let size = ltx_bytes(&ltx)?;
                         entered_tx.send(size).expect("report measurement");
-                        release_rx.recv().expect("release measurement");
+                        release_rx
+                            .recv_timeout(Duration::from_secs(5))
+                            .expect("release measurement");
                         Ok(Some(size))
                     })
                     .expect("reconcile");
@@ -442,12 +462,19 @@ mod tests {
             let source = &source;
             let repository = &repository;
             scope.spawn(move || {
-                let result = capture_budget
-                    .with_occupancy_mutation(|| capture_once(source, repository, 123));
+                let result = crate::capture_once_with_budget(
+                    source,
+                    repository,
+                    &NotifyGate(gate_tx),
+                    &capture_budget,
+                );
                 done_tx
-                    .send(result.map(|r| r.transactions.len()))
+                    .send(result.map(|r| r.transactions))
                     .expect("report capture");
             });
+            gate_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("capture acquired application gate");
             assert!(
                 done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
                 "capture waits for measurement"
@@ -475,6 +502,14 @@ mod tests {
             .expect("reconciled")
             .settle(Some(0))
             .expect("settle");
+        let restored = directory.path().join("restored.sqlite");
+        crate::restore_to_target(&repository, &restored, crate::RestoreTarget::Txid(2))
+            .expect("restore");
+        let count: i64 = Connection::open(restored)
+            .expect("restored")
+            .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 1);
     }
 
     #[test]

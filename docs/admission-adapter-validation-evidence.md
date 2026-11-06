@@ -7,6 +7,14 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`cooperative_capture_waits_for_real_ltx_measurement` agora exercita a API
+pública `capture_once_with_budget`, não apenas o wrapper interno. Com a medição
+de LTX pausada sob o mutex, o gate de teste sinaliza aquisição e a captura não
+termina durante a espera observada; após liberar a medição, o teste verifica a
+publicação, invalidação, reconciliação e restore em TXID 2. O gate não bloqueia
+escritores reais; esta observação de escalonamento não prova quotas, exclusão de
+outros processos nem homologação de adapter.
+
 `failed_gate_acquire_invalidates_budget_even_with_active_writer` reproduziu uma
 falha de aquisição do gate com reserva ativa: antes da mudança, outra reserva
 era aceita. A captura cooperativa agora tenta invalidar o orçamento nesse erro,
