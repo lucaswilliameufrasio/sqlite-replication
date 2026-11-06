@@ -7,6 +7,13 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`fresh_budget_requires_measurement_after_coordinator_recreation` descarta e
+recria coordenador, adapter e orçamento no mesmo processo sobre o mesmo banco e
+repositório. A nova instância recusa reservas antes de medir e após falha de
+medição; após retry, uma escrita cooperativa é capturada e restaurada em TXID 2.
+O adapter e TXID são de teste; o processo e a conexão SQLite permanecem ativos.
+Não é drill de restart/crash, nem comprovação de limites de WAL, spool ou staging.
+
 O cenário `failed_reconciliation_keeps_admission_closed_after_real_capture`
 também injeta falha na primeira medição do adapter de teste: o primeiro flush
 falha sem aceitar reservas; após retry bem-sucedido, um produtor confirma uma

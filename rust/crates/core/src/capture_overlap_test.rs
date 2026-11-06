@@ -101,6 +101,98 @@ impl CoordinatorAdapter for ReconcilingAdapter {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn fresh_budget_requires_measurement_after_coordinator_recreation() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    let connection = Connection::open(&database).expect("open source");
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base');").expect("create source");
+    crate::snapshot(&database, &repository).expect("snapshot");
+    let make_adapter = || {
+        Arc::new(ReconcilingAdapter {
+            inner: BudgetCaptureAdapter {
+                database: database.clone(),
+                repository: repository.clone(),
+                target: AtomicUsize::new(1),
+                fail: AtomicBool::new(false),
+                panic_capture: AtomicBool::new(false),
+                admission: Mutex::new(Vec::new()),
+                budget: Mutex::new(None),
+            },
+            measurement_fails: AtomicBool::new(false),
+        })
+    };
+    let make_coordinator = |adapter: Arc<ReconcilingAdapter>| {
+        Coordinator::new(CoordinatorConfig {
+            repository_root: repository.clone(),
+            database_path: database.clone(),
+            adapter,
+            limits: Limits {
+                max_spool_bytes: 1 << 30,
+                max_wal_bytes: 1 << 30,
+                max_unprotected_age: Duration::from_secs(3600),
+                max_uploads_in_flight: 1,
+            },
+            remote: None,
+        })
+        .expect("coordinator")
+    };
+    let first_adapter = make_adapter();
+    let first = make_coordinator(first_adapter.clone());
+    let first_budget = ConservativeBudget::new(first.admission_gate(), 1 << 30).expect("budget");
+    *first_adapter.inner.budget.lock().expect("budget reference") = Some(first_budget.clone());
+    first.flush().await.expect("initial reconcile");
+    first_budget
+        .try_reserve(Some(1))
+        .expect("first reservation")
+        .settle(Some(0))
+        .expect("settle");
+    drop(first);
+    drop(first_adapter);
+    drop(first_budget);
+
+    let second_adapter = make_adapter();
+    let second = make_coordinator(second_adapter.clone());
+    let second_budget =
+        ConservativeBudget::new(second.admission_gate(), 1 << 30).expect("fresh budget");
+    *second_adapter
+        .inner
+        .budget
+        .lock()
+        .expect("budget reference") = Some(second_budget.clone());
+    assert!(second_budget.try_reserve(Some(1)).is_err());
+    second_adapter
+        .measurement_fails
+        .store(true, Ordering::SeqCst);
+    second
+        .flush()
+        .await
+        .expect_err("failed reconciliation keeps fresh coordinator closed");
+    assert!(second.admission_gate().try_accept().is_err());
+    assert!(second_budget.try_reserve(Some(1)).is_err());
+    second_adapter
+        .measurement_fails
+        .store(false, Ordering::SeqCst);
+    second.flush().await.expect("reconcile fresh coordinator");
+    let reservation = second_budget
+        .try_reserve(Some(1))
+        .expect("reserve after reconciliation");
+    connection
+        .execute("UPDATE data SET value='after recreation'", [])
+        .expect("commit");
+    reservation.settle(Some(0)).expect("logical settlement");
+    second_adapter.inner.target.store(2, Ordering::SeqCst);
+    second.flush().await.expect("capture after recreation");
+    let restored = directory.path().join("restored.sqlite");
+    crate::restore_to_target(&repository, &restored, RestoreTarget::Txid(2)).expect("restore");
+    let value: String = Connection::open(restored)
+        .expect("open restored")
+        .query_row("SELECT value FROM data", [], |row| row.get(0))
+        .expect("value");
+    assert_eq!(value, "after recreation");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn failed_reconciliation_keeps_admission_closed_after_real_capture() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("source.sqlite");
