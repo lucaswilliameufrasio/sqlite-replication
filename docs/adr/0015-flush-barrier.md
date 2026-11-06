@@ -29,8 +29,10 @@ captura estabelecer uma imagem consistente mesmo diante dos checkpoints que
 suporta. Não cobre escritas externas não coordenadas nem prova quotas físicas.
 Os detalhes de cancelamento, integração de adapter, compatibilidade de drivers e
 limites conservadores exigem implementação e testes; não são homologados por
-esta decisão. Até a implementação ser concluída, o código existente ainda usa
-o contrato antigo e não deve ser apresentado como barreira funcional.
+esta decisão. O coordenador Rust implementa a sequência de barreira; testes
+específicos com SQLite real cobrem checkpoint e drenagem de escrita aceita.
+A integração remota desses testes e um adapter de produção permanecem pendentes.
+O coordenador Go ainda usa o contrato anterior; não se deve afirmar paridade.
 
 ## Alternativa e consequências
 

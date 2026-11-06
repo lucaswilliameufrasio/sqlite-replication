@@ -194,7 +194,11 @@ impl CoordinatorAdapter for StrictCancelOnOpenAdapter {
     }
 
     fn capture(&self) -> io::Result<CaptureResult> {
-        Err(io::Error::other("capture should not be needed"))
+        Ok(CaptureResult {
+            txid: 1,
+            transactions: 0,
+            wal_frames: 0,
+        })
     }
 
     fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
@@ -250,7 +254,11 @@ impl CoordinatorAdapter for CancelOnOpenAdapter {
     }
 
     fn capture(&self) -> io::Result<CaptureResult> {
-        Err(io::Error::other("capture should not be needed"))
+        Ok(CaptureResult {
+            txid: 1,
+            transactions: 0,
+            wal_frames: 0,
+        })
     }
 
     fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
@@ -338,7 +346,11 @@ impl CoordinatorAdapter for VanishingTargetAdapter {
     }
 
     fn capture(&self) -> io::Result<CaptureResult> {
-        Err(io::Error::other("unexpected capture"))
+        Ok(CaptureResult {
+            txid: 1,
+            transactions: 0,
+            wal_frames: 0,
+        })
     }
 
     fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
@@ -351,42 +363,7 @@ impl CoordinatorAdapter for VanishingTargetAdapter {
 }
 
 #[tokio::test]
-async fn target_becoming_unknown_before_reopen_keeps_admission_closed() {
-    let directory = tempfile::tempdir().expect("temporary directory");
-    let database_path = directory.path().join("source.sqlite");
-    create_database(&database_path);
-    let repository_root = directory.path().join("repository");
-    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
-    let adapter = Arc::new(VanishingTargetAdapter {
-        observations: std::sync::atomic::AtomicUsize::new(0),
-        unknown_at: 2,
-        admissions: Mutex::new(Vec::new()),
-    });
-    let coordinator = Coordinator::new(CoordinatorConfig {
-        repository_root,
-        database_path,
-        adapter: adapter.clone(),
-        limits: limits(1 << 30),
-        remote: None,
-    })
-    .expect("coordinator");
-    let error = coordinator
-        .flush()
-        .await
-        .expect_err("unknown final observation must fail closed");
-    assert!(error.to_string().contains("unknown"));
-    assert!(coordinator.admission_gate().try_accept().is_err());
-    assert!(
-        !adapter
-            .admissions
-            .lock()
-            .expect("admission lock")
-            .contains(&true)
-    );
-}
-
-#[tokio::test]
-async fn target_becoming_unknown_after_drain_keeps_admission_closed() {
+async fn observation_becoming_unknown_after_capture_allows_verified_barrier() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database_path = directory.path().join("source.sqlite");
     create_database(&database_path);
@@ -405,21 +382,48 @@ async fn target_becoming_unknown_after_drain_keeps_admission_closed() {
         remote: None,
     })
     .expect("coordinator");
-    let error = coordinator
-        .flush()
-        .await
-        .expect_err("unknown target after drain must fail closed");
-    assert!(error.to_string().contains("unknown"));
+    coordinator.flush().await.expect("verified no-op barrier");
+    assert!(coordinator.admission_gate().try_accept().is_ok());
+    assert!(
+        adapter
+            .admissions
+            .lock()
+            .expect("admission lock")
+            .contains(&true)
+    );
+}
+
+#[tokio::test]
+async fn unknown_observation_does_not_prevent_verified_noop_barrier() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let adapter = Arc::new(VanishingTargetAdapter {
+        observations: std::sync::atomic::AtomicUsize::new(0),
+        unknown_at: 0,
+        admissions: Mutex::new(Vec::new()),
+    });
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: adapter.clone(),
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("coordinator");
+    coordinator.flush().await.expect("verified no-op barrier");
     assert_eq!(
         adapter
             .observations
             .load(std::sync::atomic::Ordering::SeqCst),
         2
     );
-    assert!(coordinator.admission_gate().try_accept().is_err());
+    assert!(coordinator.admission_gate().try_accept().is_ok());
     assert_eq!(
         *adapter.admissions.lock().expect("admission lock"),
-        vec![false]
+        vec![false, true]
     );
 }
 
@@ -429,7 +433,11 @@ impl CoordinatorAdapter for UnknownBudgetAdapter {
     }
 
     fn capture(&self) -> io::Result<CaptureResult> {
-        Err(io::Error::other("unexpected capture"))
+        Ok(CaptureResult {
+            txid: 1,
+            transactions: 0,
+            wal_frames: 0,
+        })
     }
 
     fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
@@ -493,8 +501,8 @@ async fn unknown_observed_target_reports_degraded_health() {
     let health = coordinator.health().await;
     assert_eq!(health.local, ComponentState::Degraded);
     assert_eq!(health.local_error, ErrorCategory::Adapter);
-    assert!(coordinator.flush().await.is_err());
-    assert!(coordinator.admission_gate().try_accept().is_err());
+    coordinator.flush().await.expect("verified no-op barrier");
+    assert!(coordinator.admission_gate().try_accept().is_ok());
 }
 
 #[tokio::test]

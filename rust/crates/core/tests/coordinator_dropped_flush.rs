@@ -45,9 +45,8 @@ impl CoordinatorAdapter for BlockedCaptures {
     }
 }
 
-// Characterization of a known unsafe overlap, not a concurrency guarantee.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn second_flush_can_capture_while_dropped_flush_capture_is_running() {
+async fn second_flush_waits_for_dropped_flush_capture_to_finish() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("source.sqlite");
     let repository = directory.path().join("repository");
@@ -95,7 +94,7 @@ async fn second_flush_can_capture_while_dropped_flush_capture_is_running() {
             .is_cancelled()
     );
     let second = tokio::spawn(async move { coordinator.flush().await });
-    let second_entry = tokio::time::timeout(Duration::from_secs(5), entered_rx.recv()).await;
+    let second_entry = tokio::time::timeout(Duration::from_millis(150), entered_rx.recv()).await;
     let finished_before_release = finished_rx.try_recv();
     let (lock, wake) = &adapter.release;
     *lock.lock().expect("release lock") = true;
@@ -114,10 +113,8 @@ async fn second_flush_can_capture_while_dropped_flush_capture_is_running() {
             .expect("second completion"),
     ];
     finished.sort();
-    assert_eq!(
-        second_entry.expect("second capture enters before release"),
-        Some(2)
-    );
+    assert!(second_entry.is_err(), "second capture must wait for first");
+    assert_eq!(entered_rx.try_recv().expect("second capture entry"), 2);
     assert!(
         matches!(
             finished_before_release,

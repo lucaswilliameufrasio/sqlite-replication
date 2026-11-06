@@ -165,6 +165,7 @@ where
             .database
             .delta_to_database_image(&mut image, timestamp_millis)?;
         transactions.clear();
+        next_state.database = state.database.clone();
         if let Some((header, pages, reconciled_database)) = delta {
             let mut encoded = Vec::new();
             encode_delta(header, &pages, reconciled_database.checksum, &mut encoded)?;

@@ -5,7 +5,8 @@
 
 > A decisão posterior [ADR 0015](0015-flush-barrier.md) substitui a semântica
 > de alvo amostrado de `Flush` descrita abaixo. Este documento preserva o
-> histórico; a barreira aprovada ainda precisa ser implementada e homologada.
+> histórico; a barreira Rust é parcial, e a paridade Go e a homologação seguem
+> pendentes.
 
 ## Contexto
 

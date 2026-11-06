@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
-use rusqlite::{Connection, ErrorCode};
+use rusqlite::Connection;
 use tokio::sync::oneshot;
 
 use super::{FaultPoint, capture_once_with_hook};
@@ -722,7 +722,7 @@ async fn cooperative_budget_flush_real_capture_failure_and_retry() {
         database: database.clone(),
         repository: repository.clone(),
         target: AtomicUsize::new(1),
-        fail: AtomicBool::new(true),
+        fail: AtomicBool::new(false),
         panic_capture: AtomicBool::new(false),
         admission: Mutex::new(Vec::new()),
         budget: Mutex::new(None),
@@ -745,6 +745,7 @@ async fn cooperative_budget_flush_real_capture_failure_and_retry() {
     let budget = ConservativeBudget::new(coordinator.admission_gate(), 1 << 30).expect("budget");
     *adapter.budget.lock().expect("budget reference") = Some(budget.clone());
     coordinator.flush().await.expect("open admission");
+    adapter.fail.store(true, Ordering::SeqCst);
     budget
         .reconcile_with(|| Ok(Some(0)))
         .expect("logical baseline");
@@ -824,7 +825,7 @@ async fn coordinator_capture_panic_closes_gate_and_poisons_budget() {
         repository: repository.clone(),
         target: AtomicUsize::new(1),
         fail: AtomicBool::new(false),
-        panic_capture: AtomicBool::new(true),
+        panic_capture: AtomicBool::new(false),
         admission: Mutex::new(Vec::new()),
         budget: Mutex::new(None),
     });
@@ -844,6 +845,7 @@ async fn coordinator_capture_panic_closes_gate_and_poisons_budget() {
     let budget = ConservativeBudget::new(coordinator.admission_gate(), 100).expect("budget");
     *adapter.budget.lock().expect("budget reference") = Some(budget.clone());
     coordinator.flush().await.expect("open admission");
+    adapter.panic_capture.store(true, Ordering::SeqCst);
     budget
         .reconcile_with(|| Ok(Some(0)))
         .expect("test baseline");
@@ -928,7 +930,7 @@ impl CoordinatorAdapter for LeaseAdapter {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn dropped_flush_sqlite_lease_rejects_second_capture_until_first_finishes() {
+async fn dropped_flush_sqlite_lease_delays_second_capture_until_first_finishes() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("source.sqlite");
     let repository = directory.path().join("repository");
@@ -977,24 +979,24 @@ async fn dropped_flush_sqlite_lease_rejects_second_capture_until_first_finishes(
             .expect_err("first future aborted")
             .is_cancelled()
     );
-    let second = tokio::time::timeout(Duration::from_secs(5), coordinator.flush()).await;
+    let mut second = Box::pin(coordinator.flush());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(150), &mut second)
+            .await
+            .is_err()
+    );
+    assert_eq!(adapter.attempts.load(Ordering::SeqCst), 1);
     let (lock, wake) = &adapter.release;
     *lock.lock().expect("release lock") = true;
     wake.notify_all();
-    let error = second
-        .expect("second flush returns before release")
-        .expect_err("SQLite lease must reject overlap");
-    let sqlite = error
-        .get_ref()
-        .and_then(|inner| inner.downcast_ref::<rusqlite::Error>())
-        .expect("SQLite error preserved");
-    assert!(
-        matches!(sqlite, rusqlite::Error::SqliteFailure(code, _) if code.code == ErrorCode::DatabaseBusy)
-    );
+    tokio::time::timeout(Duration::from_secs(5), second)
+        .await
+        .expect("second flush finishes")
+        .expect("second capture succeeds");
     assert_eq!(adapter.attempts.load(Ordering::SeqCst), 2);
     assert_eq!(
         *adapter.admission.lock().expect("admission lock"),
-        [false, false]
+        [false, false, true]
     );
     let txid = tokio::time::timeout(Duration::from_secs(5), finished_rx)
         .await

@@ -17,7 +17,14 @@ impl CoordinatorAdapter for Adapter {
     }
 
     fn capture(&self) -> io::Result<CaptureResult> {
-        Err(io::Error::other("capture is not expected"))
+        if !self.0.load(Ordering::Acquire) {
+            return Err(io::Error::other("injected capture failure"));
+        }
+        Ok(CaptureResult {
+            txid: 1,
+            transactions: 0,
+            wal_frames: 0,
+        })
     }
 
     fn set_write_admission(&self, _enabled: bool, _limits: Limits) -> io::Result<()> {

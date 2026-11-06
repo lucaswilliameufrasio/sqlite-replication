@@ -13,14 +13,14 @@ use crate::recovery::{RestoreTarget, build_restore_plan_from_filesystem};
 use crate::{AdmissionGate, CaptureResult, sync_to_s3};
 
 pub trait CoordinatorAdapter: Send + Sync + 'static {
-    /// Returns the adapter's observed capture target, or `None` if unknown.
+    /// Returns the adapter's observed position, or `None` if unknown.
     /// A known TXID must be nonzero.
-    /// This must represent outstanding committed changes, not merely the last
-    /// locally durable TXID: flush skips capture when the target is already
-    /// durable. WAL checkpoints and image reconciliation can change the mapping
-    /// between SQLite commits and LTX TXIDs. An adapter unable to establish a
-    /// trustworthy target must return `None` rather than a stale value.
+    /// An adapter unable to establish a trustworthy position must return `None`.
     fn observe_txid(&self) -> io::Result<Option<u64>>;
+    /// Durably captures the consistent state of all drained cooperative writers.
+    /// A no-op capture returns the current nonzero durable TXID. Implementations
+    /// must not report a no-op when accepted changes remain uncaptured: matching
+    /// the returned TXID to the spool alone cannot verify the source state.
     fn capture(&self) -> io::Result<CaptureResult>;
     /// Applies limits atomically with write admission. Enabling must reserve
     /// enough capacity to prevent writes exceeding `limits` and leave admission
@@ -69,7 +69,7 @@ pub struct CoordinatorConfig {
 
 pub struct Coordinator {
     config: CoordinatorConfig,
-    flush_lock: Mutex<()>,
+    flush_lock: Arc<Mutex<()>>,
     metrics: Option<Arc<dyn CoordinatorMetrics>>,
     admission: AdmissionGate,
     run_active: AtomicBool,
@@ -163,7 +163,7 @@ impl Coordinator {
         }
         Ok(Self {
             config,
-            flush_lock: Mutex::new(()),
+            flush_lock: Arc::new(Mutex::new(())),
             metrics: None,
             admission: AdmissionGate::new(),
             run_active: AtomicBool::new(false),
@@ -283,7 +283,7 @@ impl Coordinator {
         health
     }
 
-    /// Flushes the TXID observed at call start. Any error leaves write admission
+    /// Drains accepted writers and captures a consistent state. Any error leaves write admission
     /// closed; success reopens it only after configured limits are satisfied.
     pub async fn flush(&self) -> io::Result<()> {
         self.flush_internal(None).await
@@ -304,26 +304,8 @@ impl Coordinator {
     }
 
     async fn flush_locked(&self, cancellation: Option<&watch::Receiver<bool>>) -> io::Result<()> {
-        let _guard = self.flush_lock.lock().await;
+        let guard = Arc::clone(&self.flush_lock).lock_owned().await;
         self.admission.close()?;
-        let target = match self.observe_txid() {
-            Ok(Some(target)) => target,
-            Ok(None) => {
-                let close_result = self
-                    .config
-                    .adapter
-                    .set_write_admission(false, self.config.limits);
-                close_result?;
-                return Err(invalid_data("Flush target is unknown"));
-            }
-            Err(error) => {
-                let close_result = self
-                    .config
-                    .adapter
-                    .set_write_admission(false, self.config.limits);
-                return Err(join_io(error, close_result));
-            }
-        };
         self.config
             .adapter
             .set_write_admission(false, self.config.limits)?;
@@ -348,23 +330,28 @@ impl Coordinator {
         } else {
             self.admission.drain().await?;
         }
-        let mut status = self.status()?;
-        if status.observed_txid.is_none() {
-            return Err(invalid_data("observed TXID became unknown during flush"));
+        let previous_txid = recover(&self.config.repository_root, &[])?.database.txid;
+        let adapter = Arc::clone(&self.config.adapter);
+        let (captured, _guard) = tokio::task::spawn_blocking(move || {
+            let captured = adapter.capture();
+            (captured, guard)
+        })
+        .await
+        .map_err(io::Error::other)?;
+        let captured = captured?;
+        let target = captured.txid;
+        if target == 0 {
+            return Err(invalid_data("capture returned a zero durable position"));
         }
-        let mut local_txid = status
-            .local_durable
-            .map(|position| position.txid)
-            .unwrap_or(0);
-        while local_txid < target {
-            let adapter = Arc::clone(&self.config.adapter);
-            let captured = tokio::task::spawn_blocking(move || adapter.capture())
-                .await
-                .map_err(io::Error::other)??;
-            if captured.txid <= local_txid {
-                return Err(invalid_data("capture did not advance the durable position"));
-            }
-            local_txid = captured.txid;
+        let status = self.status()?;
+        if target < previous_txid
+            || status
+                .local_durable
+                .is_none_or(|position| position.txid != target)
+        {
+            return Err(invalid_data(
+                "capture position does not match durable spool",
+            ));
         }
         if let Some(remote) = &self.config.remote {
             let result = sync_to_s3(
@@ -380,10 +367,7 @@ impl Coordinator {
                 ));
             }
         }
-        status = self.status()?;
-        if status.observed_txid.is_none() {
-            return Err(invalid_data("observed TXID became unknown during flush"));
-        }
+        let status = self.status()?;
         if status
             .local_durable
             .is_none_or(|position| position.txid < target)
@@ -394,7 +378,8 @@ impl Coordinator {
         }
         if status.spool_bytes > self.config.limits.max_spool_bytes
             || status.wal_bytes > self.config.limits.max_wal_bytes
-            || status.unprotected_age > self.config.limits.max_unprotected_age
+            || (status.observed_txid.is_some()
+                && status.unprotected_age > self.config.limits.max_unprotected_age)
         {
             return Err(io::Error::other(
                 "replication limits exceeded; writes remain blocked",

@@ -22,7 +22,11 @@ impl CoordinatorAdapter for Adapter {
     }
 
     fn capture(&self) -> io::Result<CaptureResult> {
-        Err(io::Error::other("capture is not expected"))
+        Ok(CaptureResult {
+            txid: 1,
+            transactions: 0,
+            wal_frames: 0,
+        })
     }
 
     fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
