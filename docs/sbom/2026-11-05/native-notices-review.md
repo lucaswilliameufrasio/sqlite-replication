@@ -118,6 +118,26 @@ que esses arquivos estejam em um binário final. A busca textual não identifica
 origem sem as palavras procuradas e não cobre outros tipos de arquivo, tags,
 plataformas ou versões; a revisão de avisos aplicáveis permanece pendente.
 
+#### Módulos adicionais selecionados por testes Go
+
+No checkout `833d76b`, a comparação das saídas `go list -mod=readonly -deps`
+e `go list -mod=readonly -deps -test` para `./...`, Go 1.27.3 Linux amd64 e
+`GOPROXY=off`, identificou sete módulos AWS adicionais apenas na segunda
+seleção: `config v1.33.14`, `credentials v1.20.14`, `feature/ec2/imds
+v1.20.6`, `service/signin v1.12.2`, `service/ssooidc v1.44.2`, `service/sso
+v1.39.2` e `service/sts v1.51.7`, todos sob `github.com/aws/aws-sdk-go-v2/`.
+
+A inspeção recursiva do cache local desses sete módulos por basenames iniciados
+por `LICENSE`, `NOTICE` ou `COPYING`, sem distinção de maiúsculas, encontrou
+em cada um apenas `LICENSE.txt` na raiz, com SHA-256
+`cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30`,
+o mesmo texto Apache-2.0 do módulo AWS principal examinado acima. Esta seleção
+inclui dependências de teste e não comprova que seus fontes ou binários sejam
+distribuídos; a busca não cobre avisos embutidos, nomes diferentes, outros
+targets ou o exemplo de telemetria com `go.mod` separado. Não substitui a
+conferência dos textos e atribuições aplicáveis ao artefato efetivamente
+escolhido, a comparação com upstream ou revisão jurídica.
+
 `go version -m` do executável Go lista nove módulos de terceiros: `go-humanize`
 1.1.0, `google/uuid` 1.6.0, `pierrec/lz4/v4` 4.1.22, `bigfft` na revisão
 `24d4a6f8daec`, `golang.org/x/sys` 0.49.0, `modernc.org/libc` 1.80.1,
