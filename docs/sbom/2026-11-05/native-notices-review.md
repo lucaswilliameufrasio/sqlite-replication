@@ -12,6 +12,40 @@ distribuição do projeto.
 
 ## Go: inventário do executável específico
 
+### Seleção adicional do pacote `replicator` — checkout `a630d16`
+
+Em Linux amd64, com Go 1.27.3, `GOPROXY=off` e `-mod=readonly`,
+`go list -deps` para `./cmd/conformance` selecionou os mesmos nove módulos
+externos listados abaixo. Para `./replicator`, selecionou também os seguintes
+11 módulos AWS/Smithy; esta consulta é de pacotes selecionados para uma
+configuração, não um link map nem uma lista de arquivos distribuídos:
+
+| Módulo adicional | Versão |
+|---|---|
+| `github.com/aws/aws-sdk-go-v2` | `v1.47.6` |
+| `github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream` | `v1.7.26` |
+| `github.com/aws/aws-sdk-go-v2/internal/configsources` | `v1.5.9` |
+| `github.com/aws/aws-sdk-go-v2/internal/endpoints/v2` | `v2.8.9` |
+| `github.com/aws/aws-sdk-go-v2/internal/v4a` | `v1.5.9` |
+| `github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding` | `v1.13.24` |
+| `github.com/aws/aws-sdk-go-v2/service/internal/checksum` | `v1.11.10` |
+| `github.com/aws/aws-sdk-go-v2/service/internal/presigned-url` | `v1.14.9` |
+| `github.com/aws/aws-sdk-go-v2/service/internal/s3shared` | `v1.20.9` |
+| `github.com/aws/aws-sdk-go-v2/service/s3` | `v1.114.7` |
+| `github.com/aws/smithy-go` | `v1.28.8` |
+
+Na raiz dos dez módulos AWS selecionados, os arquivos `LICENSE.txt` do cache
+local têm SHA-256 `cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30`.
+O módulo AWS principal também contém `NOTICE.txt`, SHA-256
+`a6e830174d62dafad3a718384772ea1f4c0e27989f050932dc442a5e3ddad080`, com
+créditos Amazon e Stripe. O `smithy-go` contém `LICENSE` Apache-2.0, SHA-256
+`09e8a9bcec8067104652c168685ab0931e7868f9c8284b66f5ae6edae5f1130b`, e
+`NOTICE`, SHA-256 `d4290ed64c2edd0fce1d84e3f9dfb2881240fe534def76b8cd29ed6af683e287`,
+com crédito Amazon. A inspeção foi limitada aos nomes na raiz dos módulos;
+não demonstra ausência de avisos aninhados, composição de binários, integridade
+dos caches frente aos arquivos upstream ou obrigações jurídicas finais. Os
+textos completos aplicáveis ainda devem ser revistos para cada artefato escolhido.
+
 `go version -m` do executável Go lista nove módulos de terceiros: `go-humanize`
 1.1.0, `google/uuid` 1.6.0, `pierrec/lz4/v4` 4.1.22, `bigfft` na revisão
 `24d4a6f8daec`, `golang.org/x/sys` 0.49.0, `modernc.org/libc` 1.80.1,
