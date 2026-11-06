@@ -30,6 +30,72 @@ impl WritePermit for ObservedGate {
     }
 }
 
+struct FailingReleaseGate;
+
+impl WriteGate for FailingReleaseGate {
+    type Permit = Self;
+
+    fn acquire(&self) -> io::Result<Self::Permit> {
+        Ok(Self)
+    }
+}
+
+impl WritePermit for FailingReleaseGate {
+    fn release(self) -> io::Result<()> {
+        Err(io::Error::other("injected gate release failure"))
+    }
+}
+
+#[test]
+fn public_budgeted_capture_release_error_preserves_durable_data_and_unknown_occupancy() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    let connection = Connection::open(&database).expect("source");
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base');").expect("initialize");
+    crate::snapshot(&database, &repository).expect("snapshot");
+    let admission = crate::AdmissionGate::new();
+    admission.open().expect("open admission");
+    let budget = ConservativeBudget::new(admission, 100).expect("budget");
+    budget
+        .reconcile_with(|| Ok(Some(0)))
+        .expect("logical baseline");
+    let producer = budget.try_reserve(Some(1)).expect("reserve");
+    connection
+        .execute("INSERT INTO data VALUES ('committed')", [])
+        .expect("commit");
+    producer.settle(Some(0)).expect("logical settlement");
+    let error =
+        crate::capture_once_with_budget(&database, &repository, &FailingReleaseGate, &budget)
+            .expect_err("release failure is reported");
+    assert!(error.to_string().contains("capture completed durably"));
+    assert!(error.to_string().contains("injected gate release failure"));
+    assert!(
+        budget.try_reserve(Some(1)).is_err(),
+        "capture invalidates occupancy"
+    );
+    let restored = directory.path().join("restored.sqlite");
+    crate::restore_to_target(&repository, &restored, RestoreTarget::Txid(2))
+        .expect("restore published capture");
+    let value: String = Connection::open(restored)
+        .expect("restored")
+        .query_row(
+            "SELECT value FROM data ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("value");
+    assert_eq!(value, "committed");
+    budget
+        .reconcile_with(|| Ok(Some(1)))
+        .expect("test-only logical reconciliation");
+    budget
+        .try_reserve(Some(1))
+        .expect("budget reconciled")
+        .settle(Some(0))
+        .expect("settle");
+}
+
 #[test]
 fn public_capture_rejects_active_producer_then_recovers() {
     let directory = tempfile::tempdir().expect("temporary directory");

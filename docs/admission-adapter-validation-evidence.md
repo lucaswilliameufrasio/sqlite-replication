@@ -7,6 +7,14 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`public_budgeted_capture_release_error_preserves_durable_data_and_unknown_occupancy`
+injeta falha de liberação do `WriteGate` após captura pública cooperativa real:
+o erro informa que a captura foi durável, o orçamento recusa reservas por
+ocupação desconhecida e o restore em TXID 2 recupera o commit. Uma reconciliação
+com valor lógico de teste permite novamente reservar. O gate que falha é
+simulado e não compartilha a admissão: isso não prova que seja seguro retomar
+uma aplicação após erro do gate nem que custos ou quotas sejam conservadores.
+
 `public_capture_rejects_active_producer_then_recovers` mantém uma reserva ativa
 em outra thread após um commit SQLite. A captura pública cooperativa retorna
 `WouldBlock`, libera o gate de teste e não permite restaurar TXID 2; após a
