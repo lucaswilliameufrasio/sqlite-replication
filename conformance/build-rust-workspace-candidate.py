@@ -21,6 +21,8 @@ WARNING = (
     "Contains uncommitted work and preliminary notices; rights remain unconfirmed.\n"
     "Includes Rust workspace, test fixtures, and preliminary SBOM/notice evidence.\n"
     "Does not vendor third-party dependencies or contain an approved project license.\n"
+    "For each extracted candidate use a new, separate Cargo target directory;\n"
+    "reusing one can execute stale binaries from a different source archive.\n"
 ).encode()
 
 
