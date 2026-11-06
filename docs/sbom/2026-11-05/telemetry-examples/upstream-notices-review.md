@@ -38,6 +38,20 @@ dev-dependency e não consta como tal no SBOM `rust-telemetry.cdx.json`. Os test
 usam seu exporter em memória. A aplicabilidade ao pacote depende de distribuir
 fontes de teste, binários de teste, ou apenas outro artefato.
 
+## Prometheus Rust 0.14.0
+
+O exemplo Rust declara `prometheus = "=0.14.0"` como dependência normal.
+A archive `.crate` do cache tem SHA-256
+`3ca5326d8d0b950a9acd87e6a3f94745394f62e4dae1b1ee22b2bc0c394af43a`,
+igual ao checksum do `Cargo.lock` do exemplo no candidato `413e08d`. Seu
+manifest declara `Apache-2.0`; dos 59 membros, a busca por basename iniciado
+por `LICENSE`, `NOTICE` ou `COPYING`, insensível a maiúsculas, identificou
+apenas `prometheus-0.14.0/LICENSE`, texto Apache-2.0 de 11.351 bytes, SHA-256
+`977db9027cdb329d938c8ee9b101192431b1da6278c1b69492840fec148212a4`.
+Essa busca não exclui avisos embutidos ou com outros nomes, nem cobre os
+termos transitivos. A dependência não está vendorizada na archive-fonte do
+candidato; a composição de binários e os avisos aplicáveis seguem por revisar.
+
 ## Prometheus e OpenTelemetry Go
 
 Nos caches dos módulos fixados do exemplo, os quatro módulos Prometheus abaixo
