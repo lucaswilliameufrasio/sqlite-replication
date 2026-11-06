@@ -96,6 +96,9 @@ pub fn capture_once<G: WriteGate>(
 /// occupancy mutation must use the same budget; external writers and bypasses
 /// are not protected. This is not a filesystem quota or a production adapter.
 /// The caller's gate must stop writers before returning from `acquire`.
+/// A gate release error triggers budget invalidation; this cannot revoke writes
+/// already accepted or prevent a later independent reconciliation. The caller
+/// must coordinate reconciliation and treat an unsuccessful release as unsafe.
 pub fn capture_once_with_budget<G: WriteGate>(
     source_path: impl AsRef<Path>,
     repository_root: impl AsRef<Path>,
@@ -142,7 +145,15 @@ fn capture_once_inner<G: WriteGate>(
         Some(budget) => budget.with_occupancy_mutation(capture),
         None => capture(),
     };
-    let release_result = permit.release();
+    let release_result = match (permit.release(), budget) {
+        (Err(release_error), Some(budget)) => match budget.reconcile(None) {
+            Ok(()) => Err(release_error),
+            Err(invalidate_error) => Err(io::Error::other(format!(
+                "{release_error}; invalidating the budget also failed: {invalidate_error}"
+            ))),
+        },
+        (result, _) => result,
+    };
 
     let result = match (capture_result, release_result) {
         (Ok(result), Ok(())) => result,

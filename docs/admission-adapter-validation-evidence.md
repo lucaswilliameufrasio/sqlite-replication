@@ -7,6 +7,15 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`failed_gate_release_invalidates_callback_reconciliation` reproduziu um caso
+em que o callback de liberação do gate de teste reconciliava o orçamento e
+depois retornava erro; antes da mudança uma reserva ainda era aceita. Agora a
+API invalida o orçamento após o erro de liberação e reporta qualquer erro da
+invalidação junto com o de liberação. O teste passa com captura e restore reais.
+O gate é simulado: a invalidação não revoga escritas já aceitas nem impede uma
+reconciliação independente posterior; não substitui coordenação da aplicação,
+adapter homologado ou quotas conservadoras.
+
 `budgeted_public_capture_drains_application_writer_before_capture` usa um gate
 de aplicação **de teste** que fecha a admissão e drena um escritor já admitido.
 Enquanto o gate está fechado, outro ingresso é recusado; o escritor confirma uma

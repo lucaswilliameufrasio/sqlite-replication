@@ -166,6 +166,57 @@ impl WritePermit for ObservedGate {
 
 struct FailingReleaseGate;
 
+struct ReconcileThenFailGate(ConservativeBudget);
+
+impl WriteGate for ReconcileThenFailGate {
+    type Permit = Self;
+
+    fn acquire(&self) -> io::Result<Self::Permit> {
+        Ok(Self(self.0.clone()))
+    }
+}
+
+impl WritePermit for ReconcileThenFailGate {
+    fn release(self) -> io::Result<()> {
+        self.0.reconcile_with(|| Ok(Some(0)))?;
+        Err(io::Error::other("injected release failure"))
+    }
+}
+
+#[test]
+fn failed_gate_release_invalidates_callback_reconciliation() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    let connection = Connection::open(&database).expect("source");
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base');").expect("initialize");
+    crate::snapshot(&database, &repository).expect("snapshot");
+    let admission = crate::AdmissionGate::new();
+    admission.open().expect("open admission");
+    let budget = ConservativeBudget::new(admission, 100).expect("budget");
+    budget.reconcile_with(|| Ok(Some(0))).expect("baseline");
+    let reservation = budget.try_reserve(Some(1)).expect("reserve");
+    connection
+        .execute("INSERT INTO data VALUES ('committed')", [])
+        .expect("commit");
+    reservation.settle(Some(0)).expect("settle logical cost");
+    let error = crate::capture_once_with_budget(
+        &database,
+        &repository,
+        &ReconcileThenFailGate(budget.clone()),
+        &budget,
+    )
+    .expect_err("release must fail");
+    assert!(error.to_string().contains("injected release failure"));
+    assert!(
+        budget.try_reserve(Some(1)).is_err(),
+        "release failure must invalidate reconciliation"
+    );
+    let restored = directory.path().join("restored.sqlite");
+    crate::restore_to_target(&repository, &restored, RestoreTarget::Txid(2))
+        .expect("durable capture");
+}
+
 impl WriteGate for FailingReleaseGate {
     type Permit = Self;
 
