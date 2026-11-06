@@ -390,6 +390,11 @@ func TestCoordinatorRequiresExplicitPositiveLimitsAndStrictAdapter(t *testing.T)
 	if _, err := replicator.NewCoordinator(missingCapture); err == nil {
 		t.Fatal("coordinator accepted a missing capture operation")
 	}
+	missingDrain := valid
+	missingDrain.DrainWrites = nil
+	if _, err := replicator.NewCoordinator(missingDrain); err == nil {
+		t.Fatal("coordinator accepted a missing write drain")
+	}
 }
 
 func TestCoordinatorFlushLeavesWritesBlockedWhenSpoolLimitIsExceeded(t *testing.T) {
