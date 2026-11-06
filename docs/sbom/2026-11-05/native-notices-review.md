@@ -46,6 +46,34 @@ não demonstra ausência de avisos aninhados, composição de binários, integri
 dos caches frente aos arquivos upstream ou obrigações jurídicas finais. Os
 textos completos aplicáveis ainda devem ser revistos para cada artefato escolhido.
 
+#### Avisos aninhados nos módulos AWS/Smithy
+
+No checkout `6516c9d`, a inspeção recursiva e somente leitura do cache dos 11
+módulos selecionados acima procurou basenames iniciados por `LICENSE`, `NOTICE`
+ou `COPYING`, sem distinção de maiúsculas. Os nove submódulos AWS não tinham
+arquivo aninhado com esses prefixos. Nos módulos AWS principal e Smithy foram
+encontrados os seguintes textos de licença (o workflow `.github/workflows/
+license-check.yml` também corresponde ao prefixo, mas é configuração de CI,
+não um texto de licença):
+
+| Módulo e caminho relativo | SHA-256 | Seleção Go linux/amd64 |
+|---|---|---|
+| AWS `internal/sync/singleflight/LICENSE` | `f5122de47ce62d57dcd3e57cdf778ceacc3a847645de3332fea58903def93ecb` | Pacote `internal/sync/singleflight` selecionado por `go list -deps ./replicator`. |
+| Smithy `internal/sync/singleflight/LICENSE` | `f5122de47ce62d57dcd3e57cdf778ceacc3a847645de3332fea58903def93ecb` | Pacote correspondente selecionado por `go list -deps ./replicator`. |
+| Smithy `transport/http/protocol/internal/json/internal/stdlib/LICENSE` | `2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067` | Pacote não apareceu na seleção normal, mas apareceu com `go list -deps -test ./replicator`. |
+
+Os textos foram lidos: os três creditam The Go Authors e apresentam condições
+BSD de três cláusulas. Os dois arquivos `singleflight` têm bytes idênticos; o
+texto `stdlib` tem hash distinto. A versão `singleflight` traz a grafia
+`COPYIGHT` no disclaimer; conservar o texto original, não corrigi-lo numa
+eventual reprodução. Para qualquer artefato de fontes ou binário selecionado,
+revisar os textos completos e sua aplicabilidade; dependência selecionada não
+prova retenção no binário, e seleção com `-test` não implica distribuição dos
+testes. A busca por nome não cobre avisos embutidos, nomes sem esses prefixos,
+outros módulos, versões, plataformas ou tags. Cache local ainda não foi
+comparado com archives upstream nesta etapa. Não houve aprovação jurídica nem
+publicação.
+
 `go version -m` do executável Go lista nove módulos de terceiros: `go-humanize`
 1.1.0, `google/uuid` 1.6.0, `pierrec/lz4/v4` 4.1.22, `bigfft` na revisão
 `24d4a6f8daec`, `golang.org/x/sys` 0.49.0, `modernc.org/libc` 1.80.1,
