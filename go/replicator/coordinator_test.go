@@ -167,6 +167,49 @@ func TestCoordinatorBarrierDrainsBeforeCapture(t *testing.T) {
 	}
 }
 
+func TestCoordinatorDrainFailureSkipsCaptureAndKeepsAdmissionClosed(t *testing.T) {
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	createSourceDatabase(t, databasePath)
+	repositoryRoot := filepath.Join(directory, "repository")
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	gate := replicator.NewAdmissionGate()
+	if err := gate.Open(); err != nil {
+		t.Fatal(err)
+	}
+	injected := errors.New("injected drain failure")
+	var captures int
+	config := coordinatorConfig(repositoryRoot, databasePath, 1)
+	config.SetAdmission = func(_ context.Context, enabled bool, _ replicator.Limits) error {
+		if enabled {
+			return gate.Open()
+		}
+		gate.Close()
+		return nil
+	}
+	config.DrainWrites = func(context.Context) error { return injected }
+	config.Capture = func(context.Context) (replicator.CaptureResult, error) {
+		captures++
+		return replicator.CaptureResult{TXID: 1}, nil
+	}
+	coordinator, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatalf("coordinator: %v", err)
+	}
+	if err := coordinator.Flush(ctx); !errors.Is(err, injected) {
+		t.Fatalf("flush error = %v, want drain failure", err)
+	}
+	if captures != 0 {
+		t.Fatalf("capture invoked %d times after drain failure", captures)
+	}
+	if _, err := gate.TryAccept(); !errors.Is(err, replicator.ErrAdmissionClosed) {
+		t.Fatalf("admission after drain failure = %v", err)
+	}
+}
+
 func TestCoordinatorBarrierCapturesCheckpointedSQLiteChanges(t *testing.T) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skip("incremental capture requires Linux amd64")
