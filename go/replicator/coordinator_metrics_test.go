@@ -49,6 +49,12 @@ func TestCoordinatorFlushMetricsOutcomesAndReentrancy(t *testing.T) {
 	config.ObserveTXID = func(context.Context) (uint64, bool, error) {
 		return 1, available.Load(), nil
 	}
+	config.Capture = func(context.Context) (replicator.CaptureResult, error) {
+		if !available.Load() {
+			return replicator.CaptureResult{}, errors.New("injected capture failure")
+		}
+		return replicator.CaptureResult{TXID: 1}, nil
+	}
 	coordinator, err := replicator.NewCoordinator(config)
 	if err != nil {
 		t.Fatalf("construct coordinator: %v", err)
@@ -70,7 +76,7 @@ func TestCoordinatorFlushMetricsOutcomesAndReentrancy(t *testing.T) {
 	}
 	available.Store(false)
 	if err := coordinator.Flush(context.Background()); err == nil {
-		t.Fatal("flush with unavailable target succeeded")
+		t.Fatal("flush with failing capture succeeded")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

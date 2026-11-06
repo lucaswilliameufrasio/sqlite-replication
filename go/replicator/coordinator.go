@@ -15,13 +15,21 @@ import (
 
 var (
 	ErrBackpressure = errors.New("replication limits exceeded; writes remain blocked")
-	ErrNoProgress   = errors.New("capture did not reach the observed TXID")
+	ErrNoProgress   = errors.New("barrier position does not match durable or confirmed progress")
 	errAdapter      = errors.New("replication adapter failure")
 	errLocalStorage = errors.New("replication local storage failure")
 )
 
 type ObserveTXID func(context.Context) (txid uint64, available bool, err error)
+
+// CaptureOperation durably captures the state of the drained cooperative
+// writers. A no-op returns the current nonzero durable TXID. A matching spool
+// TXID alone cannot detect an adapter that fails to capture accepted changes.
 type CaptureOperation func(context.Context) (CaptureResult, error)
+
+// DrainWrites waits for every write accepted before admission closed to finish.
+// It must honor cancellation without claiming unfinished writes were drained.
+type DrainWrites func(context.Context) error
 
 // SetWriteAdmission applies a strict admission policy. Enabling must atomically
 // reserve enough capacity to keep writes within limits and leave admission
@@ -65,6 +73,7 @@ type CoordinatorConfig struct {
 	ObserveTXID    ObserveTXID
 	Capture        CaptureOperation
 	SetAdmission   SetWriteAdmission
+	DrainWrites    DrainWrites
 	Limits         Limits
 	Remote         *RemoteConfig
 	Metrics        CoordinatorMetrics
@@ -122,8 +131,8 @@ func NewCoordinator(config CoordinatorConfig) (*Coordinator, error) {
 	if config.RepositoryRoot == "" || config.DatabasePath == "" {
 		return nil, fmt.Errorf("repository root and database path are required")
 	}
-	if config.ObserveTXID == nil || config.Capture == nil || config.SetAdmission == nil {
-		return nil, fmt.Errorf("TXID observer, capture operation, and strict write-admission controller are required")
+	if config.ObserveTXID == nil || config.Capture == nil || config.SetAdmission == nil || config.DrainWrites == nil {
+		return nil, fmt.Errorf("TXID observer, capture operation, write admission, and write drain are required")
 	}
 	if config.Limits.MaxSpoolBytes == 0 || config.Limits.MaxWALBytes == 0 ||
 		config.Limits.MaxUnprotectedAge <= 0 || config.Limits.MaxUploadsInFlight <= 0 {
@@ -231,8 +240,8 @@ func (c *Coordinator) Health(ctx context.Context) Health {
 	return health
 }
 
-// Flush samples the observed TXID once, closes write admission, captures until
-// that target is locally durable, and optionally confirms it remotely. On any
+// Flush closes admission, drains accepted writers, captures a consistent state,
+// and optionally confirms the resulting durable position remotely. On any
 // error the coordinator remains fail-closed; successful completion reopens
 // admission only if every configured capacity limit is satisfied.
 func (c *Coordinator) Flush(ctx context.Context) (returnErr error) {
@@ -257,36 +266,30 @@ func (c *Coordinator) Flush(ctx context.Context) (returnErr error) {
 	if err := ctx.Err(); err != nil {
 		return errors.Join(err, c.closeAdmission())
 	}
-	target, available, err := c.config.ObserveTXID(ctx)
-	if err != nil {
-		return errors.Join(fmt.Errorf("observe Flush target: %w", err), c.closeAdmission())
-	}
-	if !available {
-		return errors.Join(fmt.Errorf("Flush target is unavailable from the configured adapter"), c.closeAdmission())
-	}
 	if err := c.closeAdmission(); err != nil {
 		return fmt.Errorf("close write admission before Flush: %w", err)
 	}
+	if err := c.config.DrainWrites(ctx); err != nil {
+		return fmt.Errorf("drain accepted writes before Flush: %w", err)
+	}
+	previous, err := spool.Recover(c.config.RepositoryRoot, nil)
+	if err != nil {
+		return fmt.Errorf("recover durable position before Flush: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	captured, err := c.config.Capture(ctx)
+	if err != nil {
+		return fmt.Errorf("capture Flush barrier locally: %w", err)
+	}
+	target := captured.TXID
 	status, err := c.Status(ctx)
 	if err != nil {
-		return fmt.Errorf("read replication status before Flush: %w", err)
+		return fmt.Errorf("verify captured position: %w", err)
 	}
-	localTXID := uint64(0)
-	if status.LocalDurable != nil {
-		localTXID = status.LocalDurable.TXID
-	}
-	for localTXID < target {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		captured, err := c.config.Capture(ctx)
-		if err != nil {
-			return fmt.Errorf("capture Flush target locally: %w", err)
-		}
-		if captured.TXID <= localTXID {
-			return ErrNoProgress
-		}
-		localTXID = captured.TXID
+	if target == 0 || target < previous.Database.TXID || status.LocalDurable == nil || status.LocalDurable.TXID != target {
+		return ErrNoProgress
 	}
 	if c.config.Remote != nil {
 		result, err := SyncToS3(ctx, c.config.RepositoryRoot, c.config.Remote.Store, c.config.Remote.Prefix, c.config.Remote.RemoteID)
@@ -304,7 +307,7 @@ func (c *Coordinator) Flush(ctx context.Context) (returnErr error) {
 	if status.LocalDurable == nil || status.LocalDurable.TXID < target {
 		return ErrNoProgress
 	}
-	if status.SpoolBytes > c.config.Limits.MaxSpoolBytes || status.WALBytes > c.config.Limits.MaxWALBytes || status.UnprotectedAge > c.config.Limits.MaxUnprotectedAge {
+	if status.SpoolBytes > c.config.Limits.MaxSpoolBytes || status.WALBytes > c.config.Limits.MaxWALBytes || (status.ObservedTXID != nil && status.UnprotectedAge > c.config.Limits.MaxUnprotectedAge) {
 		return ErrBackpressure
 	}
 	if c.config.Remote != nil && (!status.RemoteAckMatches || status.RemoteConfirmed == nil || status.RemoteConfirmed.TXID < target) {

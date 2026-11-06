@@ -153,6 +153,7 @@ func TestFlociPublicS3Sync(t *testing.T) {
 			return replicator.CaptureResult{TXID: result.TXID}, nil
 		},
 		SetAdmission: func(context.Context, bool, replicator.Limits) error { return nil },
+		DrainWrites:  func(context.Context) error { return nil },
 		Limits: replicator.Limits{
 			MaxSpoolBytes:      1 << 30,
 			MaxWALBytes:        64 << 20,

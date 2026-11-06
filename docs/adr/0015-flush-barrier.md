@@ -1,6 +1,6 @@
 # ADR 0015: barreira cooperativa de flush
 
-- **Status:** decisão de direção aceita; implementação e homologação pendentes
+- **Status:** coordenadores de barreira implementados; integração e homologação pendentes
 - **Data:** 2026-11-06
 - **Substitui parcialmente:** semântica de alvo amostrado de `Flush` na ADR 0011
 
@@ -32,7 +32,11 @@ limites conservadores exigem implementação e testes; não são homologados por
 esta decisão. O coordenador Rust implementa a sequência de barreira; testes
 específicos com SQLite real cobrem checkpoint e drenagem de escrita aceita.
 A integração remota desses testes e um adapter de produção permanecem pendentes.
-O coordenador Go ainda usa o contrato anterior; não se deve afirmar paridade.
+O coordenador Go também fecha a admissão, aguarda o novo callback obrigatório
+`DrainWrites`, captura e confere o TXID retornado contra o spool. A aplicação
+deve implementar a drenagem de todos os escritores aceitos; um callback vazio
+só é adequado quando não existem escritores ativos. Os testes incluem um
+checkpoint SQLite real, mas não homologam um adapter de produção ou limites.
 
 ## Alternativa e consequências
 

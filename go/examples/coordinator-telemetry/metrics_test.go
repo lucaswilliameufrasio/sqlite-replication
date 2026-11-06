@@ -50,9 +50,13 @@ func TestCoordinatorExportsInMemoryMetrics(t *testing.T) {
 			return 1, available, nil
 		},
 		Capture: func(context.Context) (replicator.CaptureResult, error) {
-			return replicator.CaptureResult{}, errors.New("unexpected capture")
+			if !available {
+				return replicator.CaptureResult{}, errors.New("injected capture failure")
+			}
+			return replicator.CaptureResult{TXID: 1}, nil
 		},
 		SetAdmission: func(context.Context, bool, replicator.Limits) error { return nil },
+		DrainWrites:  func(context.Context) error { return nil },
 		Limits: replicator.Limits{MaxSpoolBytes: 1 << 30, MaxWALBytes: 1 << 30,
 			MaxUnprotectedAge: time.Hour, MaxUploadsInFlight: 1},
 		Metrics: observer,
@@ -66,7 +70,7 @@ func TestCoordinatorExportsInMemoryMetrics(t *testing.T) {
 	}
 	available = false
 	if err := coordinator.Flush(ctx); err == nil {
-		t.Fatal("unavailable target succeeded")
+		t.Fatal("failing capture succeeded")
 	}
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()

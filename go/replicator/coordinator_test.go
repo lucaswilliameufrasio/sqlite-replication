@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -77,6 +78,149 @@ func TestCoordinatorStatusTreatsUnavailableObservationConservatively(t *testing.
 	}
 	if status.UnprotectedAge < config.Limits.MaxUnprotectedAge {
 		t.Fatalf("unknown observed position has insufficiently conservative age: %s", status.UnprotectedAge)
+	}
+}
+
+func TestCoordinatorBarrierCapturesWhenObservedTXIDUnavailable(t *testing.T) {
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	createSourceDatabase(t, databasePath)
+	repositoryRoot := filepath.Join(directory, "repository")
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	config := coordinatorConfig(repositoryRoot, databasePath, 1)
+	config.ObserveTXID = func(context.Context) (uint64, bool, error) { return 0, false, nil }
+	captured := false
+	config.Capture = func(context.Context) (replicator.CaptureResult, error) {
+		captured = true
+		return replicator.CaptureResult{TXID: 1}, nil
+	}
+	coordinator, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Flush(ctx); err != nil {
+		t.Fatalf("barrier: %v", err)
+	}
+	if !captured {
+		t.Fatal("barrier skipped capture")
+	}
+}
+
+func TestCoordinatorBarrierDrainsBeforeCapture(t *testing.T) {
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	createSourceDatabase(t, databasePath)
+	repositoryRoot := filepath.Join(directory, "repository")
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	config := coordinatorConfig(repositoryRoot, databasePath, 1)
+	drainStarted := make(chan struct{})
+	release := make(chan struct{})
+	captureStarted := make(chan struct{}, 1)
+	config.DrainWrites = func(ctx context.Context) error {
+		close(drainStarted)
+		select {
+		case <-release:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	config.Capture = func(context.Context) (replicator.CaptureResult, error) {
+		captureStarted <- struct{}{}
+		return replicator.CaptureResult{TXID: 1}, nil
+	}
+	coordinator, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan error, 1)
+	go func() { result <- coordinator.Flush(ctx) }()
+	select {
+	case <-drainStarted:
+	case <-time.After(5 * time.Second):
+		t.Fatal("drain did not start")
+	}
+	select {
+	case <-captureStarted:
+		t.Fatal("capture started before drain completed")
+	default:
+	}
+	close(release)
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatalf("barrier: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("barrier did not finish")
+	}
+	select {
+	case <-captureStarted:
+	default:
+		t.Fatal("barrier did not capture")
+	}
+}
+
+func TestCoordinatorBarrierCapturesCheckpointedSQLiteChanges(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("incremental capture requires Linux amd64")
+	}
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)"); err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot := filepath.Join(directory, "repository")
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range []string{"first", "second"} {
+		if _, err := database.ExecContext(ctx, "INSERT INTO records VALUES (?)", value); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var busy, logFrames, checkpointed int
+	if err := database.QueryRowContext(ctx, "PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); err != nil || busy != 0 {
+		t.Fatalf("checkpoint: busy=%d error=%v", busy, err)
+	}
+	config := coordinatorConfig(repositoryRoot, databasePath, 1)
+	config.ObserveTXID = func(context.Context) (uint64, bool, error) { return 0, false, nil }
+	config.Capture = func(ctx context.Context) (replicator.CaptureResult, error) {
+		return replicator.CaptureOnce(ctx, databasePath, repositoryRoot, func(context.Context) (func() error, error) {
+			return func() error { return nil }, nil
+		})
+	}
+	coordinator, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Flush(ctx); err != nil {
+		t.Fatalf("barrier: %v", err)
+	}
+	restored := filepath.Join(directory, "restored.sqlite")
+	if err := replicator.RestoreToTarget(ctx, repositoryRoot, restored, replicator.RestoreTarget{TXID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := sql.Open("sqlite", restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var count int
+	if err := reader.QueryRowContext(ctx, "SELECT COUNT(*) FROM records").Scan(&count); err != nil || count != 2 {
+		t.Fatalf("restored rows=%d error=%v", count, err)
 	}
 }
 
@@ -392,6 +536,7 @@ func coordinatorConfig(repositoryRoot, databasePath string, observed uint64) rep
 			return replicator.CaptureResult{TXID: observed}, nil
 		},
 		SetAdmission: func(context.Context, bool, replicator.Limits) error { return nil },
+		DrainWrites:  func(context.Context) error { return nil },
 		Limits: replicator.Limits{
 			MaxSpoolBytes:      1 << 30,
 			MaxWALBytes:        64 << 20,
