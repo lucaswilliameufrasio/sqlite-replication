@@ -1,5 +1,22 @@
 # Matriz de notices — candidato local Rust, não aprovado
 
+## Composição por artefato do candidato `413e08d`
+
+Na archive local `candidate-413e08d-review-a.tar.gz`, SHA-256
+`ebf437a4983641b104494ea546956ea0e33a640bd225091370f9158b3c8f6657`,
+a inspeção dos nomes confirmou 44 fixtures LTX e três WAL, nove manifests
+Cargo e dois lockfiles, incluindo os do exemplo separado, e 16 documentos
+CycloneDX. Três destes documentos têm `evidence-quarantined` no nome: os dois
+SBOMs Go gerais e o SBOM Go de testes de telemetria; foram preservados.
+
+Os dados de fixtures são incluídos efetivamente; sua reprodução documentada
+não confirma direitos. Os lockfiles e SBOMs descrevem dependências, mas não
+equivalem a fontes vendorizados ou a binários distribuídos. Em particular, os
+notices e objetos nativos de SQLite e AWS-LC continuam dependentes do artefato,
+features e target finais. O exemplo de telemetria continua sem declaração de
+licença própria no manifesto. Esta inspeção é posterior à archive e não integra
+seu conteúdo; não aprova direitos, notices ou distribuição.
+
 ## Manifests e avisos textuais do candidato poison
 
 Inspeção direta de `candidate-20261106-poison-a.tar.gz`, SHA-256
