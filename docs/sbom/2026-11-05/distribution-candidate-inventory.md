@@ -10,6 +10,26 @@ Os SBOMs e notices existentes são evidência preliminar, não aprovação legal
 
 ## Crates Rust
 
+### Candidato local do commit `413e08d`
+
+As archives locais `candidate-413e08d-review-a.tar.gz` e `-b.tar.gz`
+foram geradas a partir do checkout no commit `413e08d`, sem alterações
+rastreadas, e tiveram SHA-256 idêntico
+`ebf437a4983641b104494ea546956ea0e33a640bd225091370f9158b3c8f6657`.
+A verificação conferiu os 119 arquivos do manifesto e dois controles, sem
+membros adicionais, duplicados, não regulares ou caminhos inseguros, antes
+de extrair em diretório isolado novo. A archive inclui 42 arquivos sob `rust/`,
+50 sob `conformance/` e 27 sob `docs/`, incluindo três com quarentena no nome.
+Não há basename exato `LICENSE`, `NOTICE` ou `COPYING`; esta contagem não
+verifica avisos incorporados, proveniência nem obrigações de dependências.
+Na extração, `cargo +1.99.1 test --offline --locked --workspace --all-features`
+passou os testes não ignorados, incluindo 53 do core e 24 do coordenador.
+Foram reutilizados o cache offline e o target do checkout: a execução pode
+reutilizar artefatos compilados e não demonstra compilação limpa nem instalação
+offline em outra máquina. Os testes opt-in de Floci e CP-01 não foram repetidos.
+Esta nota foi escrita após a geração e não integra o candidato examinado.
+Direitos, notices finais e autorização para distribuição permanecem pendentes.
+
 ### Candidato com orçamento conservador
 
 O candidato local de SHA-256
