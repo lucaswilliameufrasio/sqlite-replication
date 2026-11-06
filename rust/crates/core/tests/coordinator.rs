@@ -127,6 +127,61 @@ impl CoordinatorMetrics for AdmissionObservation {
     }
 }
 
+struct LegacyCancellationObservation {
+    gate: Mutex<Option<AdmissionGate>>,
+    cancellation: tokio::sync::watch::Sender<bool>,
+    accepted: Mutex<Option<bool>>,
+}
+
+impl CoordinatorMetrics for LegacyCancellationObservation {
+    fn observe_flush(&self, _duration: Duration, _outcome: FlushOutcome) {
+        self.cancellation.send(true).expect("cancel receiver");
+        let gate = self.gate.lock().expect("gate lock");
+        let accepted = gate.as_ref().expect("shared gate").try_accept().is_ok();
+        *self.accepted.lock().expect("observation lock") = Some(accepted);
+    }
+}
+
+#[tokio::test]
+async fn legacy_receiver_cancellation_does_not_atomically_close_gate() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let (sender, mut cancellation) = tokio::sync::watch::channel(false);
+    let observation = Arc::new(LegacyCancellationObservation {
+        gate: Mutex::new(None),
+        cancellation: sender,
+        accepted: Mutex::new(None),
+    });
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: coordinator_adapter(Some(1)),
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("coordinator")
+    .with_metrics(observation.clone());
+    let gate = coordinator.admission_gate();
+    *observation.gate.lock().expect("gate lock") = Some(gate.clone());
+    let (_sender, mut events) = tokio::sync::mpsc::channel(1);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        coordinator.run_legacy(&mut events, &mut cancellation),
+    )
+    .await
+    .expect("worker exits")
+    .expect("clean cancellation");
+    assert_eq!(
+        *observation.accepted.lock().expect("observation lock"),
+        Some(true),
+        "characterize legacy receiver race"
+    );
+    assert!(gate.try_accept().is_err(), "worker eventually cancels gate");
+}
+
 struct StrictCancelOnOpenAdapter {
     gate: Mutex<Option<AdmissionGate>>,
     accepted_after_cancel: Mutex<bool>,

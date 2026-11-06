@@ -7,6 +7,16 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`legacy_receiver_cancellation_does_not_atomically_close_gate` força outra ordem:
+após o flush abrir o gate, o callback de métricas envia `true` ao receiver
+legado e tenta aceitar uma escrita antes de retornar ao worker. A aceitação
+ocorre; depois o worker observa o receiver e cancela o gate. Trata-se de uma
+caracterização determinística da janela, não de uma correção nem de prova de
+segurança para o adapter. Encaminhar o receiver por uma tarefa assíncrona não
+sincroniza `send` com `try_accept`: para a garantia estrita, produtores e
+controlador devem compartilhar o `AdmissionGate`, chamar `cancel()` diretamente
+e usar `run`; a operação legada continua sem essa garantia.
+
 Na regressão de cancelamento legado, o callback de métricas observa o gate
 após o flush e antes da próxima iteração do worker. Com cancelamento dentro do
 callback de abertura do adapter, o teste observou aceitação antes da mudança;
