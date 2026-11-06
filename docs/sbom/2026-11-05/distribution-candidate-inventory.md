@@ -27,6 +27,12 @@ passou os testes não ignorados, incluindo 53 do core e 24 do coordenador.
 Foram reutilizados o cache offline e o target do checkout: a execução pode
 reutilizar artefatos compilados e não demonstra compilação limpa nem instalação
 offline em outra máquina. Os testes opt-in de Floci e CP-01 não foram repetidos.
+Em execução posterior na mesma extração, o mesmo comando usou um `target`
+novo e separado em `candidate-413e08d-clean-target`: compilou as crates e
+dependências e passou os testes não ignorados, incluindo 53 do core e 24 do
+coordenador. As dependências vieram do cache local offline; Floci e os drills
+CP-01 permaneceram ignorados. Isso valida essa compilação no host, não uma
+instalação offline em outro ambiente nem homologação para distribuição.
 Esta nota foi escrita após a geração e não integra o candidato examinado.
 Direitos, notices finais e autorização para distribuição permanecem pendentes.
 
