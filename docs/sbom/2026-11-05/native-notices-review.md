@@ -97,6 +97,27 @@ O resultado limita-se às primeiras 40 linhas dos arquivos selecionados, não
 examina outros tipos de arquivo, comentários posteriores, dependências de
 teste, outros targets ou código retido em binários; não é conclusão jurídica.
 
+**Ampliação posterior no checkout `97451ac`:** a mesma busca por `copyright`,
+`SPDX` e `license`/`licence` foi executada no conteúdo inteiro dos 443
+`GoFiles` AWS/Smithy selecionados sem `-test`: não houve correspondências além
+da linha 40. Com `go list -deps -test ./replicator`, após deduplicar caminhos,
+foram inspecionados 637 `GoFiles` AWS/Smithy e encontradas 13 linhas em sete
+arquivos: os quatro anteriores mais três arquivos Smithy adicionais:
+
+- `encoding/json/escape.go`: copyright 2016 The Go Authors, licença BSD-style
+  e comentário de cópia modificada de `encoding/json` do Go 1.8.
+- `document/json/encoder.go:283`: copyright 2010 The Go Authors no comentário
+  de `isValidJSONNumber`, com referência ao `encoding/json/encode.go` do Go.
+- `transport/http/protocol/internal/json/internal/stdlib/stdlib.go`: copyright
+  2010 The Go Authors e referência BSD-style; a licença aninhada desse pacote
+  foi identificada acima.
+
+Os três apareceram apenas na seleção ampliada com dependências de teste, não na
+seleção normal examinada. Isso não demonstra que testes sejam distribuídos nem
+que esses arquivos estejam em um binário final. A busca textual não identifica
+origem sem as palavras procuradas e não cobre outros tipos de arquivo, tags,
+plataformas ou versões; a revisão de avisos aplicáveis permanece pendente.
+
 `go version -m` do executável Go lista nove módulos de terceiros: `go-humanize`
 1.1.0, `google/uuid` 1.6.0, `pierrec/lz4/v4` 4.1.22, `bigfft` na revisão
 `24d4a6f8daec`, `golang.org/x/sys` 0.49.0, `modernc.org/libc` 1.80.1,
