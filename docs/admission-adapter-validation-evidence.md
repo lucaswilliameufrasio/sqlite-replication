@@ -7,6 +7,14 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`target_becoming_unknown_before_reopen_keeps_admission_closed` usa um adapter
+de teste que informa TXID 1 inicialmente e passa a informar `None` na última
+consulta de status. Antes da mudança, `flush` retornou sucesso e reabriu; agora
+retorna erro e mantém a admissão fechada. O coordenador também rejeita `None`
+na consulta intermediária após drenagem. Isso não cria uma fonte confiável de
+TXID, não sincroniza mudança posterior à última consulta com reabertura e não
+homologa adapter, quotas ou tratamento de checkpoints.
+
 `stale_target_can_make_flush_skip_checkpointed_sqlite_changes` usa um adapter
 deliberadamente incorreto que informa o TXID durável antigo após dois commits
 SQLite e checkpoint. O `flush` retorna sucesso sem capturar; restaurar o TXID 1

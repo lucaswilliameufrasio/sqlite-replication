@@ -319,6 +319,69 @@ struct UnknownBudgetAdapter {
     known: std::sync::atomic::AtomicBool,
 }
 
+struct VanishingTargetAdapter {
+    observations: std::sync::atomic::AtomicUsize,
+    admissions: Mutex<Vec<bool>>,
+}
+
+impl CoordinatorAdapter for VanishingTargetAdapter {
+    fn observe_txid(&self) -> io::Result<Option<u64>> {
+        let call = self
+            .observations
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if call < 2 {
+            return Ok(Some(1));
+        }
+        Ok(None)
+    }
+
+    fn capture(&self) -> io::Result<CaptureResult> {
+        Err(io::Error::other("unexpected capture"))
+    }
+
+    fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
+        self.admissions
+            .lock()
+            .expect("admission lock")
+            .push(enabled);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn target_becoming_unknown_before_reopen_keeps_admission_closed() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let adapter = Arc::new(VanishingTargetAdapter {
+        observations: std::sync::atomic::AtomicUsize::new(0),
+        admissions: Mutex::new(Vec::new()),
+    });
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: adapter.clone(),
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("coordinator");
+    let error = coordinator
+        .flush()
+        .await
+        .expect_err("unknown final observation must fail closed");
+    assert!(error.to_string().contains("unknown"));
+    assert!(coordinator.admission_gate().try_accept().is_err());
+    assert!(
+        !adapter
+            .admissions
+            .lock()
+            .expect("admission lock")
+            .contains(&true)
+    );
+}
+
 impl CoordinatorAdapter for UnknownBudgetAdapter {
     fn observe_txid(&self) -> io::Result<Option<u64>> {
         Ok(Some(1))

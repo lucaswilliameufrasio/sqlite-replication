@@ -339,6 +339,9 @@ impl Coordinator {
             self.admission.drain().await?;
         }
         let mut status = self.status()?;
+        if status.observed_txid.is_none() {
+            return Err(invalid_data("observed TXID became unknown during flush"));
+        }
         let mut local_txid = status
             .local_durable
             .map(|position| position.txid)
@@ -368,6 +371,9 @@ impl Coordinator {
             }
         }
         status = self.status()?;
+        if status.observed_txid.is_none() {
+            return Err(invalid_data("observed TXID became unknown during flush"));
+        }
         if status
             .local_durable
             .is_none_or(|position| position.txid < target)
