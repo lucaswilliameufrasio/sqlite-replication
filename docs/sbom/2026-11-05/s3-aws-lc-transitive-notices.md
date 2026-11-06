@@ -26,6 +26,17 @@ artefato, não dedução apenas do manifesto.
 
 ## AWS-LC e arquivos presentes
 
+Na revisão posterior do candidato `341d682`, a archive `.crate` de
+`aws-lc-sys 0.47.0` no cache tem SHA-256
+`8bfbe32ac36b3c428696ce315464181bc4029d689fd58e3f2a4e58c252242f52`,
+igual ao checksum do `rust/Cargo.lock` incluído nesse candidato. Uma busca por
+basenames iniciados por `LICENSE`, `NOTICE` ou `COPYING`, sem distinção de
+maiúsculas, nos 2.090 membros da archive encontrou os três arquivos e hashes
+descritos abaixo. Isso identifica a cópia do registry examinada, mas não
+exclui avisos embutidos ou com outros nomes nem prova que os componentes sejam
+vinculados a um binário específico. A archive da dependência não está incluída
+no candidato-fonte; a revisão dos textos e direitos aplicáveis permanece aberta.
+
 O manifesto de `aws-lc-sys 0.47.0` declara
 `ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND
 (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)`. Seu `LICENSE`
