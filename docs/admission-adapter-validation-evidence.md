@@ -7,6 +7,13 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`target_becoming_unknown_after_drain_keeps_admission_closed` cobre a consulta
+intermediária adicionada em `9295dba`: um adapter de teste informa alvo conhecido
+na entrada e desconhecido após a drenagem vazia. O flush retorna erro, o gate
+rejeita ingresso e o adapter recebe apenas o fechamento. Não há escritor ativo,
+checkpoint concorrente ou integração de produção nesse ensaio; a fonte de
+TXID e a janela depois da última consulta continuam sem solução homologada.
+
 `unknown_observed_target_reports_degraded_health` demonstra que o status local
 era `Healthy` quando o adapter de teste retornava `None` e os limites ainda não
 haviam expirado. Agora `health()` reporta `Degraded` com categoria `Adapter`;

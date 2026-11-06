@@ -321,6 +321,7 @@ struct UnknownBudgetAdapter {
 
 struct VanishingTargetAdapter {
     observations: std::sync::atomic::AtomicUsize,
+    unknown_at: usize,
     admissions: Mutex<Vec<bool>>,
 }
 
@@ -329,7 +330,7 @@ impl CoordinatorAdapter for VanishingTargetAdapter {
         let call = self
             .observations
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        if call < 2 {
+        if call < self.unknown_at {
             return Ok(Some(1));
         }
         Ok(None)
@@ -357,6 +358,7 @@ async fn target_becoming_unknown_before_reopen_keeps_admission_closed() {
     sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
     let adapter = Arc::new(VanishingTargetAdapter {
         observations: std::sync::atomic::AtomicUsize::new(0),
+        unknown_at: 2,
         admissions: Mutex::new(Vec::new()),
     });
     let coordinator = Coordinator::new(CoordinatorConfig {
@@ -379,6 +381,44 @@ async fn target_becoming_unknown_before_reopen_keeps_admission_closed() {
             .lock()
             .expect("admission lock")
             .contains(&true)
+    );
+}
+
+#[tokio::test]
+async fn target_becoming_unknown_after_drain_keeps_admission_closed() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let adapter = Arc::new(VanishingTargetAdapter {
+        observations: std::sync::atomic::AtomicUsize::new(0),
+        unknown_at: 1,
+        admissions: Mutex::new(Vec::new()),
+    });
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: adapter.clone(),
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("coordinator");
+    let error = coordinator
+        .flush()
+        .await
+        .expect_err("unknown target after drain must fail closed");
+    assert!(error.to_string().contains("unknown"));
+    assert_eq!(
+        adapter
+            .observations
+            .load(std::sync::atomic::Ordering::SeqCst),
+        2
+    );
+    assert!(coordinator.admission_gate().try_accept().is_err());
+    assert_eq!(
+        *adapter.admissions.lock().expect("admission lock"),
+        vec![false]
     );
 }
 
