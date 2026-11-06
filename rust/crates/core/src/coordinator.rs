@@ -14,6 +14,7 @@ use crate::{AdmissionGate, CaptureResult, sync_to_s3};
 
 pub trait CoordinatorAdapter: Send + Sync + 'static {
     /// Returns the adapter's observed capture target, or `None` if unknown.
+    /// A known TXID must be nonzero.
     /// This must represent outstanding committed changes, not merely the last
     /// locally durable TXID: flush skips capture when the target is already
     /// durable. WAL checkpoints and image reconciliation can change the mapping
@@ -131,6 +132,13 @@ pub struct Health {
 }
 
 impl Coordinator {
+    fn observe_txid(&self) -> io::Result<Option<u64>> {
+        match self.config.adapter.observe_txid()? {
+            Some(0) => Err(invalid_data("observed TXID must be nonzero")),
+            observed => Ok(observed),
+        }
+    }
+
     pub fn new(config: CoordinatorConfig) -> io::Result<Self> {
         if config.repository_root.as_os_str().is_empty()
             || config.database_path.as_os_str().is_empty()
@@ -181,8 +189,6 @@ impl Coordinator {
 
     fn status_internal(&self) -> Result<Status, (ErrorCategory, io::Error)> {
         let observed_txid = self
-            .config
-            .adapter
             .observe_txid()
             .map_err(|error| (ErrorCategory::Adapter, error))?;
         let state = recover(&self.config.repository_root, &[])
@@ -300,7 +306,7 @@ impl Coordinator {
     async fn flush_locked(&self, cancellation: Option<&watch::Receiver<bool>>) -> io::Result<()> {
         let _guard = self.flush_lock.lock().await;
         self.admission.close()?;
-        let target = match self.config.adapter.observe_txid() {
+        let target = match self.observe_txid() {
             Ok(Some(target)) => target,
             Ok(None) => {
                 let close_result = self

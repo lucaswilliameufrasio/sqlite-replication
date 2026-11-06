@@ -7,6 +7,13 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`zero_observed_txid_is_rejected_and_keeps_admission_closed` reproduziu um
+adapter de teste que informava TXID zero: antes da mudança, `status` o aceitava.
+O coordenador agora rejeita zero nas observações usadas por `status` e `flush`,
+reporta saúde degradada da categoria adapter e mantém a admissão fechada na
+falha de flush. O teste não valida a autenticidade de TXIDs positivos nem
+resolve a observação concorrente ou a homologação do adapter.
+
 `target_becoming_unknown_after_drain_keeps_admission_closed` cobre a consulta
 intermediária adicionada em `9295dba`: um adapter de teste informa alvo conhecido
 na entrada e desconhecido após a drenagem vazia. O flush retorna erro, o gate
