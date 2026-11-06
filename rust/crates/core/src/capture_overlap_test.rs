@@ -15,6 +15,140 @@ use crate::{
 
 struct ObservedGate(Arc<AtomicUsize>);
 
+#[derive(Default)]
+struct TestApplicationState {
+    closed: bool,
+    writers: usize,
+}
+
+#[derive(Clone, Default)]
+struct DrainingApplicationGate(Arc<(Mutex<TestApplicationState>, Condvar)>);
+
+impl DrainingApplicationGate {
+    fn try_enter(&self) -> io::Result<()> {
+        let mut state = self.0.0.lock().expect("application gate");
+        if state.closed {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, "gate closed"));
+        }
+        state.writers += 1;
+        Ok(())
+    }
+
+    fn leave(&self) {
+        let mut state = self.0.0.lock().expect("application gate");
+        state.writers -= 1;
+        self.0.1.notify_all();
+    }
+}
+
+impl WriteGate for DrainingApplicationGate {
+    type Permit = Self;
+
+    fn acquire(&self) -> io::Result<Self::Permit> {
+        let mut state = self.0.0.lock().expect("application gate");
+        state.closed = true;
+        self.0.1.notify_all();
+        let (state, timeout) = self
+            .0
+            .1
+            .wait_timeout_while(state, Duration::from_secs(5), |state| state.writers != 0)
+            .expect("drain");
+        if timeout.timed_out() && state.writers != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "writers did not drain",
+            ));
+        }
+        Ok(self.clone())
+    }
+}
+
+impl WritePermit for DrainingApplicationGate {
+    fn release(self) -> io::Result<()> {
+        let mut state = self.0.0.lock().expect("application gate");
+        state.closed = false;
+        self.0.1.notify_all();
+        Ok(())
+    }
+}
+
+#[test]
+fn budgeted_public_capture_drains_application_writer_before_capture() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    let connection = Connection::open(&database).expect("source");
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base');").expect("initialize");
+    crate::snapshot(&database, &repository).expect("snapshot");
+    let admission = crate::AdmissionGate::new();
+    admission.open().expect("open admission");
+    let budget = ConservativeBudget::new(admission, 100).expect("budget");
+    budget
+        .reconcile_with(|| Ok(Some(0)))
+        .expect("logical baseline");
+    let gate = DrainingApplicationGate::default();
+    gate.try_enter().expect("writer admitted");
+    let reservation = budget.try_reserve(Some(1)).expect("reserve");
+    let (result_tx, result_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let gate_for_capture = gate.clone();
+        let budget_for_capture = budget.clone();
+        let database = &database;
+        let repository = &repository;
+        scope.spawn(move || {
+            let result = crate::capture_once_with_budget(
+                database,
+                repository,
+                &gate_for_capture,
+                &budget_for_capture,
+            );
+            result_tx.send(result).expect("capture result");
+        });
+        let state = gate.0.0.lock().expect("application gate");
+        let (state, timeout) = gate
+            .0
+            .1
+            .wait_timeout_while(state, Duration::from_secs(5), |state| !state.closed)
+            .expect("wait for close");
+        assert!(!timeout.timed_out(), "capture closed application gate");
+        drop(state);
+        assert_eq!(
+            gate.try_enter().expect_err("new writer rejected").kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(result_rx.try_recv().is_err());
+        connection
+            .execute("INSERT INTO data VALUES ('committed')", [])
+            .expect("commit");
+        reservation.settle(Some(0)).expect("logical settlement");
+        gate.leave();
+        let result = result_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("capture completed")
+            .expect("capture");
+        assert_eq!(result.txid, 2);
+    });
+    assert!(
+        budget.try_reserve(Some(1)).is_err(),
+        "capture invalidates occupancy"
+    );
+    budget
+        .reconcile_with(|| Ok(Some(1)))
+        .expect("logical reconciliation");
+    budget
+        .try_reserve(Some(1))
+        .expect("reserve after reconciliation")
+        .settle(Some(0))
+        .expect("settle");
+    let restored = directory.path().join("restored.sqlite");
+    crate::restore_to_target(&repository, &restored, RestoreTarget::Txid(2)).expect("restore");
+    let count: i64 = Connection::open(restored)
+        .expect("restored")
+        .query_row("SELECT COUNT(*) FROM data", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(count, 2);
+}
+
 impl WriteGate for ObservedGate {
     type Permit = Self;
 

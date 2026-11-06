@@ -7,6 +7,15 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`budgeted_public_capture_drains_application_writer_before_capture` usa um gate
+de aplicação **de teste** que fecha a admissão e drena um escritor já admitido.
+Enquanto o gate está fechado, outro ingresso é recusado; o escritor confirma uma
+linha SQLite e liquida sua reserva antes de liberar o gate. A captura pública
+então publica LTX, invalida o orçamento e o restore verifica as duas linhas;
+uma reconciliação lógica permite nova reserva. A sincronização e custos são
+de teste: não é adapter de produção, prova de todos os produtores, limite de
+WAL/spool/staging ou garantia contra processos externos.
+
 `public_budgeted_capture_release_error_preserves_durable_data_and_unknown_occupancy`
 injeta falha de liberação do `WriteGate` após captura pública cooperativa real:
 o erro informa que a captura foi durável, o orçamento recusa reservas por
