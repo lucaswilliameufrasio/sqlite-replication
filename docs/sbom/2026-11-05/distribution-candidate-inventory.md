@@ -10,6 +10,35 @@ Os SBOMs e notices existentes são evidência preliminar, não aprovação legal
 
 ## Crates Rust
 
+### Candidato local do commit `341d682`
+
+As archives locais `candidate-341d682-a.tar.gz` e `-b.tar.gz`, geradas a
+partir do commit `341d682` sem alterações rastreadas, têm SHA-256 idêntico
+`1dc5b78830af6cbbcbbabbc0c713d9eac528690e61c636913dd3f1d9e038b1ab`.
+Os 119 hashes do manifesto e dois arquivos de controle foram conferidos antes
+da extração em diretório novo, sem membros extras, duplicados, não regulares ou
+caminhos inseguros. São 42 arquivos Rust, 50 sob `conformance/` e 27 sob
+`docs/`, incluindo três evidências de quarentena. Não há basename exatamente
+`LICENSE`, `NOTICE` ou `COPYING`; isso não exclui avisos embutidos ou outros
+nomes e não resolve direitos. A nota é posterior à archive e não a integra.
+O pacote é local, não aprovado para distribuição.
+
+Uma primeira execução Cargo reutilizando o `target` do candidato `413e08d`
+terminou com sucesso, porém executou apenas 53 testes não ignorados do core e
+24 do coordenador: os binários anteriores, sem os testes novos esperados (54 e
+29), foram reutilizados. Esse resultado **não valida** os fontes da archive
+`341d682`. Archives normalizadas podem preservar timestamps inadequados para
+detecção de mudanças pelo Cargo; ao testar extrações distintas, usar `target`
+novo e separado e conferir os testes efetivamente executados.
+
+Em seguida, `cargo +1.99.1 test --offline --locked --workspace --all-features`
+na extração usou o novo diretório `candidate-341d682-clean-target` e compilou
+os fontes dessa extração. Passaram 54 testes não ignorados do core e 29 do
+coordenador, incluindo os testes novos. As dependências vieram do cache local;
+testes opt-in Floci e drills CP-01 permaneceram ignorados. Não é demonstração
+de instalação offline em outro host, homologação de produção ou aprovação de
+direitos e distribuição.
+
 ### Candidato local do commit `413e08d`
 
 As archives locais `candidate-413e08d-review-a.tar.gz` e `-b.tar.gz`
