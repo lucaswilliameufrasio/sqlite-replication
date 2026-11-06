@@ -261,6 +261,10 @@ impl Coordinator {
             health.local = ComponentState::Degraded;
             health.local_error = ErrorCategory::Backpressure;
         }
+        if status.observed_txid.is_none() {
+            health.local = ComponentState::Degraded;
+            health.local_error = ErrorCategory::Adapter;
+        }
         if let Some(remote) = &self.config.remote {
             let key = remote_key(&remote.prefix, "_meta/repository.json");
             if remote.store.head(&key).await.is_err() {

@@ -6,8 +6,8 @@ use std::time::Duration;
 use rusqlite::Connection;
 use sqlite_replication_core::{
     AdmissionGate, CapacityGate, CaptureResult, ComponentState, ConservativeBudget, Coordinator,
-    CoordinatorAdapter, CoordinatorConfig, CoordinatorMetrics, FlushOutcome, Limits, RestoreTarget,
-    WriteGate, WritePermit,
+    CoordinatorAdapter, CoordinatorConfig, CoordinatorMetrics, ErrorCategory, FlushOutcome, Limits,
+    RestoreTarget, WriteGate, WritePermit,
 };
 
 struct BlockingCaptureAdapter {
@@ -432,6 +432,28 @@ async fn unknown_adapter_budget_fails_closed_until_verified_retry() {
         .await
         .expect("retry after budget becomes known");
     assert!(gate.try_accept().is_ok());
+}
+
+#[tokio::test]
+async fn unknown_observed_target_reports_degraded_health() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: coordinator_adapter(None),
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("coordinator");
+    let health = coordinator.health().await;
+    assert_eq!(health.local, ComponentState::Degraded);
+    assert_eq!(health.local_error, ErrorCategory::Adapter);
+    assert!(coordinator.flush().await.is_err());
+    assert!(coordinator.admission_gate().try_accept().is_err());
 }
 
 impl CoordinatorAdapter for TestAdapter {

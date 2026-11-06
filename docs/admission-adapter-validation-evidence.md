@@ -7,6 +7,14 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`unknown_observed_target_reports_degraded_health` demonstra que o status local
+era `Healthy` quando o adapter de teste retornava `None` e os limites ainda não
+haviam expirado. Agora `health()` reporta `Degraded` com categoria `Adapter`;
+o teste verifica também que `flush` falha e o gate continua fechado. Quando
+há simultaneamente limite excedido e alvo desconhecido, a categoria `Adapter`
+tem prioridade no único campo de erro local. Isso não cria uma fonte confiável
+de TXID, não sincroniza observação com checkpoints e não homologa o adapter.
+
 `target_becoming_unknown_before_reopen_keeps_admission_closed` usa um adapter
 de teste que informa TXID 1 inicialmente e passa a informar `None` na última
 consulta de status. Antes da mudança, `flush` retornou sucesso e reabriu; agora
