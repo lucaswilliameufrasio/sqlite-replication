@@ -3,6 +3,10 @@
 - **Status:** decisões de contrato aceitas; coordenador explícito implementado em Go/Rust; homologação de adapters, stress/cancelamento e telemetria pendentes
 - **Data:** 2026-10-23
 
+> A decisão posterior [ADR 0015](0015-flush-barrier.md) substitui a semântica
+> de alvo amostrado de `Flush` descrita abaixo. Este documento preserva o
+> histórico; a barreira aprovada ainda precisa ser implementada e homologada.
+
 ## Contexto
 
 Storage lento/indisponível pode crescer WAL e spool sem limite. Concurrency de
