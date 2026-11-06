@@ -7,6 +7,13 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`public_capture_rejects_active_producer_then_recovers` mantém uma reserva ativa
+em outra thread após um commit SQLite. A captura pública cooperativa retorna
+`WouldBlock`, libera o gate de teste e não permite restaurar TXID 2; após a
+liquidação, o retry captura e restaura o commit e invalida a ocupação lógica.
+O `WriteGate` do ensaio apenas contabiliza liberações e não bloqueia escritores;
+os custos são artificiais. Não demonstra quotas nem adapter de produção.
+
 `capture_once_with_budget` é uma entrada experimental da captura pública: obtém
 o `WriteGate` antes de `with_occupancy_mutation` e o libera após a saída deste,
 inclusive quando a captura retorna erro. O teste de integração

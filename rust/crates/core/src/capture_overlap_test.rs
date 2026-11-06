@@ -10,8 +10,96 @@ use tokio::sync::oneshot;
 use super::{FaultPoint, capture_once_with_hook};
 use crate::{
     CaptureResult, ConservativeBudget, Coordinator, CoordinatorAdapter, CoordinatorConfig, Limits,
-    RestoreTarget,
+    RestoreTarget, WriteGate, WritePermit,
 };
+
+struct ObservedGate(Arc<AtomicUsize>);
+
+impl WriteGate for ObservedGate {
+    type Permit = Self;
+
+    fn acquire(&self) -> io::Result<Self::Permit> {
+        Ok(Self(self.0.clone()))
+    }
+}
+
+impl WritePermit for ObservedGate {
+    fn release(self) -> io::Result<()> {
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[test]
+fn public_capture_rejects_active_producer_then_recovers() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    let connection = Connection::open(&database).expect("source");
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base');").expect("initialize");
+    crate::snapshot(&database, &repository).expect("snapshot");
+    let admission = crate::AdmissionGate::new();
+    admission.open().expect("open admission");
+    let budget = ConservativeBudget::new(admission, 100).expect("budget");
+    budget
+        .reconcile_with(|| Ok(Some(0)))
+        .expect("logical baseline");
+    let releases = Arc::new(AtomicUsize::new(0));
+    let gate = ObservedGate(releases.clone());
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    let (settle_tx, settle_rx) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let producer_budget = budget.clone();
+        let producer_database = &database;
+        scope.spawn(move || {
+            let reservation = producer_budget.try_reserve(Some(1)).expect("reserve");
+            let writer = Connection::open(producer_database).expect("writer");
+            writer
+                .execute("INSERT INTO data VALUES ('committed')", [])
+                .expect("commit");
+            ready_tx.send(()).expect("producer ready");
+            settle_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("settle requested");
+            reservation.settle(Some(0)).expect("logical settlement");
+        });
+        ready_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("producer committed");
+        let error = crate::capture_once_with_budget(&database, &repository, &gate, &budget)
+            .expect_err("active reservation rejects mutation");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
+        assert!(
+            crate::restore_to_target(
+                &repository,
+                directory.path().join("premature.sqlite"),
+                RestoreTarget::Txid(2),
+            )
+            .is_err()
+        );
+        settle_tx.send(()).expect("allow settlement");
+    });
+    let result = crate::capture_once_with_budget(&database, &repository, &gate, &budget)
+        .expect("retry capture");
+    assert_eq!(result.txid, 2);
+    assert_eq!(releases.load(Ordering::SeqCst), 2);
+    assert!(
+        budget.try_reserve(Some(1)).is_err(),
+        "capture invalidates occupancy"
+    );
+    let restored = directory.path().join("restored.sqlite");
+    crate::restore_to_target(&repository, &restored, RestoreTarget::Txid(2)).expect("restore");
+    let value: String = Connection::open(restored)
+        .expect("restored")
+        .query_row(
+            "SELECT value FROM data ORDER BY rowid DESC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("value");
+    assert_eq!(value, "committed");
+}
 
 struct BudgetCaptureAdapter {
     database: PathBuf,
