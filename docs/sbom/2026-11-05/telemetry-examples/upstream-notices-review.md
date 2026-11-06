@@ -19,6 +19,20 @@ no registry declaram `Apache-2.0`, mas suas cópias locais não possuem arquivo
 repositório não comprova sozinho que o pacote publicado contém os mesmos bytes
 ou cobre todo código de terceiros; revisar o pacote e o artefato final.
 
+Após o download para o teste do exemplo do candidato `413e08d`, as duas
+archives `.crate` do cache foram conferidas diretamente contra o `Cargo.lock`
+incluído no candidato: `opentelemetry` 0.33.1 tem SHA-256
+`8c1f1a6ac9c875a4941e4c7c085b61e8f4daa326de03b4701768c3491a6ad9ee`
+e 50 membros; `opentelemetry_sdk` 0.33.1 tem SHA-256
+`372a912db2974d1990207006fd0e3aa0ef3fd4ad3be43c65cfaadf2206866061`
+e 95 membros. Os dois hashes coincidem com o lockfile. A busca por basename
+iniciado por `LICENSE`, `NOTICE` ou `COPYING`, sem distinção de maiúsculas,
+em todos os caminhos dessas duas archives não encontrou correspondências.
+Isso amplia a busca anterior limitada à raiz; não exclui avisos embutidos ou
+com outros nomes nem comprova equivalência integral com a árvore upstream. Os
+pacotes baixados não integram a archive-fonte do candidato; a revisão jurídica
+e dos textos para o artefato final permanece pendente.
+
 No exemplo Rust, `opentelemetry` é dependência normal; `opentelemetry_sdk` é
 dev-dependency e não consta como tal no SBOM `rust-telemetry.cdx.json`. Os testes
 usam seu exporter em memória. A aplicabilidade ao pacote depende de distribuir
