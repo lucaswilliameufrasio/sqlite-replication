@@ -2,6 +2,16 @@
 
 > **Versão:** 1.0 — 21/10/2026  
 > **Status on 2026-11-05:** M0 partial, M1 verified, CP-01 approved only for Linux x86-64; M3 implemented/locally verified, M4 implemented/locally verified with operational closure pending; M5 coordinator implemented with local/Floci gates, but production adapters, stress and observability remain pending; M6 in progress.
+
+> **Retomada e escopo acordados em 2026-11-06:** concluir os critérios do plano
+> executáveis localmente e conferir as evidências mais recentes antes de marcar
+> cada marco como concluído. O mantenedor fará a eventual validação de S3/R2
+> reais; ela não integra o gate local. O mantenedor confirmou ter autorização
+> para distribuir as contribuições e fixtures sob Apache-2.0. A revisão técnica
+> de notices permanece necessária; essa confirmação não autoriza criar a licença
+> final, fazer push, tag, release ou publicação. Homologação de produção continua
+> separada da validação local. Os registros datados abaixo são históricos e não
+> devem prevalecer automaticamente sobre evidências posteriores.
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.

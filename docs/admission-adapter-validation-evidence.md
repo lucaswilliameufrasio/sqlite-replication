@@ -1,5 +1,11 @@
 # Adapters de admissão: levantamento e lacunas
 
+> **Nota posterior:** os relatos abaixo preservam etapas históricas. A ADR 0015
+> substituiu o alvo previamente observado pela captura após fechamento e
+> drenagem; os testes citados de alvo desconhecido foram alterados para o novo
+> contrato. O gate compartilhado Go foi adicionado em `851fcbd`. Essas mudanças
+> não homologam adapters de produção nem quotas físicas.
+
 Inspeção estática inicial do checkout em 2026-11-05; os testes dessa data são
 evidências históricas. Em 2026-11-06 o usuário aprovou a direção da ADR 0011 e
 foi introduzido o gate compartilhado Rust; os resultados posteriores constam
