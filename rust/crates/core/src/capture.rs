@@ -1083,6 +1083,39 @@ mod tests {
     }
 
     #[test]
+    fn checkpointed_commits_can_collapse_into_one_reconciliation_txid() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let connection = Connection::open(&source).expect("open source");
+        connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT);").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        connection
+            .execute("INSERT INTO records VALUES ('first')", [])
+            .expect("first commit");
+        connection
+            .execute("INSERT INTO records VALUES ('second')", [])
+            .expect("second commit");
+        let (busy, _, _): (i64, i64, i64) = connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("checkpoint");
+        assert_eq!(busy, 0);
+        let captured = capture_once(&source, &repository, 123).expect("capture reconciled image");
+        assert_eq!(captured.state.database.txid, 2);
+        assert_eq!(captured.transactions.len(), 1);
+        let restored = directory.path().join("restored.sqlite");
+        crate::restore_to_target(&repository, &restored, crate::RestoreTarget::Txid(2))
+            .expect("restore");
+        let count: i64 = Connection::open(restored)
+            .expect("open restore")
+            .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 2);
+    }
+
+    #[test]
     fn capture_serializes_unmanaged_writer_and_reconciles_autocheckpoint() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let source_path = directory.path().join("source.sqlite");

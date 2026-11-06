@@ -7,6 +7,16 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`checkpointed_commits_can_collapse_into_one_reconciliation_txid` caracteriza
+uma restrição para obter o alvo do coordenador: dois commits SQLite separados
+após o snapshot, seguidos por `wal_checkpoint(TRUNCATE)` bem-sucedido antes da
+captura, resultaram em um único delta de reconciliação, TXID 2; o restore contém
+as duas linhas. A tradução normal atribui TXIDs por commit de WAL, mas a
+reconciliação de imagem pode consolidá-los. Portanto contar commits observados
+no WAL não determina, por si só, o TXID futuro da captura; mudanças de geração,
+checkpoint e concorrência exigem protocolo adicional. Este teste não implementa
+um adapter nem estabelece uma solução para a observação do alvo.
+
 `cooperative_capture_waits_for_real_ltx_measurement` agora exercita a API
 pública `capture_once_with_budget`, não apenas o wrapper interno. Com a medição
 de LTX pausada sob o mutex, o gate de teste sinaliza aquisição e a captura não
