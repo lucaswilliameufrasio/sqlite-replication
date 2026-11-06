@@ -891,6 +891,28 @@ Permitir desenvolvimento independente de adapters S3 e codecs durante a prova de
 
 ### Correção
 
+#### Auditoria da retomada — 2026-11-06
+
+Esta matriz é um mapa inicial de evidências, não substitui os critérios abaixo
+nem declara o projeto concluído. A revisão foi feita no checkout `89d97ca`;
+os commits de implementação referenciados são anteriores a ele.
+
+| Área | Situação e evidência | Falta para o fechamento |
+|---|---|---|
+| Barreira cooperativa Go/Rust | Implementada em `da84d1d`/`738df2f`; teste Rust com SQLite, ACK TXID 2 e restore no Floci em `b68fd09`; gate Go compartilhado em `851fcbd` | Validar integração com produtores reais e limites; `Cancel` e `TryAccept` devem usar o mesmo gate |
+| Concorrência Go da barreira | `go test -race ./replicator -run '^(TestAdmissionGate\|TestCooperativeBarrierDrainsRealSQLiteWriter)' -count=3` passou no checkout `89d97ca` | O teste não comprova quotas físicas nem proteção de escritores externos |
+| CP-01 | Drills ENOSPC, FUSE e QEMU descritos em `docs/cp01-review-summary.md` passaram nas combinações locais registradas | O plano chama o escopo inicial de aprovado, mas o resumo ainda exige revisão explícita do mantenedor; não inferir aprovação final dessa divergência. Sem garantia de perda física de energia/cache |
+| Backpressure | `ConservativeBudget` Rust e gate de admissão existem; são mecanismos experimentais e process-local | A quota física exigida em Operação e integração não foi comprovada; custos, reconciliação e cobertura dos produtores precisam de integração real |
+| Compactação e GC | Testes locais e Floci documentados em M4 | API operacional pública e seus contratos/gates continuam pendentes conforme a matriz M4 |
+| Supply chain e distribuição | SBOMs e revisões preliminares estão em `docs/sbom/2026-11-05/`; o mantenedor confirmou direitos das contribuições e fixtures | Concluir revisão dos notices e artefatos efetivamente distribuídos; candidato `341d682` antecede as alterações atuais. Licença final e publicação não estão autorizadas |
+| Provedor real | Exclusão definida pelo mantenedor nesta retomada | Validação AWS/R2 será feita pelo mantenedor e não bloqueia o gate local; Floci não a substitui |
+
+O `make test` integral passou no trabalho anterior ao commit `851fcbd`, com as
+alterações do gate Go presentes, incluindo Floci e conformance. A auditoria
+acima não reexecutou o gate integral nem garante que todos os critérios globais
+foram satisfeitos. O executor local é Bash; shell de login Fish; daemon Docker
+rootless foi verificado, sem troca de contexto persistente.
+
 - [ ] Dois motores realmente independentes compilam sem código de replicação do Litestream ou de outro port.
 - [ ] SQLite suportado é validado ao iniciar; configurações/combinações inseguras falham explicitamente.
 - [ ] Snapshot, WAL incremental, persistência, restauração e compactação têm testes automatizados por linguagem.
