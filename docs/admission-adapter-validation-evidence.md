@@ -7,6 +7,14 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+Na integração com a API pública, `capture_once` adquire e libera o `WriteGate`
+dentro da chamada; se ela for envolvida por `with_occupancy_mutation`, os dois
+callbacks ocorrem enquanto o mutex do orçamento está retido. Um callback que
+reentre no mesmo orçamento ou aguarde um produtor bloqueado nele pode causar
+deadlock. A liberação do `WriteGate` também não reconcilia o orçamento nem
+impede escritas que o contornem. A documentação da API agora explicita essa
+ordem; não é um teste de deadlock, adapter de produção ou quota homologada.
+
 `fresh_budget_requires_measurement_after_coordinator_recreation` descarta e
 recria coordenador, adapter e orçamento no mesmo processo sobre o mesmo banco e
 repositório. A nova instância recusa reservas antes de medir e após falha de

@@ -100,6 +100,12 @@ impl ConservativeBudget {
     /// invalidated before the operation, including if it fails. No active
     /// reservations may exist. The callback must not reenter this budget.
     /// This does not coordinate other instances or uncooperative operations.
+    ///
+    /// The mutex remains held for the entire callback. In particular, wrapping
+    /// `capture_once` also holds it while the supplied `WriteGate` is acquired
+    /// and released. Those callbacks must not call this budget or wait for a
+    /// writer that needs it, or they can deadlock. Releasing that gate does not
+    /// reconcile this budget or prevent writers that bypass it from proceeding.
     pub fn with_occupancy_mutation<T, F>(&self, operation: F) -> io::Result<T>
     where
         F: FnOnce() -> io::Result<T>,
