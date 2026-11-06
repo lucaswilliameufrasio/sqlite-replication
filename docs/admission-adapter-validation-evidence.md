@@ -7,6 +7,12 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+O teste `budgeted_public_capture_drains_application_writer_before_capture` foi
+ampliado para um segundo ciclo: após reabrir o gate de aplicação de teste, o
+orçamento desconhecido ainda rejeita a reserva; após reconciliação lógica, uma
+segunda escrita SQLite é capturada e restaurada em TXID 3. O gate, os custos e a
+medição continuam de teste; não são adapter homologado nem limites de recursos.
+
 `failed_capture_invalidates_release_callback_reconciliation` reproduziu uma
 falha de captura seguida de callback de liberação que reconciliava o orçamento:
 antes da mudança, novas reservas eram aceitas. A captura cooperativa agora

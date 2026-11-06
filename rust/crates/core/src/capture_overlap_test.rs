@@ -128,25 +128,34 @@ fn budgeted_public_capture_drains_application_writer_before_capture() {
             .expect("capture");
         assert_eq!(result.txid, 2);
     });
+    gate.try_enter().expect("application gate reopened");
     assert!(
         budget.try_reserve(Some(1)).is_err(),
         "capture invalidates occupancy"
     );
+    gate.leave();
     budget
         .reconcile_with(|| Ok(Some(1)))
         .expect("logical reconciliation");
-    budget
+    gate.try_enter().expect("second writer admitted");
+    let second = budget
         .try_reserve(Some(1))
-        .expect("reserve after reconciliation")
-        .settle(Some(0))
-        .expect("settle");
+        .expect("reserve after reconciliation");
+    connection
+        .execute("INSERT INTO data VALUES ('second')", [])
+        .expect("second commit");
+    second.settle(Some(0)).expect("logical settlement");
+    gate.leave();
+    let next = crate::capture_once_with_budget(&database, &repository, &gate, &budget)
+        .expect("capture second writer");
+    assert_eq!(next.txid, 3);
     let restored = directory.path().join("restored.sqlite");
-    crate::restore_to_target(&repository, &restored, RestoreTarget::Txid(2)).expect("restore");
+    crate::restore_to_target(&repository, &restored, RestoreTarget::Txid(3)).expect("restore");
     let count: i64 = Connection::open(restored)
         .expect("restored")
         .query_row("SELECT COUNT(*) FROM data", [], |row| row.get(0))
         .expect("count");
-    assert_eq!(count, 2);
+    assert_eq!(count, 3);
 }
 
 impl WriteGate for ObservedGate {
