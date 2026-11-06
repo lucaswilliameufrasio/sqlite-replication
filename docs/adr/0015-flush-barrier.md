@@ -31,7 +31,9 @@ Os detalhes de cancelamento, integração de adapter, compatibilidade de drivers
 limites conservadores exigem implementação e testes; não são homologados por
 esta decisão. O coordenador Rust implementa a sequência de barreira; testes
 específicos com SQLite real cobrem checkpoint e drenagem de escrita aceita.
-A integração remota desses testes e um adapter de produção permanecem pendentes.
+Um teste Rust adicional captura uma escrita SQLite checkpointada, confirma o
+TXID 2 no Floci isolado e restaura esse valor do remoto. Isso não homologa
+provedores S3/R2 reais nem um adapter de produção.
 O coordenador Go também fecha a admissão, aguarda o novo callback obrigatório
 `DrainWrites`, captura e confere o TXID retornado contra o spool. A aplicação
 deve implementar a drenagem de todos os escritores aceitos; um callback vazio
