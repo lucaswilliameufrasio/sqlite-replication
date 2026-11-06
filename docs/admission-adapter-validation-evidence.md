@@ -7,6 +7,16 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+Na investigação da API legada, observar `try_accept` apenas no callback de
+fechamento após o cancelamento não detectou a janela de reabertura: nesse
+instante o coordenador já havia cancelado o gate. Uma verificação experimental
+nesse ponto passou mesmo com a implementação legada inalterada; portanto não
+serve como teste de regressão para a corrida entre o callback de abertura e a
+observação do receiver. O teste existente continua caracterizando a transição
+do adapter para `true`, sem demonstrar aceitação de um produtor nessa janela.
+Não houve correção da corrida; a garantia estrita continua exigindo `run` e
+cancelamento pelo gate compartilhado.
+
 `failed_reconciliation_keeps_admission_closed_after_real_capture` usa um
 adapter exclusivamente de teste que reconcilia antes de reabrir o gate.
 Após um commit cooperativo e captura SQLite/LTX real, uma falha de medição
