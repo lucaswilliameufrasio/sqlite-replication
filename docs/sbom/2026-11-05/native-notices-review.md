@@ -138,6 +138,16 @@ targets ou o exemplo de telemetria com `go.mod` separado. Não substitui a
 conferência dos textos e atribuições aplicáveis ao artefato efetivamente
 escolhido, a comparação com upstream ou revisão jurídica.
 
+**Avisos embutidos — checkout `6494b34`:** para a mesma seleção ampliada de
+testes, uma busca sem distinção de maiúsculas por `copyright`, `SPDX`,
+`license` ou `licence` no conteúdo inteiro dos `GoFiles` selecionados dos sete
+módulos examinou 146 caminhos únicos: 22 de `config`, 22 de `credentials`, 15
+de `feature/ec2/imds`, 27 de `service/signin`, 19 de `service/ssooidc`, 18 de
+`service/sso` e 23 de `service/sts`. Não houve linhas correspondentes. Essa
+busca não cobre arquivos não selecionados, outros tipos de arquivos, avisos que
+não usem essas palavras nem origem de código; não elimina a necessidade de
+revisar a licença e as atribuições efetivamente aplicáveis.
+
 `go version -m` do executável Go lista nove módulos de terceiros: `go-humanize`
 1.1.0, `google/uuid` 1.6.0, `pierrec/lz4/v4` 4.1.22, `bigfft` na revisão
 `24d4a6f8daec`, `golang.org/x/sys` 0.49.0, `modernc.org/libc` 1.80.1,
