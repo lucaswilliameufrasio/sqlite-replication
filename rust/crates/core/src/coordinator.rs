@@ -459,6 +459,7 @@ impl Coordinator {
     /// Runs an initial reconciliation with a legacy independent cancellation
     /// receiver. This receiver alone cannot guarantee strict write admission;
     /// use `run` and the shared gate for cooperating writers.
+    #[deprecated(note = "use run with AdmissionGate::cancel for coordinated cancellation")]
     pub async fn run_legacy(
         &self,
         events: &mut mpsc::Receiver<()>,

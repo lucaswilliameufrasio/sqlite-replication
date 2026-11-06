@@ -143,6 +143,7 @@ impl CoordinatorMetrics for LegacyCancellationObservation {
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Retains coverage of the legacy race.
 async fn legacy_receiver_cancellation_does_not_atomically_close_gate() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database_path = directory.path().join("source.sqlite");
@@ -782,6 +783,7 @@ async fn cancellation_during_capture_preserves_durable_data_and_closed_admission
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Retains coverage of the legacy race.
 async fn legacy_independent_cancellation_can_reopen_adapter_admission() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database_path = directory.path().join("source.sqlite");
@@ -1269,6 +1271,7 @@ async fn cancellation_during_drain_leaves_admission_closed_without_waiting_for_w
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(deprecated)] // Verifies legacy calls cannot start a second worker.
 async fn second_run_is_rejected_without_cancelling_active_run() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database_path = directory.path().join("source.sqlite");

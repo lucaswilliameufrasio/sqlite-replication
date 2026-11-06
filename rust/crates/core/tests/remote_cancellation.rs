@@ -32,6 +32,7 @@ impl CoordinatorAdapter for Adapter {
 }
 
 #[tokio::test]
+#[allow(deprecated)] // Retains coverage of legacy remote-drain behavior.
 async fn cancellation_during_failed_remote_sync_keeps_local_snapshot_and_no_ack() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("source.sqlite");
@@ -201,6 +202,7 @@ fn floci_test_endpoint_rejects_non_loopback_and_invalid_addresses() {
 // Run only against a disposable isolated Floci; failure can leave a bucket behind.
 #[tokio::test]
 #[ignore = "requires disposable isolated Floci on 127.0.0.1"]
+#[allow(deprecated)] // Retains coverage of legacy remote-drain behavior.
 async fn cancellation_during_successful_remote_sync_drains_and_confirms() {
     let endpoint = std::env::var("SQLITE_REPLICATION_FLOCI_ENDPOINT")
         .expect("set SQLITE_REPLICATION_FLOCI_ENDPOINT to a disposable isolated Floci");
