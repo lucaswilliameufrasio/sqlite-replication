@@ -37,6 +37,23 @@ bundled via `rusqlite`:
 
 ## Limites da evidência
 
+### Reexecução local no commit `a8250ac`
+
+Os três alvos opt-in foram repetidos no host Linux x86-64: `make
+test-cp01-enospc`, `make test-cp01-fsync-interrupt` e `make
+test-cp01-qemu-poweroff` passaram para Go e Rust. O ENOSPC usou tmpfs de 8 MiB
+em container rootless; no FUSE cada processo publicador foi encerrado enquanto
+o callback de `fsync` estava bloqueado, seguido de recuperação e nova tentativa.
+No QEMU/KVM, o processo da VM foi encerrado após ambas as capturas terem sido
+sincronizadas e validadas; a recuperação foi testada em ext4 sobre virtio-blk.
+Isso não testa interrupção do QEMU durante a sincronização nem perda física de
+energia ou de cache de hardware, e não constitui homologação de produção.
+
+Uma primeira tentativa parou antes dos testes por conflito entre ferramentas Go
+1.27.1 e 1.27.3 no ambiente herdado; a execução válida usou ambiente limpo,
+Go 1.27.3 e Rust 1.99.1. O escopo inicial e a necessidade de revisão explícita
+permanecem inalterados.
+
 - FUSE, tmpfs e QEMU não simulam corte físico de energia nem perda da cache
   volátil do host/controlador/dispositivo. Essa garantia está fora do escopo
   escolhido.
