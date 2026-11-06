@@ -63,6 +63,120 @@ impl CoordinatorAdapter for BudgetCaptureAdapter {
     }
 }
 
+// Test-only policy: a WAL length is an observation, not a conservative bound.
+struct ReconcilingAdapter {
+    inner: BudgetCaptureAdapter,
+    measurement_fails: AtomicBool,
+}
+
+impl CoordinatorAdapter for ReconcilingAdapter {
+    fn observe_txid(&self) -> io::Result<Option<u64>> {
+        self.inner.observe_txid()
+    }
+
+    fn capture(&self) -> io::Result<CaptureResult> {
+        self.inner.capture()
+    }
+
+    fn set_write_admission(&self, enabled: bool, limits: Limits) -> io::Result<()> {
+        if enabled {
+            let budget = self
+                .inner
+                .budget
+                .lock()
+                .map_err(|_| io::Error::other("budget reference poisoned"))?
+                .clone()
+                .ok_or_else(|| io::Error::other("budget not configured"))?;
+            budget.reconcile_with(|| {
+                if self.measurement_fails.load(Ordering::SeqCst) {
+                    return Err(io::Error::other("injected WAL measurement failure"));
+                }
+                let mut wal = self.inner.database.as_os_str().to_os_string();
+                wal.push("-wal");
+                Ok(Some(std::fs::metadata(PathBuf::from(wal))?.len()))
+            })?;
+        }
+        self.inner.set_write_admission(enabled, limits)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn failed_reconciliation_keeps_admission_closed_after_real_capture() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    let connection = Connection::open(&database).expect("open source");
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base');").expect("create source");
+    crate::snapshot(&database, &repository).expect("snapshot");
+    let adapter = Arc::new(ReconcilingAdapter {
+        inner: BudgetCaptureAdapter {
+            database: database.clone(),
+            repository: repository.clone(),
+            target: AtomicUsize::new(1),
+            fail: AtomicBool::new(false),
+            panic_capture: AtomicBool::new(false),
+            admission: Mutex::new(Vec::new()),
+            budget: Mutex::new(None),
+        },
+        measurement_fails: AtomicBool::new(false),
+    });
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root: repository.clone(),
+        database_path: database,
+        adapter: adapter.clone(),
+        limits: Limits {
+            max_spool_bytes: 1 << 30,
+            max_wal_bytes: 1 << 30,
+            max_unprotected_age: Duration::from_secs(3600),
+            max_uploads_in_flight: 1,
+        },
+        remote: None,
+    })
+    .expect("coordinator");
+    let budget = ConservativeBudget::new(coordinator.admission_gate(), 1 << 30).expect("budget");
+    *adapter.inner.budget.lock().expect("budget reference") = Some(budget.clone());
+    coordinator
+        .flush()
+        .await
+        .expect("initial reconciliation and admission");
+    let permit = budget.try_reserve(Some(1)).expect("logical reservation");
+    connection
+        .execute("UPDATE data SET value='captured'", [])
+        .expect("commit");
+    permit.settle(Some(0)).expect("logical settlement");
+    adapter.inner.target.store(2, Ordering::SeqCst);
+    adapter.measurement_fails.store(true, Ordering::SeqCst);
+    let error = coordinator
+        .flush()
+        .await
+        .expect_err("measurement failure prevents reopening");
+    assert!(
+        error
+            .to_string()
+            .contains("injected WAL measurement failure")
+    );
+    assert!(coordinator.admission_gate().try_accept().is_err());
+    assert!(budget.try_reserve(Some(1)).is_err());
+    let restored = directory.path().join("restored.sqlite");
+    crate::restore_to_target(&repository, &restored, RestoreTarget::Txid(2))
+        .expect("capture durable despite measurement error");
+    let value: String = Connection::open(restored)
+        .expect("reader")
+        .query_row("SELECT value FROM data", [], |row| row.get(0))
+        .expect("value");
+    assert_eq!(value, "captured");
+    adapter.measurement_fails.store(false, Ordering::SeqCst);
+    coordinator
+        .flush()
+        .await
+        .expect("retry measurement and reopen");
+    budget
+        .try_reserve(Some(1))
+        .expect("reconciled admission")
+        .settle(Some(0))
+        .expect("settle");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn cooperative_budget_flush_real_capture_failure_and_retry() {
     let directory = tempfile::tempdir().expect("temporary directory");

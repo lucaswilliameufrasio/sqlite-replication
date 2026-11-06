@@ -7,6 +7,15 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`failed_reconciliation_keeps_admission_closed_after_real_capture` usa um
+adapter exclusivamente de teste que reconcilia antes de reabrir o gate.
+Após um commit cooperativo e captura SQLite/LTX real, uma falha de medição
+injetada impede a reabertura; o restore no TXID 2 confirma o valor capturado,
+e um retry da medição permite nova reserva. O TXID e o custo da reserva são
+controlados pelo teste. O comprimento observado do WAL é apenas um retrato,
+não um limite conservador de crescimento; spool e staging não são medidos.
+Não é adapter homologado nem proteção contra produtores externos.
+
 `coordinator_capture_panic_closes_gate_and_poisons_budget` injeta panic após o
 snapshot em captura real executada por adapter de teste via `Coordinator::flush`.
 O flush retorna erro, o gate permanece fechado e o orçamento envenenado recusa
