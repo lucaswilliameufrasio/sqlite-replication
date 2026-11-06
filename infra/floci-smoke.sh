@@ -62,6 +62,7 @@ python3 "$repository_root/infra/floci_smoke.py" wait "$endpoint" "$run_id"
     cd "$repository_root/rust"
     cargo test -p sqlite-replication-storage-s3 tests::floci_adapter_conformance -- --ignored --exact
     cargo test -p sqlite-replication-core recovery::tests::floci_s3_recovery_restore_compaction_and_gc -- --ignored --exact
+    cargo test -p sqlite-replication-core --test remote_cancellation cancellation_during_successful_remote_sync_drains_and_confirms -- --ignored --exact
 )
 (
     cd "$repository_root/go"

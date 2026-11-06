@@ -1,6 +1,6 @@
 use std::io::{self, Read, Write};
-use std::net::TcpListener;
 use std::net::{Shutdown, TcpStream};
+use std::net::{SocketAddr, TcpListener};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread;
@@ -154,11 +154,47 @@ async fn cancellation_during_failed_remote_sync_keeps_local_snapshot_and_no_ack(
     assert_eq!(value, "durable");
 }
 
-// The endpoint is deliberately fixed to loopback. Run only with a disposable,
-// isolated Floci on port 4566; a failed test can leave its unique bucket behind.
+fn isolated_floci_address(endpoint: &str) -> io::Result<SocketAddr> {
+    let address: SocketAddr = endpoint
+        .strip_prefix("http://")
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "expected HTTP loopback endpoint",
+            )
+        })?
+        .parse()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid endpoint address"))?;
+    if address.ip().to_string() != "127.0.0.1" || address.port() == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "expected 127.0.0.1 and a nonzero port",
+        ));
+    }
+    Ok(address)
+}
+
+#[test]
+fn floci_test_endpoint_rejects_non_loopback_and_invalid_addresses() {
+    assert!(isolated_floci_address("http://127.0.0.1:12345").is_ok());
+    for endpoint in [
+        "http://127.0.0.1:0",
+        "http://localhost:4566",
+        "http://192.0.2.1:4566",
+        "https://127.0.0.1:4566",
+        "http://127.0.0.1:4566/path",
+    ] {
+        assert!(isolated_floci_address(endpoint).is_err(), "{endpoint}");
+    }
+}
+
+// Run only against a disposable isolated Floci; failure can leave a bucket behind.
 #[tokio::test]
-#[ignore = "requires disposable isolated Floci on 127.0.0.1:4566"]
+#[ignore = "requires disposable isolated Floci on 127.0.0.1"]
 async fn cancellation_during_successful_remote_sync_drains_and_confirms() {
+    let endpoint = std::env::var("SQLITE_REPLICATION_FLOCI_ENDPOINT")
+        .unwrap_or_else(|_| "http://127.0.0.1:4566".to_owned());
+    let floci_address = isolated_floci_address(&endpoint).expect("isolated Floci endpoint");
     let directory = tempfile::tempdir().expect("temporary directory");
     let database = directory.path().join("source.sqlite");
     let repository = directory.path().join("repository");
@@ -170,7 +206,7 @@ async fn cancellation_during_successful_remote_sync_drains_and_confirms() {
     let direct_config = aws_sdk_s3::Config::builder()
         .behavior_version_latest()
         .region(Region::new("us-east-1"))
-        .endpoint_url("http://127.0.0.1:4566")
+        .endpoint_url(endpoint)
         .force_path_style(true)
         .credentials_provider(Credentials::new("test", "test", None, None, "local-test"))
         .retry_config(aws_sdk_s3::config::retry::RetryConfig::disabled())
@@ -213,7 +249,7 @@ async fn cancellation_during_successful_remote_sync_drains_and_confirms() {
                     }
                     thread::spawn(move || {
                         let upstream =
-                            TcpStream::connect("127.0.0.1:4566").expect("connect isolated Floci");
+                            TcpStream::connect(floci_address).expect("connect isolated Floci");
                         client
                             .set_read_timeout(Some(Duration::from_secs(10)))
                             .expect("client timeout");
