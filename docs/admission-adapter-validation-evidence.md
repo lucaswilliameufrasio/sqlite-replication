@@ -7,6 +7,17 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`capture_once_with_budget` é uma entrada experimental da captura pública: obtém
+o `WriteGate` antes de `with_occupancy_mutation` e o libera após a saída deste,
+inclusive quando a captura retorna erro. O teste de integração
+`cooperative_public_capture_keeps_gate_callbacks_outside_budget_lock` usa
+callbacks de gate de teste que invalidam o mesmo orçamento, captura SQLite/LTX
+real e restauração no TXID 2; também verifica retorno de erro para origem ausente.
+O gate do teste não controla produtores reais. A API não é adapter homologado,
+não fornece limites conservadores nem protege mutações que contornem o orçamento;
+`WriteGate` e escritores continuam responsabilidade da aplicação. O teste não
+estabelece recuperação em panic ou todos os escalonamentos concorrentes.
+
 Na integração com a API pública, `capture_once` adquire e libera o `WriteGate`
 dentro da chamada; se ela for envolvida por `with_occupancy_mutation`, os dois
 callbacks ocorrem enquanto o mutex do orçamento está retido. Um callback que

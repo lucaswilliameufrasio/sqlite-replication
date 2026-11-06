@@ -84,6 +84,38 @@ pub fn capture_once<G: WriteGate>(
     repository_root: impl AsRef<Path>,
     gate: &G,
 ) -> io::Result<CaptureResult> {
+    capture_once_inner(source_path.as_ref(), repository_root.as_ref(), gate, None)
+}
+
+/// Experimental cooperative capture using one process-local logical budget.
+///
+/// The gate is acquired before the budget mutex and released after that mutex
+/// is unlocked. Once mutation starts, occupancy is invalidated even on error;
+/// active reservations instead reject mutation without invalidating it. Callers
+/// must reconcile before accepting further reservations. Every relevant producer and
+/// occupancy mutation must use the same budget; external writers and bypasses
+/// are not protected. This is not a filesystem quota or a production adapter.
+/// The caller's gate must stop writers before returning from `acquire`.
+pub fn capture_once_with_budget<G: WriteGate>(
+    source_path: impl AsRef<Path>,
+    repository_root: impl AsRef<Path>,
+    gate: &G,
+    budget: &ConservativeBudget,
+) -> io::Result<CaptureResult> {
+    capture_once_inner(
+        source_path.as_ref(),
+        repository_root.as_ref(),
+        gate,
+        Some(budget),
+    )
+}
+
+fn capture_once_inner<G: WriteGate>(
+    source_path: &Path,
+    repository_root: &Path,
+    gate: &G,
+    budget: Option<&ConservativeBudget>,
+) -> io::Result<CaptureResult> {
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         return Err(io::Error::new(
             io::ErrorKind::Unsupported,
@@ -97,13 +129,19 @@ pub fn capture_once<G: WriteGate>(
         .as_millis() as i64;
     let permit = gate.acquire()?;
     let cancelled = AtomicBool::new(false);
-    let capture_result = capture::capture_once_cancellable(
-        source_path.as_ref(),
-        repository_root.as_ref(),
-        timestamp_millis,
-        &cancelled,
-        |_, _| Ok(()),
-    );
+    let capture = || {
+        capture::capture_once_cancellable(
+            source_path,
+            repository_root,
+            timestamp_millis,
+            &cancelled,
+            |_, _| Ok(()),
+        )
+    };
+    let capture_result = match budget {
+        Some(budget) => budget.with_occupancy_mutation(capture),
+        None => capture(),
+    };
     let release_result = permit.release();
 
     let result = match (capture_result, release_result) {

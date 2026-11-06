@@ -5,7 +5,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use rusqlite::Connection;
 use sqlite_replication_core::{
-    RestoreTarget, WriteGate, WritePermit, capture_once, restore_to_target, snapshot,
+    AdmissionGate, ConservativeBudget, RestoreTarget, WriteGate, WritePermit, capture_once,
+    capture_once_with_budget, restore_to_target, snapshot,
 };
 use sqlite_replication_spool::read_watermark;
 
@@ -22,6 +23,61 @@ struct TestPermit {
     released: Arc<AtomicBool>,
     verify_durable_txid: Option<u64>,
     release_error: Option<String>,
+}
+
+struct BudgetAwareGate(ConservativeBudget);
+struct BudgetAwarePermit(ConservativeBudget);
+
+impl WriteGate for BudgetAwareGate {
+    type Permit = BudgetAwarePermit;
+
+    fn acquire(&self) -> io::Result<Self::Permit> {
+        self.0.reconcile(None)?;
+        Ok(BudgetAwarePermit(self.0.clone()))
+    }
+}
+
+impl WritePermit for BudgetAwarePermit {
+    fn release(self) -> io::Result<()> {
+        self.0.reconcile(None)
+    }
+}
+
+#[test]
+fn cooperative_public_capture_keeps_gate_callbacks_outside_budget_lock() {
+    if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+        return;
+    }
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let source = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    create_database(&source);
+    snapshot(&source, &repository).expect("snapshot");
+    let connection = Connection::open(&source).expect("open source");
+    connection
+        .pragma_update(None, "wal_autocheckpoint", "0")
+        .expect("disable checkpoint");
+    connection
+        .execute("INSERT INTO records(value) VALUES ('cooperative')", [])
+        .expect("commit");
+    let budget = ConservativeBudget::new(AdmissionGate::new(), 1 << 20).expect("budget");
+    budget
+        .reconcile_with(|| Ok(Some(0)))
+        .expect("test baseline");
+    let gate = BudgetAwareGate(budget.clone());
+    let result = capture_once_with_budget(&source, &repository, &gate, &budget).expect("capture");
+    assert_eq!(result.txid, 2);
+    let restored = directory.path().join("restored.sqlite");
+    restore_to_target(&repository, &restored, RestoreTarget::Txid(2)).expect("restore");
+    assert_eq!(row_count(&restored), 2);
+    let error = capture_once_with_budget(
+        directory.path().join("missing.sqlite"),
+        &repository,
+        &gate,
+        &budget,
+    )
+    .expect_err("capture failure");
+    assert_ne!(error.kind(), io::ErrorKind::Unsupported);
 }
 
 impl WriteGate for TestGate {
