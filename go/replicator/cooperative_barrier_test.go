@@ -17,11 +17,10 @@ import (
 
 // This single-writer gate is a test reference, not a production byte quota.
 type cooperativeTestGate struct {
-	mu      sync.Mutex
-	open    bool
-	active  bool
-	drained chan struct{}
-	closed  chan struct{}
+	mu           sync.Mutex
+	gate         *replicator.AdmissionGate
+	closed       chan struct{}
+	cancelOnOpen bool
 }
 
 func (g *cooperativeTestGate) setAdmission(ctx context.Context, enabled bool, _ replicator.Limits) error {
@@ -31,45 +30,29 @@ func (g *cooperativeTestGate) setAdmission(ctx context.Context, enabled bool, _ 
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		g.open = true
+		if g.cancelOnOpen {
+			g.gate.Cancel()
+		}
+		if err := g.gate.Open(); err != nil {
+			return err
+		}
 		g.closed = make(chan struct{})
-	} else if g.open {
-		g.open = false
-		close(g.closed)
+	} else {
+		g.gate.Close()
+		if g.closed != nil {
+			close(g.closed)
+			g.closed = nil
+		}
 	}
 	return nil
 }
 
 func (g *cooperativeTestGate) accept() (func(), error) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if !g.open || g.active {
-		return nil, errors.New("admission closed or writer active")
-	}
-	g.active = true
-	g.drained = make(chan struct{})
-	return func() {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		g.active = false
-		close(g.drained)
-	}, nil
+	return g.gate.TryAccept()
 }
 
 func (g *cooperativeTestGate) drain(ctx context.Context) error {
-	g.mu.Lock()
-	if !g.active {
-		g.mu.Unlock()
-		return nil
-	}
-	drained := g.drained
-	g.mu.Unlock()
-	select {
-	case <-drained:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return g.gate.Drain(ctx)
 }
 
 func TestCooperativeBarrierDrainsRealSQLiteWriter(t *testing.T) {
@@ -89,7 +72,7 @@ func TestCooperativeBarrierDrainsRealSQLiteWriter(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	gate := &cooperativeTestGate{}
+	gate := &cooperativeTestGate{gate: replicator.NewAdmissionGate()}
 	var failCapture atomic.Bool
 	config := coordinatorConfig(repository, databasePath, 1)
 	config.ObserveTXID = func(context.Context) (uint64, bool, error) { return 0, false, nil }
@@ -202,4 +185,13 @@ func TestCooperativeBarrierDrainsRealSQLiteWriter(t *testing.T) {
 		t.Fatalf("admission after verified retry: %v", err)
 	}
 	finalRelease()
+	gate.mu.Lock()
+	gate.cancelOnOpen = true
+	gate.mu.Unlock()
+	if err := coordinator.Flush(ctx); !errors.Is(err, replicator.ErrAdmissionClosed) {
+		t.Fatalf("coordinated cancellation during reopen: %v", err)
+	}
+	if _, err := gate.accept(); !errors.Is(err, replicator.ErrAdmissionClosed) {
+		t.Fatalf("accept after coordinated cancellation: %v", err)
+	}
 }
