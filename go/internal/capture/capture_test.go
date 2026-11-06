@@ -12,6 +12,7 @@ import (
 	"modernc.org/sqlite"
 
 	"github.com/lucaswilliameufrasio/sqlite-replication"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/recovery"
 	"github.com/lucaswilliameufrasio/sqlite-replication/internal/spool"
 	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
@@ -154,6 +155,68 @@ func TestCaptureCyclePublishesAndRecoversCheckpointedChanges(t *testing.T) {
 	}
 	if watermark.TXID != 7 {
 		t.Fatalf("final watermark TXID = %d, want 7", watermark.TXID)
+	}
+}
+
+func TestCaptureAfterSnapshotWithUncheckpointedWALIsNoOp(t *testing.T) {
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	repositoryRoot := filepath.Join(directory, "repository")
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.SetMaxOpenConns(1)
+	t.Cleanup(func() { _ = database.Close() })
+	for _, statement := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA wal_autocheckpoint=0",
+		"CREATE TABLE records (value TEXT)",
+		"INSERT INTO records VALUES ('baseline')",
+	} {
+		if _, err := database.ExecContext(ctx, statement); err != nil {
+			t.Fatalf("initialize %q: %v", statement, err)
+		}
+	}
+	info, err := os.Stat(databasePath + "-wal")
+	if err != nil || info.Size() == 0 {
+		t.Fatalf("expected uncheckpointed WAL: info=%v err=%v", info, err)
+	}
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	for cycle := int64(0); cycle < 2; cycle++ {
+		captured, err := CaptureOnce(ctx, databasePath, repositoryRoot, 100+cycle, nil)
+		if err != nil {
+			t.Fatalf("no-op capture %d: %v", cycle, err)
+		}
+		if len(captured.Transactions) != 0 || captured.State.Database.TXID != 1 {
+			t.Fatalf("no-op capture %d: txid=%d transactions=%d", cycle, captured.State.Database.TXID, len(captured.Transactions))
+		}
+	}
+	if _, err := database.ExecContext(ctx, "INSERT INTO records VALUES ('new')"); err != nil {
+		t.Fatalf("new commit: %v", err)
+	}
+	captured, err := CaptureOnce(ctx, databasePath, repositoryRoot, 102, nil)
+	if err != nil {
+		t.Fatalf("capture new commit: %v", err)
+	}
+	if len(captured.Transactions) != 1 || captured.State.Database.TXID != 2 {
+		t.Fatalf("new capture: txid=%d transactions=%d", captured.State.Database.TXID, len(captured.Transactions))
+	}
+	restoredPath := filepath.Join(directory, "restored.sqlite")
+	if err := recovery.RestoreToTarget(ctx, repositoryRoot, restoredPath, recovery.Target{TXID: 2}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	restored, err := sql.Open("sqlite", restoredPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = restored.Close() })
+	var count int
+	if err := restored.QueryRowContext(ctx, "SELECT COUNT(*) FROM records WHERE value IN ('baseline', 'new')").Scan(&count); err != nil || count != 2 {
+		t.Fatalf("restored records=%d error=%v", count, err)
 	}
 }
 
