@@ -33,6 +33,13 @@ dependências e passou os testes não ignorados, incluindo 53 do core e 24 do
 coordenador. As dependências vieram do cache local offline; Floci e os drills
 CP-01 permaneceram ignorados. Isso valida essa compilação no host, não uma
 instalação offline em outro ambiente nem homologação para distribuição.
+O exemplo `rust/examples/coordinator-telemetry` é workspace separado e foi
+testado à parte na extração. `cargo +1.99.1 test --offline --locked
+--all-features` inicialmente falhou antes de compilar, pois `opentelemetry`
+0.33.1 não estava no cache. A execução posterior sem `--offline`, com
+`--locked`, baixou `opentelemetry` e `opentelemetry_sdk` 0.33.1 e passou
+quatro testes de integração. Ela reutilizou o target anterior e não prova
+autossuficiência offline, licença ou autorização de distribuição do exemplo.
 Esta nota foi escrita após a geração e não integra o candidato examinado.
 Direitos, notices finais e autorização para distribuição permanecem pendentes.
 
