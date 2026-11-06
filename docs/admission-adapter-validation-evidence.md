@@ -7,6 +7,13 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`failed_capture_invalidates_release_callback_reconciliation` reproduziu uma
+falha de captura seguida de callback de liberação que reconciliava o orçamento:
+antes da mudança, novas reservas eram aceitas. A captura cooperativa agora
+invalida após erro de captura **ou** de liberação, inclusive se uma reserva ativa
+impediu a mutação; a regressão passou. Ela não revoga escritas já aceitas nem
+impede nova reconciliação por outro chamador, e não homologa adapter ou quotas.
+
 `failed_gate_release_invalidates_callback_reconciliation` reproduziu um caso
 em que o callback de liberação do gate de teste reconciliava o orçamento e
 depois retornava erro; antes da mudança uma reserva ainda era aceita. Agora a

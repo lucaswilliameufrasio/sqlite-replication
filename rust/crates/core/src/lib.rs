@@ -90,15 +90,16 @@ pub fn capture_once<G: WriteGate>(
 /// Experimental cooperative capture using one process-local logical budget.
 ///
 /// The gate is acquired before the budget mutex and released after that mutex
-/// is unlocked. Once mutation starts, occupancy is invalidated even on error;
-/// active reservations instead reject mutation without invalidating it. Callers
-/// must reconcile before accepting further reservations. Every relevant producer and
+/// is unlocked. Mutation invalidates occupancy; a capture or gate-release
+/// error also triggers invalidation after the release callback, including when
+/// active reservations prevented mutation. Callers must reconcile before
+/// accepting further reservations. Every relevant producer and
 /// occupancy mutation must use the same budget; external writers and bypasses
 /// are not protected. This is not a filesystem quota or a production adapter.
 /// The caller's gate must stop writers before returning from `acquire`.
-/// A gate release error triggers budget invalidation; this cannot revoke writes
-/// already accepted or prevent a later independent reconciliation. The caller
-/// must coordinate reconciliation and treat an unsuccessful release as unsafe.
+/// Invalidation cannot revoke writes already accepted or prevent a later
+/// independent reconciliation. The caller must coordinate reconciliation and
+/// treat an unsuccessful capture or release as unsafe.
 pub fn capture_once_with_budget<G: WriteGate>(
     source_path: impl AsRef<Path>,
     repository_root: impl AsRef<Path>,
@@ -141,19 +142,26 @@ fn capture_once_inner<G: WriteGate>(
             |_, _| Ok(()),
         )
     };
-    let capture_result = match budget {
+    let mut capture_result = match budget {
         Some(budget) => budget.with_occupancy_mutation(capture),
         None => capture(),
     };
-    let release_result = match (permit.release(), budget) {
-        (Err(release_error), Some(budget)) => match budget.reconcile(None) {
-            Ok(()) => Err(release_error),
-            Err(invalidate_error) => Err(io::Error::other(format!(
+    let mut release_result = permit.release();
+    if (capture_result.is_err() || release_result.is_err())
+        && let Some(budget) = budget
+        && let Err(invalidate_error) = budget.reconcile(None)
+    {
+        if let Err(release_error) = &release_result {
+            release_result = Err(io::Error::other(format!(
                 "{release_error}; invalidating the budget also failed: {invalidate_error}"
-            ))),
-        },
-        (result, _) => result,
-    };
+            )));
+        } else if let Err(capture_error) = &capture_result {
+            capture_result = Err(io::Error::new(
+                capture_error.kind(),
+                format!("{capture_error}; invalidating the budget also failed: {invalidate_error}"),
+            ));
+        }
+    }
 
     let result = match (capture_result, release_result) {
         (Ok(result), Ok(())) => result,

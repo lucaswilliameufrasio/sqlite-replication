@@ -168,6 +168,43 @@ struct FailingReleaseGate;
 
 struct ReconcileThenFailGate(ConservativeBudget);
 
+struct ReconcileOnReleaseGate(ConservativeBudget);
+
+impl WriteGate for ReconcileOnReleaseGate {
+    type Permit = Self;
+
+    fn acquire(&self) -> io::Result<Self::Permit> {
+        Ok(Self(self.0.clone()))
+    }
+}
+
+impl WritePermit for ReconcileOnReleaseGate {
+    fn release(self) -> io::Result<()> {
+        self.0.reconcile_with(|| Ok(Some(0)))
+    }
+}
+
+#[test]
+fn failed_capture_invalidates_release_callback_reconciliation() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let admission = crate::AdmissionGate::new();
+    admission.open().expect("open admission");
+    let budget = ConservativeBudget::new(admission, 100).expect("budget");
+    budget.reconcile_with(|| Ok(Some(0))).expect("baseline");
+    let gate = ReconcileOnReleaseGate(budget.clone());
+    crate::capture_once_with_budget(
+        directory.path().join("missing.sqlite"),
+        directory.path().join("missing-repository"),
+        &gate,
+        &budget,
+    )
+    .expect_err("capture fails");
+    assert!(
+        budget.try_reserve(Some(1)).is_err(),
+        "capture failure must invalidate callback reconciliation"
+    );
+}
+
 impl WriteGate for ReconcileThenFailGate {
     type Permit = Self;
 
@@ -312,7 +349,9 @@ fn public_capture_rejects_active_producer_then_recovers() {
             settle_rx
                 .recv_timeout(Duration::from_secs(5))
                 .expect("settle requested");
-            reservation.settle(Some(0)).expect("logical settlement");
+            reservation
+                .settle(Some(0))
+                .expect_err("failed capture invalidated occupancy");
         });
         ready_rx
             .recv_timeout(Duration::from_secs(5))
