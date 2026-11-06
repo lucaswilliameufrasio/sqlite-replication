@@ -192,15 +192,13 @@ exclui captura, escritores externos ou outras instâncias de orçamento; um
 callback lento bloqueia chamadas e reentrada pode causar deadlock. Não há
 garantia de quota de disco nem adapter de produção homologado.
 
-O teste `characterize_stale_measurement_can_understate_occupancy` demonstra
-uma limitação adicional: uma medição lógica de zero, seguida por uma escrita
-cooperativa de oito unidades já liquidada, ainda pode ser instalada por
-`reconcile(Some(0))`; uma reserva de três unidades é então aceita apesar de
-exceder o orçamento real de dez. O teste passa por caracterizar o risco, não
-por corrigi-lo. `active == 0` no momento da chamada não prova que nenhum
-produtor escreveu entre a medição e a chamada. Enquanto não houver um protocolo
-de medição e reconciliação com exclusão ao longo de toda a janela, a aplicação
-precisa fornecer essa exclusão; tampouco há proteção contra escritores externos.
+Antes da alteração que rejeita valores pré-calculados, o teste histórico
+`characterize_stale_measurement_can_understate_occupancy` demonstrou que uma
+medição anterior à escrita podia ser instalada como se fosse atual. Na API
+atual, `reconcile(Some(...))` retorna `InvalidInput`; a regressão atual é
+`precomputed_stale_measurement_is_rejected`. Isso não prova que um callback
+de `reconcile_with` obtenha uma medição atual ou inclua todas as mutações:
+capturas e produtores que contornem o protocolo ainda precisam ser excluídos.
 
 O teste `conservative_budget_reconciles_after_real_capture` executa captura
 SQLite/LTX real após liquidação de custo desconhecido. A captura publica LTX,
@@ -238,9 +236,9 @@ passaram com Cargo 1.99.1 offline. Não é teste exaustivo de escalonamentos.
 
 Na inspeção de `coordinator.rs`, `Status` calcula `spool_bytes` a partir de
 `repository_root/ltx` e `wal_bytes` a partir do arquivo WAL, sem um campo para
-`.staging`. `ConservativeBudget::reconcile` aceita valores fornecidos pelo
-chamador e exige que ele exclua produtores e mutações externas durante a
-medição; a API não verifica essa exclusão. Logo essas medições isoladas não são
+`.staging`. `ConservativeBudget::reconcile_with` executa a medição fornecida
+pelo chamador sob o mutex do orçamento, mas não verifica exclusão de produtores
+e mutações que contornem a mesma instância. Logo essas medições isoladas não são
 um snapshot atômico WAL/spool/staging nem provam crescimento máximo futuro ou
 blocos físicos. Ligar `Status` diretamente ao orçamento como se comprovasse
 uma quota seria inseguro; permanece necessária integração específica com
