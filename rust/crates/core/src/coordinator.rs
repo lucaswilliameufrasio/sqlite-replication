@@ -13,6 +13,12 @@ use crate::recovery::{RestoreTarget, build_restore_plan_from_filesystem};
 use crate::{AdmissionGate, CaptureResult, sync_to_s3};
 
 pub trait CoordinatorAdapter: Send + Sync + 'static {
+    /// Returns the adapter's observed capture target, or `None` if unknown.
+    /// This must represent outstanding committed changes, not merely the last
+    /// locally durable TXID: flush skips capture when the target is already
+    /// durable. WAL checkpoints and image reconciliation can change the mapping
+    /// between SQLite commits and LTX TXIDs. An adapter unable to establish a
+    /// trustworthy target must return `None` rather than a stale value.
     fn observe_txid(&self) -> io::Result<Option<u64>>;
     fn capture(&self) -> io::Result<CaptureResult>;
     /// Applies limits atomically with write admission. Enabling must reserve

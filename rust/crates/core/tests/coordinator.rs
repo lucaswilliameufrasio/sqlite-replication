@@ -394,6 +394,47 @@ impl CoordinatorAdapter for TestAdapter {
     }
 }
 
+#[tokio::test]
+async fn stale_target_can_make_flush_skip_checkpointed_sqlite_changes() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let source = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    let connection = Connection::open(&source).expect("open source");
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT);").expect("initialize");
+    sqlite_replication_core::snapshot(&source, &repository).expect("snapshot");
+    connection
+        .execute("INSERT INTO records VALUES ('first')", [])
+        .expect("commit");
+    connection
+        .execute("INSERT INTO records VALUES ('second')", [])
+        .expect("commit");
+    let busy: i64 = connection
+        .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| row.get(0))
+        .expect("checkpoint");
+    assert_eq!(busy, 0);
+    // Deliberately invalid test adapter reports the old durable TXID as observed.
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root: repository.clone(),
+        database_path: source,
+        adapter: coordinator_adapter(Some(1)),
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("coordinator");
+    coordinator
+        .flush()
+        .await
+        .expect("stale target makes flush return success");
+    let restored = directory.path().join("restored.sqlite");
+    sqlite_replication_core::restore_to_target(&repository, &restored, RestoreTarget::Txid(1))
+        .expect("restore snapshot");
+    let count: i64 = Connection::open(restored)
+        .expect("open restore")
+        .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+        .expect("count");
+    assert_eq!(count, 0, "stale target skipped both committed rows");
+}
+
 #[test]
 fn status_separates_observed_and_local_durable_positions() {
     let directory = tempfile::tempdir().expect("temporary directory");

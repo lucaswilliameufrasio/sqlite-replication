@@ -7,6 +7,14 @@ na seção de atualização abaixo. Isto não é homologação de adapter de pro
 
 ## Atualização de 2026-11-06: integração disponível
 
+`stale_target_can_make_flush_skip_checkpointed_sqlite_changes` usa um adapter
+deliberadamente incorreto que informa o TXID durável antigo após dois commits
+SQLite e checkpoint. O `flush` retorna sucesso sem capturar; restaurar o TXID 1
+produz o snapshot sem as duas linhas. O teste caracteriza o risco de um alvo
+subestimado, não demonstra falha de um adapter real nem corrige a interface.
+O contrato de `observe_txid` agora alerta para esse risco e exige `None` quando
+o alvo não for confiável; um protocolo concreto de observação permanece pendente.
+
 `checkpointed_commits_can_collapse_into_one_reconciliation_txid` caracteriza
 uma restrição para obter o alvo do coordenador: dois commits SQLite separados
 após o snapshot, seguidos por `wal_checkpoint(TRUNCATE)` bem-sucedido antes da
