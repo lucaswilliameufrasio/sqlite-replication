@@ -1,6 +1,10 @@
 //! Internal WAL capture orchestration. This remains unavailable as public API
 //! until the full CP-01 matrix is reviewed and approved.
 
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[path = "capture_overlap_test.rs"]
+mod capture_overlap_test;
+
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
@@ -264,6 +268,449 @@ mod tests {
     use sqlite_replication_spool::{FaultPoint as SpoolFaultPoint, read_watermark};
 
     use super::{FaultPoint, capture_once, capture_once_cancellable, capture_once_with_hook};
+
+    #[test]
+    fn characterize_capture_does_not_exclude_budget_reservations() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 10).expect("budget");
+        budget
+            .reconcile_with(|| Ok(Some(0)))
+            .expect("logical baseline");
+        let reservation = budget.try_reserve(Some(1)).expect("producer reservation");
+        database
+            .execute("INSERT INTO records VALUES ('committed')", [])
+            .expect("commit");
+        reservation.settle(Some(1)).expect("logical settlement");
+        let mut observed = false;
+        let result = capture_once_with_hook(&source, &repository, 123, |point, _| {
+            if point == FaultPoint::AfterSourceSnapshot {
+                thread::scope(|scope| {
+                    let producer = budget.clone();
+                    scope
+                        .spawn(move || {
+                            producer
+                                .try_reserve(Some(1))
+                                .expect("capture does not close budget")
+                                .settle(Some(0))
+                                .expect("settle");
+                        })
+                        .join()
+                        .expect("producer thread");
+                });
+                observed = true;
+            }
+            Ok(())
+        })
+        .expect("capture");
+        assert!(observed);
+        assert!(!result.transactions.is_empty());
+    }
+
+    #[test]
+    fn failed_capture_keeps_unknown_budget_closed_until_reconciled() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 1 << 20).expect("budget");
+        budget
+            .reconcile_with(|| Ok(Some(0)))
+            .expect("logical test baseline");
+        let reservation = budget.try_reserve(Some(4096)).expect("reservation");
+        database
+            .execute("INSERT INTO records VALUES ('committed')", [])
+            .expect("commit");
+        assert!(reservation.settle(None).is_err());
+        let error = capture_once_with_hook(&source, &repository, 123, |point, _| {
+            if point == FaultPoint::AfterSourceSnapshot {
+                return Err(io::Error::other("injected capture error"));
+            }
+            Ok(())
+        })
+        .err()
+        .expect("capture fails at injected boundary");
+        assert!(error.to_string().contains("injected capture error"));
+        assert!(
+            budget.try_reserve(Some(1)).is_err(),
+            "failure must not restore occupancy"
+        );
+        let result = capture_once(&source, &repository, 124).expect("retry capture");
+        assert!(!result.transactions.is_empty());
+        assert!(
+            budget.try_reserve(Some(1)).is_err(),
+            "capture does not automatically reconcile"
+        );
+        budget
+            .reconcile_with(|| Ok(Some(1)))
+            .expect("test-only logical occupancy");
+        budget
+            .try_reserve(Some(1))
+            .expect("explicit reconciliation")
+            .settle(Some(0))
+            .expect("settle");
+    }
+
+    #[test]
+    fn cooperative_capture_panic_poison_fails_closed() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 100).expect("budget");
+        budget
+            .reconcile_with(|| Ok(Some(0)))
+            .expect("logical baseline");
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = budget.with_occupancy_mutation(|| {
+                capture_once_with_hook(&source, &repository, 123, |point, _| {
+                    if point == FaultPoint::AfterSourceSnapshot {
+                        panic!("injected capture panic");
+                    }
+                    Ok(())
+                })
+            });
+        }));
+        assert!(panic.is_err());
+        assert!(budget.try_reserve(Some(1)).is_err());
+        assert!(budget.reconcile_with(|| Ok(Some(0))).is_err());
+        assert!(budget.with_occupancy_mutation(|| Ok(())).is_err());
+    }
+
+    #[test]
+    fn cooperative_capture_waits_for_real_ltx_measurement() {
+        fn ltx_bytes(path: &std::path::Path) -> io::Result<u64> {
+            if path.is_file() {
+                return Ok(path.metadata()?.len());
+            }
+            let mut total = 0;
+            for entry in std::fs::read_dir(path)? {
+                total += ltx_bytes(&entry?.path())?;
+            }
+            Ok(total)
+        }
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 1 << 20).expect("budget");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        thread::scope(|scope| {
+            let measurement = budget.clone();
+            let ltx = repository.join("ltx");
+            scope.spawn(move || {
+                measurement
+                    .reconcile_with(|| {
+                        let size = ltx_bytes(&ltx)?;
+                        entered_tx.send(size).expect("report measurement");
+                        release_rx.recv().expect("release measurement");
+                        Ok(Some(size))
+                    })
+                    .expect("reconcile");
+            });
+            let before = entered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("measurement started");
+            let capture_budget = budget.clone();
+            let source = &source;
+            let repository = &repository;
+            scope.spawn(move || {
+                let result = capture_budget
+                    .with_occupancy_mutation(|| capture_once(source, repository, 123));
+                done_tx
+                    .send(result.map(|r| r.transactions.len()))
+                    .expect("report capture");
+            });
+            assert!(
+                done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+                "capture waits for measurement"
+            );
+            release_tx.send(()).expect("release measurement");
+            assert!(
+                done_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("capture finished")
+                    .expect("capture")
+                    > 0
+            );
+            let after = ltx_bytes(&repository.join("ltx")).expect("measure captured LTX");
+            assert!(after > before);
+        });
+        assert!(
+            budget.try_reserve(Some(1)).is_err(),
+            "capture invalidated occupancy"
+        );
+        budget
+            .reconcile_with(|| Ok(Some(ltx_bytes(&repository.join("ltx"))?)))
+            .expect("fresh measurement");
+        budget
+            .try_reserve(Some(1))
+            .expect("reconciled")
+            .settle(Some(0))
+            .expect("settle");
+    }
+
+    #[test]
+    fn cooperative_capture_invalidates_budget_and_requires_reconciliation() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 100).expect("budget");
+        budget.reconcile_with(|| Ok(Some(0))).expect("baseline");
+        let permit = budget.try_reserve(Some(1)).expect("reserve");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        let err = budget
+            .with_occupancy_mutation(|| Ok(()))
+            .expect_err("active producer excludes capture");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        permit.settle(Some(0)).expect("settle logical cost");
+        let failed = budget.with_occupancy_mutation(|| {
+            capture_once_with_hook(&source, &repository, 123, |point, _| {
+                if point == FaultPoint::AfterSourceSnapshot {
+                    return Err(io::Error::other("injected failure"));
+                }
+                Ok(())
+            })
+        });
+        assert!(failed.is_err());
+        assert!(budget.try_reserve(Some(1)).is_err());
+        let captured = budget
+            .with_occupancy_mutation(|| capture_once(&source, &repository, 124))
+            .expect("capture retry");
+        assert!(!captured.transactions.is_empty());
+        assert!(budget.try_reserve(Some(1)).is_err());
+        budget
+            .reconcile_with(|| Ok(Some(1)))
+            .expect("logical test measurement");
+        budget
+            .try_reserve(Some(1))
+            .expect("reconciled")
+            .settle(Some(0))
+            .expect("settle");
+    }
+
+    #[test]
+    fn characterize_capture_can_stale_reconciliation_measurement() {
+        fn file_bytes(path: &std::path::Path) -> u64 {
+            if path.is_file() {
+                return path.metadata().expect("file metadata").len();
+            }
+            std::fs::read_dir(path)
+                .expect("read directory")
+                .map(|entry| file_bytes(&entry.expect("entry").path()))
+                .sum()
+        }
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let ltx = repository.join("ltx");
+        let initial = file_bytes(&ltx);
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, initial + 1).expect("budget");
+        budget
+            .reconcile_with(|| Ok(Some(file_bytes(&ltx))))
+            .expect("baseline");
+        let permit = budget
+            .try_reserve(Some(1))
+            .expect("logical producer reservation");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        permit.settle(Some(0)).expect("logical settlement");
+        let mut after = 0;
+        budget
+            .reconcile_with(|| {
+                let measured = file_bytes(&ltx);
+                let captured = capture_once(&source, &repository, 123)?;
+                assert!(!captured.transactions.is_empty());
+                after = file_bytes(&ltx);
+                Ok(Some(measured))
+            })
+            .expect("install stale observation");
+        assert!(after > initial + 1);
+        budget
+            .try_reserve(Some(1))
+            .expect("characterization: stale occupancy admits reservation")
+            .settle(Some(0))
+            .expect("settle");
+        println!(
+            "ltx_before={initial} ltx_after={after} budget_limit={}",
+            initial + 1
+        );
+    }
+
+    #[test]
+    fn conservative_budget_reconciles_after_real_capture() {
+        fn ltx_bytes(path: &std::path::Path) -> u64 {
+            if path.is_file() {
+                return path.metadata().expect("metadata").len();
+            }
+            std::fs::read_dir(path)
+                .expect("read ltx directory")
+                .map(|entry| ltx_bytes(&entry.expect("entry").path()))
+                .sum()
+        }
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 1 << 20).expect("budget");
+        let mut baseline = 0;
+        budget
+            .reconcile_with(|| {
+                baseline = ltx_bytes(&repository.join("ltx"));
+                Ok(Some(baseline))
+            })
+            .expect("baseline");
+        let permit = budget.try_reserve(Some(4096)).expect("logical reservation");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        assert!(permit.settle(None).is_err());
+        assert!(budget.try_reserve(Some(1)).is_err());
+        let result = capture_once(&source, &repository, 123).expect("capture");
+        let mut measured = 0;
+        assert!(!result.transactions.is_empty());
+        assert!(
+            budget.try_reserve(Some(1)).is_err(),
+            "capture alone does not reconcile budget"
+        );
+        budget
+            .reconcile_with(|| {
+                measured = ltx_bytes(&repository.join("ltx"));
+                Ok(Some(measured))
+            })
+            .expect("exclusive test measurement");
+        assert!(measured > baseline);
+        budget
+            .try_reserve(Some(1))
+            .expect("reconciled")
+            .settle(Some(0))
+            .expect("settle");
+        println!("baseline_ltx={baseline} captured_ltx={measured}");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn characterize_wal_spool_and_staging_for_controlled_writes() {
+        fn file_bytes(path: &std::path::Path) -> u64 {
+            if !path.exists() {
+                return 0;
+            }
+            if path.is_file() {
+                return path.metadata().expect("file metadata").len();
+            }
+            std::fs::read_dir(path)
+                .expect("read directory")
+                .map(|entry| file_bytes(&entry.expect("entry").path()))
+                .sum()
+        }
+
+        for mode in ["batch", "individual", "checkpointed"] {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let source = directory.path().join("source.sqlite");
+            let repository = directory.path().join("repository");
+            let database = Connection::open(&source).expect("open source");
+            database.execute_batch(
+                "PRAGMA page_size=4096; PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(id INTEGER PRIMARY KEY, value BLOB NOT NULL);",
+            ).expect("initialize");
+            crate::snapshot(&source, &repository).expect("snapshot");
+            database
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .expect("reset WAL");
+            let baseline_ltx = file_bytes(&repository.join("ltx"));
+            if mode == "batch" {
+                database.execute_batch("BEGIN").expect("begin batch");
+            }
+            for id in 1..=20 {
+                database
+                    .execute(
+                        "INSERT INTO records VALUES (?1, ?2)",
+                        rusqlite::params![id, vec![b'x'; 100]],
+                    )
+                    .expect("insert");
+            }
+            if mode == "batch" {
+                database.execute_batch("COMMIT").expect("commit batch");
+            }
+            if mode == "checkpointed" {
+                database
+                    .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .expect("checkpoint");
+            }
+            let wal = std::path::PathBuf::from(format!("{}-wal", source.display()));
+            let wal_bytes = file_bytes(&wal);
+            let mut staging_at_snapshot = 0;
+            let mut staging_after_publication = 0;
+            let result = capture_once_with_hook(&source, &repository, 100, |point, _| {
+                if point == FaultPoint::AfterSourceSnapshot {
+                    staging_at_snapshot = file_bytes(&repository.join(".staging"));
+                }
+                if point == FaultPoint::AfterSpoolPublication {
+                    staging_after_publication = file_bytes(&repository.join(".staging"));
+                }
+                Ok(())
+            })
+            .expect("capture");
+            let added_ltx = file_bytes(&repository.join("ltx")) - baseline_ltx;
+            println!(
+                "mode={mode} wal_bytes={wal_bytes} wal_frames={} ltx_added={added_ltx} staging_snapshot={staging_at_snapshot} staging_publication={staging_after_publication} transactions={} first_wal_offset={:?}",
+                result.state.wal.frame_count,
+                result.transactions.len(),
+                result.transactions.first().map(|tx| tx.header.wal_offset)
+            );
+            assert!(added_ltx > 0);
+            assert!(staging_at_snapshot > 0);
+            if mode == "checkpointed" {
+                assert_eq!(wal_bytes, 0);
+                assert_eq!(result.transactions[0].header.wal_offset, 0);
+            }
+        }
+    }
 
     #[test]
     fn capture_cycle_publishes_and_recovers_checkpointed_changes() {

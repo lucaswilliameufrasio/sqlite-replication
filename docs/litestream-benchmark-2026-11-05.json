@@ -1,0 +1,158 @@
+{
+  "schema": 1,
+  "rows": 10000,
+  "fixture_bytes": 2748416,
+  "content_sha256": "bf4b22885dc31297451fb6439d9d12529eb78c481c0e7b25d23555f77ffe309a",
+  "python_sqlite": "3.54.0",
+  "platform": "Linux-7.3.0-5-cachyos-x86_64-with-glibc2.44",
+  "machine": "x86_64",
+  "cpu_count_visible": 24,
+  "samples": 5,
+  "warmups": 1,
+  "results": [
+    {
+      "engine": "go",
+      "iteration": 0,
+      "warmup": true,
+      "snapshot_ns": 51792334,
+      "restore_ns": 149483582,
+      "repository_bytes": 2707777
+    },
+    {
+      "engine": "rust",
+      "iteration": 0,
+      "warmup": true,
+      "snapshot_ns": 114382280,
+      "restore_ns": 27560241,
+      "repository_bytes": 2705091
+    },
+    {
+      "engine": "litestream",
+      "iteration": 0,
+      "warmup": true,
+      "snapshot_ns": 90072831,
+      "restore_ns": 43528558,
+      "repository_bytes": 5398226
+    },
+    {
+      "engine": "rust",
+      "iteration": 1,
+      "warmup": false,
+      "snapshot_ns": 114079876,
+      "restore_ns": 27602482,
+      "repository_bytes": 2705091
+    },
+    {
+      "engine": "litestream",
+      "iteration": 1,
+      "warmup": false,
+      "snapshot_ns": 86055431,
+      "restore_ns": 41527573,
+      "repository_bytes": 5398226
+    },
+    {
+      "engine": "go",
+      "iteration": 1,
+      "warmup": false,
+      "snapshot_ns": 50610957,
+      "restore_ns": 130240908,
+      "repository_bytes": 2707777
+    },
+    {
+      "engine": "litestream",
+      "iteration": 2,
+      "warmup": false,
+      "snapshot_ns": 86781161,
+      "restore_ns": 45517310,
+      "repository_bytes": 5398226
+    },
+    {
+      "engine": "go",
+      "iteration": 2,
+      "warmup": false,
+      "snapshot_ns": 50607681,
+      "restore_ns": 130827243,
+      "repository_bytes": 2707777
+    },
+    {
+      "engine": "rust",
+      "iteration": 2,
+      "warmup": false,
+      "snapshot_ns": 113934359,
+      "restore_ns": 27717070,
+      "repository_bytes": 2705091
+    },
+    {
+      "engine": "go",
+      "iteration": 3,
+      "warmup": false,
+      "snapshot_ns": 53780474,
+      "restore_ns": 128152978,
+      "repository_bytes": 2707777
+    },
+    {
+      "engine": "rust",
+      "iteration": 3,
+      "warmup": false,
+      "snapshot_ns": 116444822,
+      "restore_ns": 27609325,
+      "repository_bytes": 2705091
+    },
+    {
+      "engine": "litestream",
+      "iteration": 3,
+      "warmup": false,
+      "snapshot_ns": 87832610,
+      "restore_ns": 51857507,
+      "repository_bytes": 5398226
+    },
+    {
+      "engine": "rust",
+      "iteration": 4,
+      "warmup": false,
+      "snapshot_ns": 120203922,
+      "restore_ns": 27431506,
+      "repository_bytes": 2705091
+    },
+    {
+      "engine": "litestream",
+      "iteration": 4,
+      "warmup": false,
+      "snapshot_ns": 456163625,
+      "restore_ns": 41808638,
+      "repository_bytes": 5398226
+    },
+    {
+      "engine": "go",
+      "iteration": 4,
+      "warmup": false,
+      "snapshot_ns": 50826516,
+      "restore_ns": 136767671,
+      "repository_bytes": 2707777
+    },
+    {
+      "engine": "litestream",
+      "iteration": 5,
+      "warmup": false,
+      "snapshot_ns": 88887537,
+      "restore_ns": 41786866,
+      "repository_bytes": 5398226
+    },
+    {
+      "engine": "go",
+      "iteration": 5,
+      "warmup": false,
+      "snapshot_ns": 50517990,
+      "restore_ns": 114017706,
+      "repository_bytes": 2707777
+    },
+    {
+      "engine": "rust",
+      "iteration": 5,
+      "warmup": false,
+      "snapshot_ns": 113803889,
+      "restore_ns": 27583005,
+      "repository_bytes": 2705091
+    }
+  ]
+}

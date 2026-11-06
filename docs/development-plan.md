@@ -1097,6 +1097,12 @@ entregável de benchmarks M6 permanece parcial.
 
 ### Coordenador M5 — evidência local 2026-10-28
 
+**M6/SBOM — 2026-11-05:** dez SBOMs CycloneDX locais (Go, Go com testes,
+oráculo e sete crates Rust) e triagem inicial de licenças/fixtures estão em
+`docs/sbom/2026-11-05/`. Os JSONs passaram na validação de schema; a revisão de
+notices, de direitos das fixtures e da cobertura de todos os builds permanece
+pendente, assim como qualquer autorização de publicação.
+
 **Regressão de cancelamento inicial — 2026-11-05:** `Run` Rust com
 `watch::Receiver` inicialmente `true` ficava aguardando uma alteração e podia
 reabrir a admissão. O teste `run_with_preexisting_cancellation_never_opens_admission`
@@ -1131,6 +1137,18 @@ Ainda há uma janela entre consultar o sinal e reabrir a admissão: o teste não
 prova exclusão mútua nessa janela. Captura bloqueante também não é interrompida
 nem tem prazo garantido, o gate de teste não é adapter de produção e cancelamento
 durante sync remoto permanece sem cobertura. M5 não está fechado.
+
+**Corrida na reabertura — reprodução determinística:** o teste
+`cancellation_inside_admission_callback_never_reopens_writes` faz o callback
+de admissão sinalizar cancelamento antes de efetivar a abertura. Ele falhou em
+três execuções isoladas: a sequência observada inclui abertura depois do sinal.
+O callback atual e o emissor de cancelamento não compartilham uma operação
+atômica, logo consultar `watch` antes ou depois do callback não impede uma
+abertura transitória. Manter o lock de leitura de `watch` durante o callback
+pode causar deadlock se esse callback sinalizar o mesmo canal. O teste fica
+intencionalmente falhando até haver um contrato que coordene cancelamento e
+admissão sem executar código externo sob um lock sujeito a reentrada. Não
+considerar o gate ou M5 aprovados.
 
 `make test` passou após a implementação Go/Rust, incluindo formatação,
 `go vet`, Clippy com warnings negados, suites completas Go/Rust, fuzz curto e

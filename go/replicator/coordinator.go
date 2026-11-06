@@ -42,6 +42,23 @@ type RemoteConfig struct {
 	RemoteID string
 }
 
+// FlushOutcome is a bounded label; it never includes errors, keys, or paths.
+type FlushOutcome string
+
+const (
+	FlushSucceeded FlushOutcome = "success"
+	FlushFailed    FlushOutcome = "failure"
+	FlushCanceled  FlushOutcome = "canceled"
+)
+
+// CoordinatorMetrics is invoked synchronously after the flush lock is released.
+// Implementations must be concurrency-safe, quick, and must not panic. Duration
+// includes lock wait and excludes the callback. If cancellation is joined with
+// another error, the outcome is canceled; inspect the returned error separately.
+type CoordinatorMetrics interface {
+	ObserveFlush(duration time.Duration, outcome FlushOutcome)
+}
+
 type CoordinatorConfig struct {
 	RepositoryRoot string
 	DatabasePath   string
@@ -50,6 +67,7 @@ type CoordinatorConfig struct {
 	SetAdmission   SetWriteAdmission
 	Limits         Limits
 	Remote         *RemoteConfig
+	Metrics        CoordinatorMetrics
 }
 
 type Coordinator struct {
@@ -217,7 +235,19 @@ func (c *Coordinator) Health(ctx context.Context) Health {
 // that target is locally durable, and optionally confirms it remotely. On any
 // error the coordinator remains fail-closed; successful completion reopens
 // admission only if every configured capacity limit is satisfied.
-func (c *Coordinator) Flush(ctx context.Context) error {
+func (c *Coordinator) Flush(ctx context.Context) (returnErr error) {
+	if c.config.Metrics != nil {
+		started := time.Now()
+		defer func() {
+			outcome := FlushSucceeded
+			if errors.Is(returnErr, context.Canceled) || errors.Is(returnErr, context.DeadlineExceeded) {
+				outcome = FlushCanceled
+			} else if returnErr != nil {
+				outcome = FlushFailed
+			}
+			c.config.Metrics.ObserveFlush(time.Since(started), outcome)
+		}()
+	}
 	select {
 	case <-ctx.Done():
 		return errors.Join(ctx.Err(), c.closeAdmission())

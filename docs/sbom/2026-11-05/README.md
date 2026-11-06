@@ -8,6 +8,17 @@ O prefixo local de caminhos nos BOMs Rust foi normalizado para
 
 ## Artefatos e método
 
+Os exemplos isolados de telemetria, criados posteriormente, têm inventários e
+limitações próprios em [`telemetry-examples/`](telemetry-examples/README.md).
+Uma inspeção posterior das listas de arquivos candidatas dos crates está em
+[`distribution-candidate-inventory.md`](distribution-candidate-inventory.md).
+Uma revisão parcial da cadeia transitiva LTX Rust está em
+[`ltx-transitive-notices.md`](ltx-transitive-notices.md).
+O grafo SQLite Rust foi triado separadamente em
+[`sqlite-rust-transitive-notices.md`](sqlite-rust-transitive-notices.md).
+A triagem parcial S3/TLS e AWS-LC está em
+[`s3-aws-lc-transitive-notices.md`](s3-aws-lc-transitive-notices.md).
+
 | Arquivo | Escopo | Componentes |
 |---|---|---:|
 | `go.cdx.json` | módulo Go, sem dependências de teste selecionadas | 22 |
@@ -61,6 +72,19 @@ Entradas, SHA-256:
 
 ## Triagem inicial, não parecer
 
+**Correção importante:** a análise posterior dos arquivos originais encontrou
+divergências na evidência automática de licença dos módulos `modernc.org/sqlite`
+e `modernc.org/libc`. Os JSONs permanecem como gerados, mas suas licenças não
+devem ser usadas como classificação definitiva. Detalhes e escopo dos binários
+examinados: [`native-notices-review.md`](native-notices-review.md).
+
+Uma investigação reproduziu a seleção por maior confiança do gerador e produziu
+duas cópias com evidência controversa em quarentena, sem afirmar licença
+substituta: `go-evidence-quarantined.cdx.json` e
+`go-with-tests-evidence-quarantined.cdx.json`. Veja o método em
+[`license-detector-investigation.md`](license-detector-investigation.md). Os
+originais são preservados; nenhuma das versões aprova distribuição.
+
 - O gerador Go reportou ausência de licença detectada nos componentes raiz do
   projeto e do oráculo local. A ADR 0014 prevê Apache-2.0 para o projeto, mas
   proíbe criar `LICENSE` ou publicar antes da revisão; metadado pretendido não
@@ -82,6 +106,8 @@ Entradas, SHA-256:
   confirmou 33 arquivos da cadeia longa. Hashes demonstram identidade, não
   autoria nem licença dos dados gerados. Direitos sobre fixtures, NOTICE do
   oráculo e atribuições continuam sujeitos à revisão do mantenedor.
+  Veja o inventário posterior e seus limites em
+  [`fixture-provenance-review.md`](fixture-provenance-review.md).
 - Não foram revisadas todas as fontes/avisos, dependências Go não selecionadas
   pelo gerador, dev-dependencies Rust ou artefatos de publicação. Não criar
   pacote legal, release ou tag com base nesta triagem; seguem necessários

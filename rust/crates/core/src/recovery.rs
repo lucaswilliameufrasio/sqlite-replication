@@ -1751,22 +1751,24 @@ mod tests {
         assert_s3_record_value(&restored_time_after_gc, "updated");
 
         if !shared_floci {
-            let mut cursor = None;
             let mut remaining_keys = Vec::new();
-            loop {
-                let page = store
-                    .list_page(&format!("{prefix}/"), cursor.as_deref(), 1000)
-                    .await
-                    .expect("list remaining isolated S3 objects");
-                remaining_keys.extend(
-                    page.contents()
-                        .iter()
-                        .filter_map(|object| object.key().map(ToOwned::to_owned)),
-                );
-                if !page.is_truncated().unwrap_or(false) {
-                    break;
+            for cleanup_prefix in [prefix, "public-rust-sync-test"] {
+                let mut cursor = None;
+                loop {
+                    let page = store
+                        .list_page(&format!("{cleanup_prefix}/"), cursor.as_deref(), 1000)
+                        .await
+                        .expect("list remaining isolated S3 objects");
+                    remaining_keys.extend(
+                        page.contents()
+                            .iter()
+                            .filter_map(|object| object.key().map(ToOwned::to_owned)),
+                    );
+                    if !page.is_truncated().unwrap_or(false) {
+                        break;
+                    }
+                    cursor = page.next_continuation_token().map(ToOwned::to_owned);
                 }
-                cursor = page.next_continuation_token().map(ToOwned::to_owned);
             }
             for keys in remaining_keys.chunks(1000) {
                 store

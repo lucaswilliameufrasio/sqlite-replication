@@ -1,13 +1,17 @@
 //! Synchronous SQLite snapshot, local WAL capture, and offline restore APIs.
 
 // Recovery implementation details remain private behind the checked public API.
+mod admission;
+mod conservative_budget;
 mod coordinator;
 #[allow(dead_code)]
 mod recovery;
 
+pub use admission::{AcceptedWrite, AdmissionGate, CapacityGate, CapacityPermit};
+pub use conservative_budget::{BudgetReservation, ConservativeBudget};
 pub use coordinator::{
-    ComponentState, Coordinator, CoordinatorAdapter, CoordinatorConfig, ErrorCategory, Health,
-    Limits, Position, RemoteConfig, Status,
+    ComponentState, Coordinator, CoordinatorAdapter, CoordinatorConfig, CoordinatorMetrics,
+    ErrorCategory, FlushOutcome, Health, Limits, Position, RemoteConfig, Status,
 };
 
 pub(crate) mod capture;

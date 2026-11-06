@@ -5,8 +5,8 @@ use std::time::Duration;
 
 use rusqlite::Connection;
 use sqlite_replication_core::{
-    CaptureResult, ComponentState, Coordinator, CoordinatorAdapter, CoordinatorConfig, Limits,
-    RestoreTarget, WriteGate, WritePermit,
+    AdmissionGate, CapacityGate, CaptureResult, ComponentState, ConservativeBudget, Coordinator,
+    CoordinatorAdapter, CoordinatorConfig, Limits, RestoreTarget, WriteGate, WritePermit,
 };
 
 struct BlockingCaptureAdapter {
@@ -17,8 +17,182 @@ struct BlockingCaptureAdapter {
     release: Arc<(Mutex<bool>, Condvar)>,
 }
 
+#[tokio::test]
+async fn conservative_budget_reconciles_observed_wal_after_unknown_growth() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let connection = Connection::open(&database_path).expect("open database");
+    connection
+        .execute_batch("PRAGMA wal_autocheckpoint=0; PRAGMA wal_checkpoint(TRUNCATE)")
+        .expect("reset WAL");
+    let coordinator = coordinator(&repository_root, &database_path, Some(1), None);
+    coordinator.flush().await.expect("open admission");
+    let limit = 65_536;
+    let budget = ConservativeBudget::new(coordinator.admission_gate(), limit).expect("budget");
+    let mut before = 0;
+    budget
+        .reconcile_with(|| {
+            before = coordinator.status()?.wal_bytes;
+            Ok(Some(before))
+        })
+        .expect("baseline");
+    let reservation = budget.try_reserve(Some(16_384)).expect("test reservation");
+    connection
+        .execute("INSERT INTO records(value) VALUES ('committed')", [])
+        .expect("commit");
+    assert!(reservation.settle(None).is_err());
+    assert!(budget.try_reserve(Some(1)).is_err());
+    let mut measured = 0;
+    budget
+        .reconcile_with(|| {
+            measured = coordinator.status()?.wal_bytes;
+            Ok(Some(measured))
+        })
+        .expect("exclusive test measurement");
+    assert!(measured > before && measured < limit);
+    assert!(budget.try_reserve(Some(limit - measured + 1)).is_err());
+    budget
+        .try_reserve(Some(1))
+        .expect("remaining logical capacity")
+        .settle(Some(0))
+        .expect("settlement");
+    println!("wal_before={before} wal_after={measured} logical_limit={limit}");
+}
+
+#[tokio::test]
+async fn conservative_budget_sqlite_unknown_settlement_requires_reconciliation() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let coordinator = coordinator(&repository_root, &database_path, Some(1), None);
+    coordinator.flush().await.expect("open admission");
+    let budget = ConservativeBudget::new(coordinator.admission_gate(), 3).expect("budget");
+    assert!(budget.try_reserve(Some(1)).is_err());
+    budget
+        .reconcile_with(|| Ok(Some(0)))
+        .expect("test baseline");
+    let reservation = budget.try_reserve(Some(2)).expect("reserve transaction");
+    let connection = Connection::open(&database_path).expect("open database");
+    connection
+        .execute("INSERT INTO records(value) VALUES ('committed')", [])
+        .expect("commit write");
+    assert!(
+        budget.reconcile_with(|| Ok(Some(0))).is_err(),
+        "cannot reconcile with an active reservation"
+    );
+    assert!(
+        reservation.settle(None).is_err(),
+        "unknown committed growth fails closed"
+    );
+    assert!(budget.try_reserve(Some(1)).is_err());
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+        .expect("count rows");
+    assert_eq!(count, 1, "failed settlement does not undo SQLite commit");
+    budget
+        .reconcile_with(|| Ok(Some(2)))
+        .expect("test supplies a conservative logical occupancy");
+    assert!(budget.try_reserve(Some(2)).is_err());
+    budget
+        .try_reserve(Some(1))
+        .expect("remaining capacity")
+        .settle(Some(0))
+        .expect("settle");
+}
+
 struct BlockingCaptureGate<'a>(&'a BlockingCaptureAdapter);
 struct CapturePermit;
+
+struct CancelOnOpenAdapter {
+    cancellation: tokio::sync::watch::Sender<bool>,
+    admission: Mutex<Vec<bool>>,
+}
+
+struct StrictCancelOnOpenAdapter {
+    gate: Mutex<Option<AdmissionGate>>,
+    accepted_after_cancel: Mutex<bool>,
+}
+
+impl CoordinatorAdapter for StrictCancelOnOpenAdapter {
+    fn observe_txid(&self) -> io::Result<Option<u64>> {
+        Ok(Some(1))
+    }
+
+    fn capture(&self) -> io::Result<CaptureResult> {
+        Err(io::Error::other("capture should not be needed"))
+    }
+
+    fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
+        if enabled {
+            let gate = self.gate.lock().expect("gate lock");
+            let gate = gate.as_ref().expect("shared gate");
+            gate.cancel()?;
+            *self.accepted_after_cancel.lock().expect("acceptance lock") =
+                gate.try_accept().is_ok();
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn cancellation_inside_admission_callback_never_reopens_writes() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let adapter = Arc::new(StrictCancelOnOpenAdapter {
+        gate: Mutex::new(None),
+        accepted_after_cancel: Mutex::new(false),
+    });
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("coordinator");
+    let gate = coordinator.admission_gate();
+    *adapter.gate.lock().expect("gate lock") = Some(gate.clone());
+    let (_sender, mut events) = tokio::sync::mpsc::channel(1);
+    tokio::time::timeout(Duration::from_secs(5), coordinator.run(&mut events))
+        .await
+        .expect("no callback deadlock")
+        .expect("clean cancellation");
+    assert!(
+        !*adapter
+            .accepted_after_cancel
+            .lock()
+            .expect("acceptance lock")
+    );
+    assert!(gate.try_accept().is_err());
+}
+
+impl CoordinatorAdapter for CancelOnOpenAdapter {
+    fn observe_txid(&self) -> io::Result<Option<u64>> {
+        Ok(Some(1))
+    }
+
+    fn capture(&self) -> io::Result<CaptureResult> {
+        Err(io::Error::other("capture should not be needed"))
+    }
+
+    fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
+        if enabled {
+            self.cancellation
+                .send(true)
+                .map_err(|error| io::Error::other(error.to_string()))?;
+        }
+        self.admission.lock().expect("admission lock").push(enabled);
+        Ok(())
+    }
+}
 
 impl WriteGate for BlockingCaptureGate<'_> {
     type Permit = CapturePermit;
@@ -68,6 +242,64 @@ struct TestAdapter {
     observed_txid: Option<u64>,
     admission: Mutex<Vec<bool>>,
     applied_limits: Mutex<Vec<Limits>>,
+}
+
+// Test-only admission policy: availability of independently established
+// conservative bounds is simulated, not measured or enforced by this adapter.
+struct UnknownBudgetAdapter {
+    known: std::sync::atomic::AtomicBool,
+}
+
+impl CoordinatorAdapter for UnknownBudgetAdapter {
+    fn observe_txid(&self) -> io::Result<Option<u64>> {
+        Ok(Some(1))
+    }
+
+    fn capture(&self) -> io::Result<CaptureResult> {
+        Err(io::Error::other("unexpected capture"))
+    }
+
+    fn set_write_admission(&self, enabled: bool, _limits: Limits) -> io::Result<()> {
+        if enabled && !self.known.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(io::Error::other("conservative budget unknown"));
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn unknown_adapter_budget_fails_closed_until_verified_retry() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let adapter = Arc::new(UnknownBudgetAdapter {
+        known: std::sync::atomic::AtomicBool::new(false),
+    });
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("coordinator");
+    let gate = coordinator.admission_gate();
+    let error = coordinator
+        .flush()
+        .await
+        .expect_err("unknown budget rejected");
+    assert!(error.to_string().contains("conservative budget unknown"));
+    assert!(gate.try_accept().is_err());
+    adapter
+        .known
+        .store(true, std::sync::atomic::Ordering::Release);
+    coordinator
+        .flush()
+        .await
+        .expect("retry after budget becomes known");
+    assert!(gate.try_accept().is_ok());
 }
 
 impl CoordinatorAdapter for TestAdapter {
@@ -155,11 +387,10 @@ async fn flush_and_run_close_admission_on_limit_and_shutdown() {
         remote: None,
     })
     .expect("construct run coordinator");
-    let (_cancel_sender, mut cancellation) = tokio::sync::watch::channel(false);
     let (_event_sender, mut events) = tokio::sync::mpsc::channel(1);
     drop(_event_sender);
     run_coordinator
-        .run(&mut events, &mut cancellation)
+        .run(&mut events)
         .await
         .expect("run coordinator to closed event stream");
     assert_eq!(
@@ -201,16 +432,13 @@ async fn run_with_preexisting_cancellation_never_opens_admission() {
         remote: None,
     })
     .expect("construct coordinator");
-    let (_cancel_sender, mut cancellation) = tokio::sync::watch::channel(true);
+    coordinator.admission_gate().cancel().expect("pre-cancel");
     let (_event_sender, mut events) = tokio::sync::mpsc::channel(1);
 
-    tokio::time::timeout(
-        Duration::from_millis(500),
-        coordinator.run(&mut events, &mut cancellation),
-    )
-    .await
-    .expect("pre-cancelled worker exits promptly")
-    .expect("worker closes admission");
+    tokio::time::timeout(Duration::from_millis(500), coordinator.run(&mut events))
+        .await
+        .expect("pre-cancelled worker exits promptly")
+        .expect("worker closes admission");
     assert_eq!(*adapter.admission.lock().expect("admission lock"), [false]);
 }
 
@@ -248,16 +476,15 @@ async fn cancellation_during_capture_preserves_durable_data_and_closed_admission
         remote: None,
     })
     .expect("construct coordinator");
-    let (cancel_sender, mut cancellation) = tokio::sync::watch::channel(false);
+    let gate = coordinator.admission_gate();
     let (_event_sender, mut events) = tokio::sync::mpsc::channel(1);
-    let worker = tokio::spawn(async move { coordinator.run(&mut events, &mut cancellation).await });
+    let worker = tokio::spawn(async move { coordinator.run(&mut events).await });
     tokio::time::timeout(Duration::from_secs(5), started_receiver)
         .await
         .expect("capture starts")
         .expect("capture signal");
-    cancel_sender
-        .send(true)
-        .expect("cancel while capture is in flight");
+    gate.cancel().expect("cancel while capture is in flight");
+    assert!(gate.try_accept().is_err());
     assert_eq!(
         adapter.admission.lock().expect("admission lock").last(),
         Some(&false)
@@ -289,6 +516,42 @@ async fn cancellation_during_capture_preserves_durable_data_and_closed_admission
 }
 
 #[tokio::test]
+async fn legacy_independent_cancellation_can_reopen_adapter_admission() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root)
+        .expect("create initial snapshot");
+    let (cancel_sender, mut cancellation) = tokio::sync::watch::channel(false);
+    let adapter = Arc::new(CancelOnOpenAdapter {
+        cancellation: cancel_sender,
+        admission: Mutex::new(Vec::new()),
+    });
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("construct coordinator");
+    let (_event_sender, mut events) = tokio::sync::mpsc::channel(1);
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        coordinator.run_legacy(&mut events, &mut cancellation),
+    )
+    .await
+    .expect("worker exits without deadlocking callback")
+    .expect("worker closes admission");
+    let transitions = adapter.admission.lock().expect("admission lock");
+    assert!(
+        transitions.contains(&true),
+        "this legacy API deliberately characterizes the unsafe callback transition"
+    );
+}
+
+#[tokio::test]
 async fn worker_handles_repeated_events_and_closes_on_cancellation() {
     const EVENTS: usize = 16;
 
@@ -309,9 +572,9 @@ async fn worker_handles_repeated_events_and_closes_on_cancellation() {
         })
         .expect("construct coordinator"),
     );
-    let (cancel_sender, mut cancellation) = tokio::sync::watch::channel(false);
+    let gate = coordinator.admission_gate();
     let (event_sender, mut events) = tokio::sync::mpsc::channel(1);
-    let worker = tokio::spawn(async move { coordinator.run(&mut events, &mut cancellation).await });
+    let worker = tokio::spawn(async move { coordinator.run(&mut events).await });
 
     for index in 0..EVENTS {
         event_sender.send(()).await.expect("send event");
@@ -326,7 +589,8 @@ async fn worker_handles_repeated_events_and_closes_on_cancellation() {
         .await
         .expect("worker processes event");
     }
-    cancel_sender.send(true).expect("signal cancellation");
+    gate.cancel().expect("signal cancellation");
+    assert!(gate.try_accept().is_err());
     tokio::time::timeout(Duration::from_secs(5), worker)
         .await
         .expect("worker stops after cancellation")
@@ -336,6 +600,500 @@ async fn worker_handles_repeated_events_and_closes_on_cancellation() {
         adapter.admission.lock().expect("admission lock").last(),
         Some(&false)
     );
+}
+
+#[tokio::test]
+async fn dropping_run_future_cancels_shared_admission() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let coordinator = coordinator(&repository_root, &database_path, Some(1), None);
+    let gate = coordinator.admission_gate();
+    let (_sender, mut events) = tokio::sync::mpsc::channel(1);
+    let worker = tokio::spawn(async move { coordinator.run(&mut events).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while gate.try_accept().is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("admission opens");
+    worker.abort();
+    assert!(worker.await.expect_err("task is aborted").is_cancelled());
+    assert!(gate.try_accept().is_err());
+}
+
+#[tokio::test]
+async fn flush_waits_for_previously_accepted_writer() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let adapter = coordinator_adapter(Some(1));
+    let coordinator = Arc::new(
+        Coordinator::new(CoordinatorConfig {
+            repository_root,
+            database_path,
+            adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+            limits: limits(1 << 30),
+            remote: None,
+        })
+        .expect("coordinator"),
+    );
+    coordinator.flush().await.expect("open admission");
+    let gate = coordinator.admission_gate();
+    let permit = gate.try_accept().expect("accept writer");
+    let running = Arc::clone(&coordinator);
+    let mut worker = tokio::spawn(async move { running.flush().await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while adapter.admission.lock().expect("admission lock").len() < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("flush closed admission");
+    assert!(gate.try_accept().is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut worker)
+            .await
+            .is_err(),
+        "flush must wait for the accepted writer"
+    );
+    drop(permit);
+    tokio::time::timeout(Duration::from_secs(5), worker)
+        .await
+        .expect("flush completes after writer")
+        .expect("worker task")
+        .expect("flush succeeds");
+}
+
+#[tokio::test]
+async fn timed_out_flush_during_drain_stays_closed_until_retry() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let coordinator = coordinator(&repository_root, &database_path, Some(1), None);
+    coordinator.flush().await.expect("open admission");
+    let gate = coordinator.admission_gate();
+    let permit = gate.try_accept().expect("accept writer");
+
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), coordinator.flush())
+            .await
+            .is_err(),
+        "flush should time out while the writer retains its permit"
+    );
+    assert!(
+        gate.try_accept().is_err(),
+        "timeout must not reopen admission"
+    );
+    drop(permit);
+    tokio::time::timeout(Duration::from_secs(5), coordinator.flush())
+        .await
+        .expect("retry should finish")
+        .expect("retry flush succeeds");
+    assert!(
+        gate.try_accept().is_ok(),
+        "successful retry reopens admission"
+    );
+}
+
+#[tokio::test]
+async fn flush_drains_abandoned_budget_reservation_but_does_not_reconcile_it() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let adapter = coordinator_adapter(Some(1));
+    let coordinator = Arc::new(
+        Coordinator::new(CoordinatorConfig {
+            repository_root,
+            database_path,
+            adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+            limits: limits(1 << 30),
+            remote: None,
+        })
+        .expect("coordinator"),
+    );
+    coordinator.flush().await.expect("open admission");
+    let budget = ConservativeBudget::new(coordinator.admission_gate(), 10).expect("budget");
+    budget
+        .reconcile_with(|| Ok(Some(0)))
+        .expect("logical baseline");
+    let reservation = budget.try_reserve(Some(2)).expect("accepted writer");
+    let running = Arc::clone(&coordinator);
+    let mut flush = tokio::spawn(async move { running.flush().await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while adapter.admission.lock().expect("admission lock").len() < 3 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("flush closed admission");
+    assert!(budget.try_reserve(Some(1)).is_err());
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut flush)
+            .await
+            .is_err()
+    );
+    drop(reservation);
+    tokio::time::timeout(Duration::from_secs(5), flush)
+        .await
+        .expect("flush finishes")
+        .expect("task")
+        .expect("flush");
+    assert!(
+        coordinator.admission_gate().try_accept().is_ok(),
+        "test adapter reopens gate"
+    );
+    assert!(
+        budget.try_reserve(Some(1)).is_err(),
+        "abandoned reservation remains unknown"
+    );
+    budget
+        .reconcile_with(|| Ok(Some(2)))
+        .expect("manual logical reconciliation");
+    budget
+        .try_reserve(Some(1))
+        .expect("reconciled budget")
+        .settle(Some(0))
+        .expect("settle");
+}
+
+#[tokio::test]
+async fn capacity_reference_blocks_overcommit_and_drains_with_coordinator() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let coordinator = Arc::new(coordinator(&repository_root, &database_path, Some(1), None));
+    coordinator.flush().await.expect("open admission");
+    let admission = coordinator.admission_gate();
+    let capacity = CapacityGate::new(admission.clone(), 5).expect("capacity");
+    let permit = capacity.try_reserve(4).expect("reserve");
+    assert_eq!(
+        capacity.try_reserve(2).err().expect("full").kind(),
+        io::ErrorKind::WouldBlock
+    );
+    let running = Arc::clone(&coordinator);
+    let mut flush = tokio::spawn(async move { running.flush().await });
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), &mut flush)
+            .await
+            .is_err()
+    );
+    assert!(capacity.try_reserve(1).is_err());
+    drop(permit);
+    flush.await.expect("flush task").expect("flush succeeds");
+    let permit = capacity.try_reserve(5).expect("capacity recovered");
+    admission.cancel().expect("cancel");
+    drop(permit);
+    assert!(capacity.try_reserve(1).is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn capacity_reference_controls_cooperative_sqlite_transactions() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let coordinator = coordinator(&repository_root, &database_path, Some(1), None);
+    coordinator.flush().await.expect("open admission");
+    let admission = coordinator.admission_gate();
+    let capacity = CapacityGate::new(admission.clone(), 1).expect("capacity");
+    let (started_tx, started_rx) = std::sync::mpsc::sync_channel(1);
+    let (release_tx, release_rx) = std::sync::mpsc::sync_channel(1);
+    let writer_capacity = capacity.clone();
+    let writer_path = database_path.clone();
+    let writer = std::thread::spawn(move || {
+        let _permit = writer_capacity.try_reserve(1).expect("reserve first write");
+        let connection = Connection::open(writer_path).expect("open writer");
+        connection
+            .execute_batch("BEGIN IMMEDIATE; INSERT INTO records(value) VALUES ('first');")
+            .expect("start transaction");
+        started_tx.send(()).expect("signal started");
+        release_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("release transaction");
+        connection.execute_batch("COMMIT").expect("commit first");
+    });
+    started_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("transaction starts");
+    assert_eq!(
+        capacity.try_reserve(1).err().expect("saturated").kind(),
+        io::ErrorKind::WouldBlock
+    );
+    release_tx.send(()).expect("release writer");
+    writer.join().expect("writer exits");
+
+    {
+        let _permit = capacity.try_reserve(1).expect("capacity released");
+        let connection = Connection::open(&database_path).expect("open second writer");
+        connection
+            .execute_batch("BEGIN IMMEDIATE; INSERT INTO records(value) VALUES ('second');")
+            .expect("start second transaction");
+        admission
+            .cancel()
+            .expect("cancel during accepted transaction");
+        assert!(capacity.try_reserve(1).is_err());
+        connection.execute_batch("COMMIT").expect("commit second");
+    }
+    assert!(capacity.try_reserve(1).is_err());
+    let count: i64 = Connection::open(&database_path)
+        .expect("open reader")
+        .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+        .expect("count committed rows");
+    assert_eq!(count, 2);
+}
+
+#[tokio::test]
+async fn failed_sqlite_transaction_rolls_back_and_releases_capacity() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let coordinator = coordinator(&repository_root, &database_path, Some(1), None);
+    coordinator.flush().await.expect("open admission");
+    let gate = coordinator.admission_gate();
+    let capacity = CapacityGate::new(gate, 1).expect("capacity");
+
+    {
+        let _permit = capacity.try_reserve(1).expect("reserve transaction");
+        let mut connection = Connection::open(&database_path).expect("open writer");
+        let transaction = connection.transaction().expect("begin transaction");
+        transaction
+            .execute("INSERT INTO records(id,value) VALUES (1,'temporary')", [])
+            .expect("first insert");
+        assert!(
+            transaction
+                .execute("INSERT INTO records(id,value) VALUES (1,'duplicate')", [])
+                .is_err(),
+            "duplicate key must fail"
+        );
+        assert_eq!(
+            capacity
+                .try_reserve(1)
+                .err()
+                .expect("still reserved")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        transaction.rollback().expect("rollback failed transaction");
+    }
+
+    let _permit = capacity
+        .try_reserve(1)
+        .expect("capacity released after rollback");
+    let connection = Connection::open(&database_path).expect("open reader");
+    let count: i64 = connection
+        .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+        .expect("count records");
+    assert_eq!(count, 0, "rollback must not persist the first insert");
+    connection
+        .execute("INSERT INTO records(id,value) VALUES (1,'retry')", [])
+        .expect("retry succeeds with recovered capacity");
+}
+
+#[tokio::test]
+async fn characterize_operation_quota_does_not_enforce_wal_bytes() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let connection = Connection::open(&database_path).expect("open SQLite");
+    connection
+        .execute_batch("PRAGMA wal_autocheckpoint=0; PRAGMA wal_checkpoint(TRUNCATE)")
+        .expect("truncate initial WAL");
+    let adapter = coordinator_adapter(Some(1));
+    let mut configured_limits = limits(1 << 30);
+    configured_limits.max_wal_bytes = 9_000;
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter,
+        limits: configured_limits,
+        remote: None,
+    })
+    .expect("coordinator");
+    coordinator.flush().await.expect("initial flush");
+    let capacity = CapacityGate::new(coordinator.admission_gate(), 1).expect("capacity");
+    for _ in 0..3 {
+        let _permit = capacity.try_reserve(1).expect("operation admitted");
+        connection
+            .execute("INSERT INTO records(value) VALUES ('test')", [])
+            .expect("commit write");
+    }
+    let status = coordinator.status().expect("status after writes");
+    println!(
+        "wal_bytes={} configured_max={}",
+        status.wal_bytes, configured_limits.max_wal_bytes
+    );
+    assert!(status.wal_bytes > configured_limits.max_wal_bytes);
+    assert!(
+        capacity.try_reserve(1).is_ok(),
+        "characterization: operation budget alone does not enforce the WAL byte limit"
+    );
+}
+
+#[tokio::test]
+async fn cancellation_during_drain_leaves_admission_closed_without_waiting_for_writer() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let adapter = coordinator_adapter(Some(1));
+    let coordinator = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: limits(1 << 30),
+        remote: None,
+    })
+    .expect("coordinator");
+    let gate = coordinator.admission_gate();
+    let (sender, mut events) = tokio::sync::mpsc::channel(1);
+    let worker = tokio::spawn(async move { coordinator.run(&mut events).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while gate.try_accept().is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("admission opens");
+    let permit = gate.try_accept().expect("accept writer");
+    sender.send(()).await.expect("request flush");
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while adapter.admission.lock().expect("admission lock").len() < 4 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("flush closes admission");
+    gate.cancel().expect("cancel during drain");
+    tokio::time::timeout(Duration::from_secs(1), worker)
+        .await
+        .expect("cancelled run exits without revoking the writer")
+        .expect("worker task")
+        .expect("clean cancellation");
+    assert!(gate.try_accept().is_err());
+    drop(permit);
+    assert!(gate.try_accept().is_err());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn second_run_is_rejected_without_cancelling_active_run() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let coordinator = Arc::new(coordinator(&repository_root, &database_path, Some(1), None));
+    let gate = coordinator.admission_gate();
+    let (_sender, mut events) = tokio::sync::mpsc::channel(1);
+    let running = Arc::clone(&coordinator);
+    let worker = tokio::spawn(async move { running.run(&mut events).await });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while gate.try_accept().is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("first run opens admission");
+
+    let (sender, mut second_events) = tokio::sync::mpsc::channel(1);
+    drop(sender);
+    let error = tokio::time::timeout(Duration::from_secs(5), coordinator.run(&mut second_events))
+        .await
+        .expect("second run is rejected promptly")
+        .expect_err("second run must not run concurrently");
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    assert!(gate.try_accept().is_ok(), "first run remains open");
+
+    let (_cancel_sender, mut cancellation) = tokio::sync::watch::channel(false);
+    let error = coordinator
+        .run_legacy(&mut second_events, &mut cancellation)
+        .await
+        .expect_err("legacy run must not overlap the active run");
+    assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+    assert!(gate.try_accept().is_ok(), "legacy call did not cancel run");
+
+    gate.cancel().expect("stop first run");
+    worker.await.expect("worker task").expect("worker exits");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn cooperative_sqlite_writers_reject_after_cancellation() {
+    const WRITERS: usize = 8;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let coordinator = coordinator(&repository_root, &database_path, Some(1), None);
+    let gate = coordinator.admission_gate();
+    let (_sender, mut events) = tokio::sync::mpsc::channel(1);
+    let worker = tokio::spawn(async move { coordinator.run(&mut events).await });
+
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while gate.try_accept().is_err() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("admission opens");
+
+    let _permit = gate.try_accept().expect("accept control write");
+    Connection::open(&database_path)
+        .expect("open database")
+        .execute("INSERT INTO records (value) VALUES ('before')", [])
+        .expect("control write succeeds");
+
+    let barrier = Arc::new(std::sync::Barrier::new(WRITERS + 1));
+    let mut writers = Vec::new();
+    for _ in 0..WRITERS {
+        let gate = gate.clone();
+        let path = database_path.clone();
+        let barrier = Arc::clone(&barrier);
+        writers.push(std::thread::spawn(move || {
+            barrier.wait();
+            let Ok(_permit) = gate.try_accept() else {
+                return false;
+            };
+            Connection::open(path)
+                .expect("open writer database")
+                .execute("INSERT INTO records (value) VALUES ('after')", [])
+                .expect("write admitted unexpectedly");
+            true
+        }));
+    }
+    gate.cancel().expect("cancel");
+    barrier.wait();
+    for writer in writers {
+        assert!(!writer.join().expect("writer thread"));
+    }
+    worker.await.expect("worker task").expect("worker exits");
+    let (before, after): (i64, i64) = Connection::open(&database_path)
+        .expect("open database")
+        .query_row(
+            "SELECT COUNT(*) FILTER (WHERE value = 'before'), COUNT(*) FILTER (WHERE value = 'after') FROM records",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .expect("count persisted rows");
+    assert_eq!((before, after), (1, 0));
 }
 
 #[tokio::test]

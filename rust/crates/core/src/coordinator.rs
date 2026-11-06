@@ -2,14 +2,15 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use sqlite_replication_spool::{read_remote_ack, recover};
 use sqlite_replication_storage_s3::S3Store;
 use tokio::sync::{Mutex, mpsc, watch};
 
 use crate::recovery::{RestoreTarget, build_restore_plan_from_filesystem};
-use crate::{CaptureResult, sync_to_s3};
+use crate::{AdmissionGate, CaptureResult, sync_to_s3};
 
 pub trait CoordinatorAdapter: Send + Sync + 'static {
     fn observe_txid(&self) -> io::Result<Option<u64>>;
@@ -19,6 +20,21 @@ pub trait CoordinatorAdapter: Send + Sync + 'static {
     /// closed if it returns an error; disabling must stop new writes before
     /// returning successfully.
     fn set_write_admission(&self, enabled: bool, limits: Limits) -> io::Result<()>;
+}
+
+/// Bounded result label for a completed flush future. `ReturnedOk` does not
+/// imply admission reopened: a worker can return `Ok` after observing cancellation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FlushOutcome {
+    ReturnedOk,
+    ReturnedError,
+}
+
+/// Called synchronously after the flush lock is released. Implementations must
+/// be fast, concurrency-safe, and must not panic. Duration includes lock wait,
+/// but excludes this callback. Dropped futures do not generate an observation.
+pub trait CoordinatorMetrics: Send + Sync + 'static {
+    fn observe_flush(&self, duration: Duration, outcome: FlushOutcome);
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,6 +63,21 @@ pub struct CoordinatorConfig {
 pub struct Coordinator {
     config: CoordinatorConfig,
     flush_lock: Mutex<()>,
+    metrics: Option<Arc<dyn CoordinatorMetrics>>,
+    admission: AdmissionGate,
+    run_active: AtomicBool,
+}
+
+struct RunCancellationGuard<'a> {
+    admission: AdmissionGate,
+    active: &'a AtomicBool,
+}
+
+impl Drop for RunCancellationGuard<'_> {
+    fn drop(&mut self) {
+        let _ = self.admission.cancel();
+        self.active.store(false, Ordering::Release);
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,7 +150,22 @@ impl Coordinator {
         Ok(Self {
             config,
             flush_lock: Mutex::new(()),
+            metrics: None,
+            admission: AdmissionGate::new(),
+            run_active: AtomicBool::new(false),
         })
+    }
+
+    /// Gate shared by the cancellation controller and every cooperating writer.
+    /// Writers must use this same instance at their actual acceptance boundary.
+    pub fn admission_gate(&self) -> AdmissionGate {
+        self.admission.clone()
+    }
+
+    /// Installs an optional observer without requiring an exporter or server.
+    pub fn with_metrics(mut self, metrics: Arc<dyn CoordinatorMetrics>) -> Self {
+        self.metrics = Some(metrics);
+        self
     }
 
     /// Reports available positions separately; absent values remain `None`.
@@ -228,7 +274,22 @@ impl Coordinator {
     }
 
     async fn flush_internal(&self, cancellation: Option<&watch::Receiver<bool>>) -> io::Result<()> {
+        let started = Instant::now();
+        let result = self.flush_locked(cancellation).await;
+        if let Some(metrics) = &self.metrics {
+            let outcome = if result.is_ok() {
+                FlushOutcome::ReturnedOk
+            } else {
+                FlushOutcome::ReturnedError
+            };
+            metrics.observe_flush(started.elapsed(), outcome);
+        }
+        result
+    }
+
+    async fn flush_locked(&self, cancellation: Option<&watch::Receiver<bool>>) -> io::Result<()> {
         let _guard = self.flush_lock.lock().await;
+        self.admission.close()?;
         let target = match self.config.adapter.observe_txid() {
             Ok(Some(target)) => target,
             Ok(None) => {
@@ -250,6 +311,27 @@ impl Coordinator {
         self.config
             .adapter
             .set_write_admission(false, self.config.limits)?;
+        if let Some(cancellation) = cancellation {
+            let mut cancellation = cancellation.clone();
+            loop {
+                if *cancellation.borrow() || cancellation.has_changed().is_err() {
+                    return Ok(());
+                }
+                tokio::select! {
+                    result = self.admission.drain() => {
+                        result?;
+                        break;
+                    }
+                    changed = cancellation.changed() => {
+                        if changed.is_err() || *cancellation.borrow() {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+        } else {
+            self.admission.drain().await?;
+        }
         let mut status = self.status()?;
         let mut local_txid = status
             .local_durable
@@ -310,21 +392,79 @@ impl Coordinator {
         }
         self.config
             .adapter
-            .set_write_admission(true, self.config.limits)
+            .set_write_admission(true, self.config.limits)?;
+        if self.admission.is_cancelled()? {
+            self.config
+                .adapter
+                .set_write_admission(false, self.config.limits)?;
+            return Ok(());
+        }
+        match self.admission.open() {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                let close_result = self
+                    .config
+                    .adapter
+                    .set_write_admission(false, self.config.limits);
+                if self.admission.is_cancelled()? {
+                    close_result
+                } else {
+                    Err(join_io(error, close_result))
+                }
+            }
+        }
     }
 
-    /// Runs an initial reconciliation, then flushes on coalescible adapter
-    /// events. The caller must start with writes denied; cancellation or a
-    /// closed event stream leaves admission closed.
-    pub async fn run(
+    /// Runs with cancellation and cooperating writers using the shared gate.
+    /// A write accepted before cancellation may still complete afterwards.
+    pub async fn run(&self, events: &mut mpsc::Receiver<()>) -> io::Result<()> {
+        let _guard = self.begin_run()?;
+        let mut cancellation = self.admission.subscribe();
+        let result = self.run_inner(events, &mut cancellation).await;
+        self.admission.cancel()?;
+        result
+    }
+
+    /// Runs an initial reconciliation with a legacy independent cancellation
+    /// receiver. This receiver alone cannot guarantee strict write admission;
+    /// use `run` and the shared gate for cooperating writers.
+    pub async fn run_legacy(
         &self,
         events: &mut mpsc::Receiver<()>,
         cancellation: &mut watch::Receiver<bool>,
     ) -> io::Result<()> {
+        let _guard = self.begin_run()?;
+        self.run_inner(events, cancellation).await
+    }
+
+    fn begin_run(&self) -> io::Result<RunCancellationGuard<'_>> {
+        if self
+            .run_active
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "a coordinator run is already active",
+            ));
+        }
+        Ok(RunCancellationGuard {
+            admission: self.admission.clone(),
+            active: &self.run_active,
+        })
+    }
+
+    async fn run_inner(
+        &self,
+        events: &mut mpsc::Receiver<()>,
+        cancellation: &mut watch::Receiver<bool>,
+    ) -> io::Result<()> {
+        self.admission.close()?;
         self.config
             .adapter
             .set_write_admission(false, self.config.limits)?;
         if *cancellation.borrow() {
+            self.admission.cancel()?;
             return Ok(());
         }
         self.flush_internal(Some(cancellation)).await?;
@@ -332,12 +472,14 @@ impl Coordinator {
             tokio::select! {
                 changed = cancellation.changed() => {
                     if changed.is_err() || *cancellation.borrow() {
+                        self.admission.cancel()?;
                         self.config.adapter.set_write_admission(false, self.config.limits)?;
                         return Ok(());
                     }
                 }
                 event = events.recv() => {
                     if event.is_none() {
+                        self.admission.cancel()?;
                         self.config.adapter.set_write_admission(false, self.config.limits)?;
                         return Ok(());
                     }

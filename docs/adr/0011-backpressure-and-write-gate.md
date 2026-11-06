@@ -140,3 +140,112 @@ de produção.
 Não remover limites nem mudar comportamento estrito/degradado sem novo contrato
 e testes de saturação/cancelamento. Ajustar números após workload/benchmark
 mensurado; limites de segurança não podem ser desativados silenciosamente.
+
+## Proposta para revisão: cancelamento e admissão Rust — 2026-11-05
+
+**Status: direção aprovada pelo usuário em 2026-11-06; implementação e validação
+integrais pendentes.** O contrato atual entrega um
+`watch::Sender` à aplicação, independente de `CoordinatorAdapter::set_write_admission`.
+O teste `cancellation_inside_admission_callback_never_reopens_writes` demonstra
+que o callback pode sinalizar cancelamento e depois abrir a admissão: o
+coordenador não controla as instruções dentro desse callback. Consultar `watch`
+antes ou depois não torna essas ações atômicas; segurar um borrow do `watch`
+durante o callback pode bloquear indefinidamente um envio reentrante.
+
+Uma solução estrita precisa que a aplicação coopere no ponto efetivo de aceitação
+de cada escrita: o sinal de cancelamento e a decisão de aceitar a escrita devem
+compartilhar um estado sincronizado, monotônico e controlado por uma única API.
+Abrir o gate externo não basta se o escritor puder ignorar esse estado. A API de
+cancelamento teria de mudar ou exigir que o adapter e todos os produtores de
+escrita adotem o mesmo protocolo; um `watch::Sender` independente não pode
+garantir a ordem atômica. O protocolo deve definir o ponto de linearização de
+cancelamento versus escrita, falhar fechado, evitar callback de usuário sob lock
+reentrante e não alegar interrupção de `spawn_blocking`. O teste atual é também um
+adapter deliberadamente não cooperativo: nenhuma implementação do coordenador
+pode impedir a instrução de abertura executada por esse callback depois de ele
+próprio cancelar, se continuar invocando esse callback sob o contrato atual.
+
+Alternativa sem mudança de API: fechar admissão novamente após observar
+cancelamento, aceitando uma janela em que escritas podem passar. Isso não cumpre
+o requisito estrito e não deve ser apresentado como solução equivalente. Requer
+revisão do contrato antes de alterar a API ou suas garantias; testes devem cobrir
+concorrência real, reentrada, timeout, encerramento e os adapters efetivos.
+
+### Implementação em andamento
+
+O usuário aprovou o protocolo estrito e a preparação de distribuição do
+workspace Rust completo, sem autorizar publicação. `AdmissionGate` introduz um
+estado compartilhado inicialmente fechado, cancelamento monotônico e um ponto
+de aceitação sincronizado. Permissões aceitas antes do cancelamento não são
+revogadas. Ele não bloqueia escritores externos ou não cooperativos. O
+coordenador agora expõe o gate e uma entrada
+principal `run`, exercitada por um adapter de teste cooperativo que
+cancela dentro do callback. A regressão `cancellation_inside_admission_callback_never_reopens_writes`
+foi adaptada para verificar aceitação real pelo gate compartilhado. A antiga
+condição impossível para callback não cooperativo permanece explicitamente
+caracterizada no teste `legacy_independent_cancellation_can_reopen_adapter_admission`:
+a API legada `run_legacy` ainda aceita cancelamento independente e pode reabrir o
+gate externo após cancelamento. Não há adapter de produção homologado nem
+garantia de que escritores reais usem o gate. Portanto a integração e validação
+permanecem incompletas; testes verdes da API cooperativa não tornam a API
+legada estrita, nem demonstram proteção de escritores externos.
+
+`run` recebe eventos; a aplicação cancela por `admission_gate().cancel()` e os
+escritores cooperativos devem chamar `try_accept()` no ponto de admissão. Ao
+descartar o future de `run`, um guard cancela o gate compartilhado, mas não
+interrompe `spawn_blocking`, revoga escritas já aceitas ou garante fechamento do
+gate externo do adapter. A API anterior mudou de nome e assinatura; migração
+dos consumidores e validação de limites reais continuam necessárias.
+
+O coordenador rejeita uma segunda chamada concorrente de `run` ou `run_legacy`
+com `AlreadyExists`, sem cancelar a chamada ativa. Antes dessa proteção, uma
+segunda chamada que recebia encerramento dos eventos podia cancelar o gate
+compartilhado da primeira; o teste de regressão reproduziu a falha e passou
+depois da correção. O guard cancela o gate ao sair ou descartar o future; ele
+não sincroniza `run` com outros coordenadores que usem o mesmo banco ou com
+escritores externos e não substitui reserva de capacidade.
+Após essa alteração, `make test` passou com Go 1.27.3, Rust 1.99.1 e
+`GOFLAGS=-count=1`, incluindo 12 testes do coordenador, fuzz smoke,
+conformance e Floci com restart. Os drills CP-01 não foram repetidos nessa
+execução, e o resultado não homologa adapters de produção.
+
+O `AcceptedWrite` agora contabiliza operações aceitas; após fechar o gate e o
+adapter, `flush` aguarda a liberação de todos os permits antes da captura. O
+teste `flush_waits_for_previously_accepted_writer` falhou antes da mudança e
+passou depois, verificando que novas aceitações são recusadas enquanto o flush
+aguarda. Cada escritor cooperativo precisa manter seu permit até terminar a
+escrita; esquecê-lo pode bloquear a espera indefinidamente, e soltá-lo cedo
+quebra a proteção. Isso não drena processos externos, não cancela trabalho já
+aceito, não implementa timeout de flush independente nem reserva de bytes/quotas. O TXID alvo continua
+sendo observado no início do flush; o teste não muda essa semântica.
+Após essa mudança, `make test` passou com Go 1.27.3, Rust 1.99.1 e
+`GOFLAGS=-count=1`: 13 testes do coordenador, fuzz smoke, conformance cruzada
+e Floci com restart passaram. Os testes opt-in CP-01 não foram repetidos; o
+gate não comprova reserva de capacidade nem homologa adapters de produção.
+
+Durante `run`, cancelamento enquanto o flush aguarda permits interrompe a
+espera e mantém a admissão fechada, sem revogar o trabalho aceito; o teste
+`cancellation_during_drain_leaves_admission_closed_without_waiting_for_writer`
+falhou por timeout antes da correção e passou depois. `flush` independente não
+possui cancelamento próprio e pode aguardar indefinidamente. O teste de estado
+envenenado verifica que aceitação, cancelamento e drenagem retornam erro em vez
+de abrir silenciosamente; não demonstra recuperação automática do mutex.
+Após essas alterações, `make test` passou com Go 1.27.3, Rust 1.99.1 e
+`GOFLAGS=-count=1`, incluindo 14 testes do coordenador, fuzz smoke, conformance
+e Floci com restart. Os drills CP-01 não foram repetidos nessa execução.
+
+Em teste local `cooperative_sqlite_writers_reject_after_cancellation`, uma
+escrita SQLite de controle foi aceita antes do cancelamento; oito threads
+esperaram uma barreira liberada após `cancel()` e todas foram recusadas pelo
+mesmo gate. A consulta ao banco confirmou uma linha anterior e nenhuma
+posterior. O teste usa adapter de teste, SQLite local e produtores cooperativos;
+não cobre corrida simultânea de aceitação/cancelamento nem valida limites de
+capacidade, drenagem de operações já aceitas ou integrações de produção.
+
+O teste unitário `acceptance_racing_cancellation_obeys_linearization` também
+disputa `try_accept()` e `cancel()` entre oito threads por 200 rodadas e verifica
+que novas aceitações e reabertura falham depois que `cancel()` retorna. Ele não
+classifica a ordem de cada aceitação concorrente nem prova exaustivamente todos
+os escalonamentos; aceitação que lineariza antes do cancelamento permanece
+permitida. Os três testes unitários `admission::tests` passaram com Cargo
+1.99.1 offline nessa execução.
