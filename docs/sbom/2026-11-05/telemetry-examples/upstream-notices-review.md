@@ -52,6 +52,23 @@ Essa busca não exclui avisos embutidos ou com outros nomes, nem cobre os
 termos transitivos. A dependência não está vendorizada na archive-fonte do
 candidato; a composição de binários e os avisos aplicáveis seguem por revisar.
 
+### Protobuf Rust transitivo no exemplo
+
+O manifesto de `prometheus` declara dependência de `protobuf`; no lockfile do
+exemplo do candidato `413e08d`, `protobuf` e `protobuf-support` estão fixados
+em 3.7.2. As archives `.crate` do cache coincidiram com seus checksums no
+lockfile: respectivamente
+`d65a1d4ddae7d8b5de68153b48f6aa3bba8cb002b243dbdbc55a5afbc98f99f4`
+e `3e36c2f31e0a47f9280fb347ef5e461ffcd2c52dd520d8e216b52f93b0b0d7d6`.
+A busca em todos os membros por basename iniciado por `LICENSE`, `NOTICE` ou
+`COPYING` encontrou `LICENSE.txt` em cada archive, com o mesmo SHA-256
+`7f2fa80a60e84f8dc0747abb0e42342f83bded04a20461a636b47c0331b92ddf`;
+o texto MIT identifica copyright de Stepan Koltsov. Isso amplia a revisão
+prévia das cópias extraídas, mas não verifica avisos embutidos, outras
+dependências nem quais objetos integram um artefato final. Os textos originais
+continuam no cache, não na archive-fonte do candidato; sua aplicação e a
+distribuição permanecem sujeitas à revisão de direitos e notices.
+
 ## Prometheus e OpenTelemetry Go
 
 Nos caches dos módulos fixados do exemplo, os quatro módulos Prometheus abaixo
