@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/repositorylock"
 	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
 	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
 	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
@@ -21,6 +22,11 @@ func Snapshot(ctx context.Context, databasePath, repositoryRoot string) (string,
 	if err := storagefs.EnsureRepository(repositoryRoot); err != nil {
 		return "", err
 	}
+	lock, err := repositorylock.AcquireExclusive(repositoryRoot)
+	if err != nil {
+		return "", fmt.Errorf("lock repository for snapshot: %w", err)
+	}
+	defer lock.Close()
 	stagingDir := filepath.Join(repositoryRoot, ".staging")
 	if err := os.MkdirAll(stagingDir, 0o750); err != nil {
 		return "", fmt.Errorf("create snapshot staging directory: %w", err)
@@ -82,6 +88,11 @@ func Snapshot(ctx context.Context, databasePath, repositoryRoot string) (string,
 // RestoreSnapshot restores the repository's initial snapshot to a new path.
 // Existing destination files are never replaced.
 func RestoreSnapshot(ctx context.Context, repositoryRoot, destinationPath string) error {
+	lock, err := repositorylock.AcquireExclusive(repositoryRoot)
+	if err != nil {
+		return fmt.Errorf("lock repository for snapshot restore: %w", err)
+	}
+	defer lock.Close()
 	if _, err := storagefs.ReadRepository(repositoryRoot); err != nil {
 		return err
 	}

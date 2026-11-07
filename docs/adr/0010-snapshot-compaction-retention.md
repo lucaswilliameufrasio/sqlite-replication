@@ -106,6 +106,13 @@ restore inicial, Rust, operações remotas e participantes não cooperativos
 continuam fora da coordenação. Testes Go locais verificam contenção e a suíte
 de recovery; isso não fecha o gate de concorrência nem protege S3.
 
+**Etapa Go seguinte:** snapshot e restore iniciais também adquirem a trava;
+`EnsureRepository` no snapshot ainda precede a aquisição. Os testes atuais
+exercitam contenção no mesmo processo e o ciclo geral, mas não comprovam a
+exclusão mútua dos ciclos completos em processos distintos. Rust, publicações
+diretas e storage remoto permanecem fora; GC não é considerado seguro para
+concorrência enquanto esses limites persistirem.
+
 ## Reversão / reconsideração
 
 Não apagar objetos durante rollout do GC. Começar em dry-run; só habilitar
