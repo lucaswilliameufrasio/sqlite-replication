@@ -391,6 +391,18 @@ func TestGCPlanIsDryRunExplicitAndRevalidated(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(reviewed.Candidates[0].Key))); err != nil {
 		t.Fatalf("dry-run deleted candidate: %v", err)
 	}
+	tampered := reviewed
+	tampered.Candidates = append([]GCObject(nil), reviewed.Candidates...)
+	tampered.Candidates[0].Size++
+	if err := ApplyGCPlan(root, tampered); !errors.Is(err, ErrStaleGCPlan) {
+		t.Fatalf("tampered plan error = %v, want ErrStaleGCPlan", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(reviewed.Candidates[0].Key))); err != nil {
+		t.Fatalf("rejected plan removed candidate: %v", err)
+	}
+	if _, err := BuildRestorePlanFromFilesystem(root, Target{TXID: 2}); err != nil {
+		t.Fatalf("rejected plan damaged retained restore point: %v", err)
+	}
 	if err := ApplyGCPlan(root, reviewed); err != nil {
 		t.Fatalf("ApplyGCPlan: %v", err)
 	}
