@@ -406,7 +406,7 @@ func TestGCPlanIsDryRunExplicitAndRevalidated(t *testing.T) {
 	// Characterize the uncoordinated window: a new immutable snapshot can be
 	// published after revalidation and GC still removes its old candidate.
 	concurrentPath := filepath.Join(root, "ltx", "3", "0000000000000001-0000000000000003.ltx")
-	err = applyGCPlan(root, reviewed, func() error {
+	publication := func() error {
 		if err := os.MkdirAll(filepath.Dir(concurrentPath), 0o750); err != nil {
 			return err
 		}
@@ -422,7 +422,24 @@ func TestGCPlanIsDryRunExplicitAndRevalidated(t *testing.T) {
 			return err
 		}
 		return storagefs.Publish(staged.Name(), concurrentPath)
-	})
+	}
+	ready := make(chan struct{})
+	resume := make(chan struct{})
+	gcResult := make(chan error, 1)
+	go func() {
+		gcResult <- applyGCPlan(root, reviewed, func() error {
+			close(ready)
+			<-resume
+			return nil
+		})
+	}()
+	<-ready
+	publicationErr := publication()
+	close(resume)
+	err = <-gcResult
+	if publicationErr != nil {
+		t.Fatalf("publish while GC is paused: %v", publicationErr)
+	}
 	if err != nil {
 		t.Fatalf("characterize concurrent publication: %v", err)
 	}
