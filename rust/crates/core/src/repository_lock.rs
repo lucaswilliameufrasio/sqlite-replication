@@ -124,6 +124,19 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn initial_snapshot_initializes_metadata_before_lock_contention() {
+        let root = tempfile::tempdir().expect("repository");
+        let _lock = acquire(root.path()).expect("lock");
+        let error = crate::snapshot(root.path().join("missing.sqlite"), root.path())
+            .expect_err("snapshot must reject contention");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        sqlite_replication_storage_fs::read_repository(root.path())
+            .expect("metadata initialized before lock attempt");
+        assert!(!sqlite_replication_storage_fs::ltx_path(root.path(), 1, 1).exists());
+    }
+
+    #[test]
     #[ignore = "requires a separately built Go repositorylock test binary"]
     #[cfg(target_os = "linux")]
     fn go_process_rejects_rust_held_lock() {

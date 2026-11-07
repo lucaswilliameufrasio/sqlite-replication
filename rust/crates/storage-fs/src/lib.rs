@@ -171,6 +171,44 @@ mod tests {
     use super::{ensure_repository, publish, read_repository};
 
     #[test]
+    #[ignore = "requires a separately built Go storagefs test binary"]
+    #[cfg(target_os = "linux")]
+    fn simultaneous_go_rust_initialization_agrees_on_manifest() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::{Command, Stdio};
+
+        let binary = std::env::var_os("SQLITE_REPLICATION_GO_STORAGE_TEST_BINARY")
+            .expect("set Go storagefs test binary");
+        for _ in 0..20 {
+            let root = tempfile::tempdir().expect("repository");
+            let mut child = Command::new(&binary)
+                .arg("-test.run=^TestInitializeForRustInterop$")
+                .env("SQLITE_REPLICATION_INIT_INTEROP_ROOT", root.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .spawn()
+                .expect("spawn Go helper");
+            let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+            let mut line = String::new();
+            stdout.read_line(&mut line).expect("read ready");
+            assert_eq!(line, "READY\n");
+            writeln!(child.stdin.take().expect("stdin"), "start").expect("start Go");
+            ensure_repository(root.path()).expect("Rust initialization");
+            let repository = read_repository(root.path()).expect("read Rust manifest");
+            line.clear();
+            stdout.read_line(&mut line).expect("read Go identity");
+            assert_eq!(
+                line,
+                format!(
+                    "IDENTITY {} {}\n",
+                    repository.repository_id, repository.database_id
+                )
+            );
+            assert!(child.wait().expect("wait for Go").success());
+        }
+    }
+
+    #[test]
     fn repository_identity_is_stable() {
         let directory = tempfile::tempdir().expect("temporary directory");
         ensure_repository(directory.path()).expect("initialize repository");

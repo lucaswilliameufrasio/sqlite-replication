@@ -151,6 +151,19 @@ e sua execução não deve ser presumida protegida apenas porque captura o prote
 As APIs públicas de spool/storage e processos externos podem contornar a trava;
 o arquivo de trava é consultivo, não uma barreira de segurança.
 
+**Inicialização antes da trava:** em repositório vazio com a trava já ocupada,
+testes Go e Rust verificaram que a tentativa de snapshot cria e valida
+`_meta/repository.json` antes de retornar contenção, mas não publica o LTX
+inicial. Assim, falhar por contenção não implica ausência de efeitos sobre os
+metadados. Esses testes não estabelecem o resultado de inicializações simultâneas
+nem autorizam participantes externos a alterar o repositório.
+
+Um teste opt-in posterior iniciou `EnsureRepository` Go e `ensure_repository`
+Rust em processos separados para 20 diretórios vazios: ambas as leituras
+obtiveram a mesma identidade do manifesto. O início foi sincronizado, mas o
+teste não força ambas as operações ao mesmo ponto de publicação nem cobre crash
+ou durabilidade física; não demonstra todas as intercalações possíveis.
+
 **Caracterização de GC e captura Go:** em três execuções com `-race`, um GC
 filesystem em processo separado pausado depois da revalidação recusou uma captura
 concorrente; após liberação removeu a base nível zero enquanto o snapshot
