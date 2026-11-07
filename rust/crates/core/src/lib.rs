@@ -6,7 +6,6 @@ mod conservative_budget;
 mod coordinator;
 #[allow(dead_code)]
 mod recovery;
-#[allow(dead_code)]
 mod repository_lock;
 
 pub use admission::{AcceptedWrite, AdmissionGate, CapacityGate, CapacityPermit};

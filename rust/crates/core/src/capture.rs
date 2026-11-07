@@ -91,6 +91,7 @@ where
     F: FnMut(FaultPoint, usize) -> io::Result<()>,
 {
     check_cancelled(cancelled)?;
+    let _repository_lock = crate::repository_lock::acquire(repository_root)?;
     let lease = begin_capture_lease(source_path)?;
     let capture_result = capture_under_lease(
         &lease,

@@ -49,4 +49,22 @@ mod tests {
         drop(first);
         acquire(root.path()).expect("lock after release");
     }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn capture_rejects_held_repository_lock() {
+        let root = tempfile::tempdir().expect("repository");
+        let _lock = acquire(root.path()).expect("lock");
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let error = crate::capture::capture_once_cancellable(
+            &root.path().join("source.sqlite"),
+            root.path(),
+            1,
+            &cancelled,
+            |_, _| Ok(()),
+        )
+        .err()
+        .expect("capture must fail on contention");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+    }
 }
