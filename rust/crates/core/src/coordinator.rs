@@ -191,6 +191,8 @@ impl Coordinator {
         let observed_txid = self
             .observe_txid()
             .map_err(|error| (ErrorCategory::Adapter, error))?;
+        let _repository_lock = crate::repository_lock::acquire(&self.config.repository_root)
+            .map_err(|error| (ErrorCategory::LocalStorage, error))?;
         let state = recover(&self.config.repository_root, &[])
             .map_err(|error| (ErrorCategory::LocalStorage, error))?;
         let plan = build_restore_plan_from_filesystem(
@@ -330,7 +332,10 @@ impl Coordinator {
         } else {
             self.admission.drain().await?;
         }
-        let previous_txid = recover(&self.config.repository_root, &[])?.database.txid;
+        let previous_txid = {
+            let _repository_lock = crate::repository_lock::acquire(&self.config.repository_root)?;
+            recover(&self.config.repository_root, &[])?.database.txid
+        };
         let adapter = Arc::clone(&self.config.adapter);
         let (captured, _guard) = tokio::task::spawn_blocking(move || {
             let captured = adapter.capture();

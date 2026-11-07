@@ -19,6 +19,46 @@ struct BlockingCaptureAdapter {
 }
 
 #[tokio::test]
+#[cfg(target_os = "linux")]
+async fn coordinator_recovery_rejects_held_repository_lock() {
+    use std::os::fd::AsRawFd;
+
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    create_database(&database);
+    sqlite_replication_core::snapshot(&database, &repository).expect("snapshot");
+    let coordinator = coordinator(&repository, &database, Some(1), None);
+    let lock = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(repository.join(".repository-coordination.lock"))
+        .expect("open lock");
+    // SAFETY: lock owns the descriptor for the duration of the call.
+    assert_eq!(
+        unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) },
+        0
+    );
+    assert_eq!(
+        coordinator
+            .status()
+            .expect_err("status must contend")
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(
+        coordinator
+            .flush()
+            .await
+            .expect_err("flush must contend")
+            .kind(),
+        io::ErrorKind::WouldBlock
+    );
+    drop(lock);
+    coordinator.status().expect("status after release");
+}
+
+#[tokio::test]
 async fn conservative_budget_reconciles_observed_wal_after_unknown_growth() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database_path = directory.path().join("source.sqlite");
