@@ -252,7 +252,12 @@ pub(crate) fn restore_to_target(
     destination: &Path,
     target: RestoreTarget,
 ) -> io::Result<()> {
+    let _repository_lock = crate::repository_lock::acquire(root)?;
     let plan = build_restore_plan_from_filesystem(root, target)?;
+    restore_plan(root, destination, &plan)
+}
+
+fn restore_plan(root: &Path, destination: &Path, plan: &RestorePlan) -> io::Result<()> {
     let base = plan
         .segments
         .first()
@@ -342,6 +347,7 @@ pub(crate) fn compact_to_snapshot(
     root: &Path,
     target: RestoreTarget,
 ) -> io::Result<std::path::PathBuf> {
+    let _repository_lock = crate::repository_lock::acquire(root)?;
     let plan = build_restore_plan_from_filesystem(root, target)?;
     let level_root = root.join("ltx");
     let mut maximum_level = 0_u32;
@@ -371,7 +377,7 @@ pub(crate) fn compact_to_snapshot(
 
     let restore_directory = tempfile::tempdir()?;
     let restored_path = restore_directory.path().join("compacted.sqlite");
-    restore_to_target(root, &restored_path, target)?;
+    restore_plan(root, &restored_path, &plan)?;
     let mut database = File::open(&restored_path)?;
     let database_size = database.metadata()?.len();
     let mut staged = tempfile::Builder::new()
@@ -1026,11 +1032,31 @@ mod tests {
     use super::{
         PlanError, RestoreTarget, Segment, SnapshotPolicy, apply_gc_plan, apply_s3_gc_plan,
         build_gc_plan, build_restore_plan, build_restore_plan_from_filesystem, build_s3_gc_plan,
-        compact_if_due, compact_s3_to_snapshot, local_key_to_s3_key, restore_s3_to_target,
-        restore_to_target, s3_key_to_local_key, should_compact,
+        compact_if_due, compact_s3_to_snapshot, compact_to_snapshot, local_key_to_s3_key,
+        restore_s3_to_target, restore_to_target, s3_key_to_local_key, should_compact,
     };
 
     const FLAG: u64 = 1 << 63;
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn restore_and_compaction_reject_held_repository_lock() {
+        let root = tempfile::tempdir().expect("repository");
+        let _lock = crate::repository_lock::acquire(root.path()).expect("hold lock");
+        let target = RestoreTarget::Txid(1);
+        assert_eq!(
+            restore_to_target(root.path(), &root.path().join("restored.sqlite"), target)
+                .expect_err("restore must reject contention")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            compact_to_snapshot(root.path(), target)
+                .expect_err("compaction must reject contention")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
 
     struct NoopWriteGate;
 
