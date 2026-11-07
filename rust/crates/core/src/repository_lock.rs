@@ -107,4 +107,36 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    #[test]
+    #[ignore = "requires a separately built Go repositorylock test binary"]
+    #[cfg(target_os = "linux")]
+    fn rust_rejects_go_process_held_lock() {
+        use std::io::{BufRead, BufReader, Write};
+        use std::process::Stdio;
+
+        let binary = std::env::var_os("SQLITE_REPLICATION_GO_LOCK_TEST_BINARY")
+            .expect("set Go lock test binary path");
+        let root = tempfile::tempdir().expect("repository");
+        let mut child = std::process::Command::new(binary)
+            .arg("-test.run=^TestHoldRepositoryLockForInterop$")
+            .env("SQLITE_REPLICATION_INTEROP_HOLD_ROOT", root.path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("run Go holder");
+        let mut line = String::new();
+        let mut stdout = BufReader::new(child.stdout.take().expect("child stdout"));
+        stdout.read_line(&mut line).expect("read readiness");
+        assert_eq!(line.trim(), "LOCKED");
+        assert_eq!(
+            acquire(root.path())
+                .expect_err("Rust must see contention")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        writeln!(child.stdin.take().expect("child stdin"), "release").expect("release child");
+        assert!(child.wait().expect("wait for Go holder").success());
+        acquire(root.path()).expect("Rust lock after release");
+    }
 }

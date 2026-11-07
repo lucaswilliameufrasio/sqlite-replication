@@ -3,7 +3,9 @@
 package repositorylock
 
 import (
+	"bufio"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"testing"
@@ -42,5 +44,23 @@ func TestExclusiveLockAcrossProcesses(t *testing.T) {
 	}
 	if err := reacquired.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestHoldRepositoryLockForInterop(t *testing.T) {
+	root := os.Getenv("SQLITE_REPLICATION_INTEROP_HOLD_ROOT")
+	if root == "" {
+		t.Skip("helper for cross-language lock test")
+	}
+	file, err := AcquireExclusive(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := fmt.Fprintln(os.Stdout, "LOCKED"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := bufio.NewReader(os.Stdin).ReadString('\n'); err != nil {
+		t.Fatalf("wait for release: %v", err)
 	}
 }
