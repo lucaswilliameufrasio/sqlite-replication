@@ -28,7 +28,9 @@ real e adapter sintético, coleta Prometheus e OpenTelemetry em memória e
 verifica uma amostra `returned_ok` e uma `returned_error` em ambos. O exporter
 OpenTelemetry em memória é apenas um utilitário de teste.
 
-Este workspace não participa do gate do workspace Rust principal. Seu
+Este workspace permanece separado do workspace Rust principal. O alvo
+`make test-telemetry` na raiz verifica os exemplos Go e Rust, e integra o
+`make test`; `make test-native` continua sem esse alvo. Seu
 [inventário separado](../../../docs/sbom/2026-11-05/telemetry-examples/README.md)
 é preliminar; suas dependências e notices exigem revisão antes de distribuição.
 Não valida o gate de admissão de produção, o caso de cancelamento em voo, a

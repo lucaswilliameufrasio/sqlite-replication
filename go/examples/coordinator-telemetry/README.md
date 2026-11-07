@@ -26,7 +26,8 @@ panic. Não coloque paths, IDs, credenciais ou mensagens de erro nos atributos.
 Execute `go test -race -count=3 ./...` neste diretório. O teste usa um snapshot
 SQLite real, um adapter sintético e registradores em memória, e verifica os três
 resultados sem abrir endpoint. Este módulo aninhado não é incluído por `go test
-./...` do módulo principal. Seu [inventário separado](../../../docs/sbom/2026-11-05/telemetry-examples/README.md)
+./...` do módulo principal, mas é executado pelo alvo `make test-telemetry` e
+pelo `make test` na raiz. Seu [inventário separado](../../../docs/sbom/2026-11-05/telemetry-examples/README.md)
 é preliminar; dependências precisam de auditoria e notices antes de distribuição. Não é validação
 dos adapters de admissão de produção nem dos fluxos Rust.
 
