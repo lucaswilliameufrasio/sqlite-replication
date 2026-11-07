@@ -113,6 +113,23 @@ exclusão mútua dos ciclos completos em processos distintos. Rust, publicaçõe
 diretas e storage remoto permanecem fora; GC não é considerado seguro para
 concorrência enquanto esses limites persistirem.
 
+**Estado posterior Go/Rust (`bf93969`):** captura, snapshot e restore iniciais,
+restore incremental, compactação e aplicação de GC filesystem utilizam a mesma
+trava consultiva local nas duas implementações. Nos snapshots iniciais, a
+inicialização de metadados ainda precede sua aquisição. Testes opt-in em Linux
+x86-64 confirmaram contenção da primitiva entre processos nos dois sentidos e
+reaquisição Rust após liberação Go; não exercitaram ciclos completos de captura
+e GC concorrentes. A caracterização Go acima chama o executor interno sem trava
+e usa publicação direta: ela demonstra o limite de participantes que contornam
+o protocolo, não uma falha comprovada dos ciclos cooperativos atuais.
+
+Publicação direta no storage, alteração externa do repositório ou do arquivo de
+trava, mudanças de política e outros participantes não cooperativos permanecem
+fora da proteção. O arquivo de trava não deve ser removido durante operações.
+S3 não é coordenado por essa trava; Floci não prova semântica universal nem
+coordenação remota. Não se declara homologação de GC concorrente, CP-01 ou
+distribuição com base nesses testes.
+
 ## Reversão / reconsideração
 
 Não apagar objetos durante rollout do GC. Começar em dry-run; só habilitar
