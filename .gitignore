@@ -4,6 +4,7 @@ go/coverage.html
 
 # Rust
 rust/target/
+rust/examples/coordinator-telemetry/target/
 
 # Local Floci persistence and test output
 infra/floci-data/
