@@ -130,6 +130,15 @@ S3 não é coordenado por essa trava; Floci não prova semântica universal nem
 coordenação remota. Não se declara homologação de GC concorrente, CP-01 ou
 distribuição com base nesses testes.
 
+**Evidência adicional (`0b828e6`):** em Linux x86-64, testes opt-in com
+SQLite real e processos separados exercitaram captura Go contra GC Rust e
+captura Rust contra GC Go, nos cenários de sucesso e falha injetada. A aplicação
+do GC recusou a trava ocupada e preservou o candidato; após a captura terminar,
+um plano atualizado foi aplicado, o candidato removido e o ponto retido permaneceu
+planejável. Cada direção passou três vezes. Esses testes verificam contenção
+enquanto a captura detém a trava, não a garantia inversa de captura durante GC,
+nem participantes não cooperativos ou coordenação remota S3.
+
 ## Reversão / reconsideração
 
 Não apagar objetos durante rollout do GC. Começar em dry-run; só habilitar
