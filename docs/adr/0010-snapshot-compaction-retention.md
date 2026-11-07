@@ -78,8 +78,15 @@ protocolo compartilhado e verificado com todos os participantes pertinentes,
 GC deve permanecer privado e não deve ser executado concorrentemente com writer,
 compactador, outro GC ou alterações dos pontos prometidos. Esta é uma limitação
 identificada por inspeção, não uma demonstração de corrupção reproduzida nem uma
-homologação de solução; o teste `TestGCPlanIsDryRunExplicitAndRevalidated` cobre
-alteração anterior à aplicação, não essa janela concorrente.
+homologação de solução; o teste `TestGCPlanIsDryRunExplicitAndRevalidated`,
+naquela revisão, cobria alteração anterior à aplicação, não essa janela.
+
+**Caracterização posterior:** o teste Go acima agora também intercala, por um
+callback interno de teste, a publicação real em filesystem de um snapshot
+entre a comparação e as exclusões. O executor aceita a publicação e remove o
+candidato do plano anterior. Isso reproduz a janela em diretório temporário,
+mas não demonstra perda de restore point, não exercita processos concorrentes
+e não corrige ou homologa a coordenação local ou remota.
 
 ## Reversão / reconsideração
 

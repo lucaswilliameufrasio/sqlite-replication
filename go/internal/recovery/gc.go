@@ -84,6 +84,11 @@ func cloneTargets(targets []Target) []Target {
 // ApplyGCPlan explicitly applies a previously reviewed plan only after
 // rebuilding and comparing the complete immutable-object inventory.
 func ApplyGCPlan(root string, reviewed GCPlan) error {
+	return applyGCPlan(root, reviewed, nil)
+}
+
+// afterValidation is an internal test seam for exercising concurrent mutations.
+func applyGCPlan(root string, reviewed GCPlan, afterValidation func() error) error {
 	if len(reviewed.RequiredTargets) == 0 {
 		return fmt.Errorf("GC plan has no explicit retained restore points")
 	}
@@ -93,6 +98,11 @@ func ApplyGCPlan(root string, reviewed GCPlan) error {
 	}
 	if current.InventorySHA256 != reviewed.InventorySHA256 || !sameTargets(current.RequiredTargets, reviewed.RequiredTargets) || !sameGCObjects(current.Candidates, reviewed.Candidates) || !sameStrings(current.RetainedKeys, reviewed.RetainedKeys) {
 		return ErrStaleGCPlan
+	}
+	if afterValidation != nil {
+		if err := afterValidation(); err != nil {
+			return err
+		}
 	}
 	for _, candidate := range current.Candidates {
 		path := filepath.Join(root, filepath.FromSlash(candidate.Key))

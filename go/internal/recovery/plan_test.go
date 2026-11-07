@@ -403,8 +403,31 @@ func TestGCPlanIsDryRunExplicitAndRevalidated(t *testing.T) {
 	if _, err := BuildRestorePlanFromFilesystem(root, Target{TXID: 2}); err != nil {
 		t.Fatalf("rejected plan damaged retained restore point: %v", err)
 	}
-	if err := ApplyGCPlan(root, reviewed); err != nil {
-		t.Fatalf("ApplyGCPlan: %v", err)
+	// Characterize the uncoordinated window: a new immutable snapshot can be
+	// published after revalidation and GC still removes its old candidate.
+	concurrentPath := filepath.Join(root, "ltx", "3", "0000000000000001-0000000000000003.ltx")
+	err = applyGCPlan(root, reviewed, func() error {
+		if err := os.MkdirAll(filepath.Dir(concurrentPath), 0o750); err != nil {
+			return err
+		}
+		staged, err := os.CreateTemp(filepath.Dir(concurrentPath), ".snapshot-*.ltx")
+		if err != nil {
+			return err
+		}
+		if _, err := ltx.EncodeSnapshotAt(bytes.NewReader(database), int64(len(database)), staged, 3, 300); err != nil {
+			_ = staged.Close()
+			return err
+		}
+		if err := staged.Close(); err != nil {
+			return err
+		}
+		return storagefs.Publish(staged.Name(), concurrentPath)
+	})
+	if err != nil {
+		t.Fatalf("characterize concurrent publication: %v", err)
+	}
+	if _, err := os.Stat(concurrentPath); err != nil {
+		t.Fatalf("concurrent publication missing: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(reviewed.Candidates[0].Key))); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("GC candidate still exists: %v", err)
