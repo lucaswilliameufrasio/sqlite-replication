@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/repositorylock"
 	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
 	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
 	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
@@ -17,6 +18,11 @@ import (
 // RestoreToTarget reconstructs a verified repository point into a new file.
 // It is internal and remains unwired to the public API while CP-01 is pending.
 func RestoreToTarget(ctx context.Context, root, destinationPath string, target Target) error {
+	lock, err := repositorylock.AcquireExclusive(root)
+	if err != nil {
+		return fmt.Errorf("lock repository for restore: %w", err)
+	}
+	defer lock.Close()
 	plan, err := BuildRestorePlanFromFilesystem(root, target)
 	if err != nil {
 		return err
@@ -196,6 +202,11 @@ func removeRestoreArtifact(path string) error {
 // CompactToSnapshot writes and verifies an immutable higher-level full
 // snapshot for the selected point. Source segments are deliberately retained.
 func CompactToSnapshot(root string, target Target) (string, error) {
+	lock, err := repositorylock.AcquireExclusive(root)
+	if err != nil {
+		return "", fmt.Errorf("lock repository for compaction: %w", err)
+	}
+	defer lock.Close()
 	plan, err := BuildRestorePlanFromFilesystem(root, target)
 	if err != nil {
 		return "", err
@@ -232,7 +243,7 @@ func CompactToSnapshot(root string, target Target) (string, error) {
 	}
 	defer os.RemoveAll(restoreDirectory)
 	restoredPath := filepath.Join(restoreDirectory, "database.sqlite")
-	if err := RestoreToTarget(context.Background(), root, restoredPath, target); err != nil {
+	if err := restorePlan(context.Background(), root, restoredPath, plan); err != nil {
 		return "", fmt.Errorf("reconstruct compaction target: %w", err)
 	}
 	database, err := os.Open(restoredPath)

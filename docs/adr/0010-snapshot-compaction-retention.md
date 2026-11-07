@@ -91,13 +91,20 @@ e não corrige ou homologa a coordenação local ou remota.
 **Integração parcial experimental Go:** captura e aplicação filesystem do GC
 adquirem a mesma trava consultiva não bloqueante antes do ciclo e a mantêm até
 seu término. Um processo que não utiliza a trava não é impedido de publicar;
-snapshot, compactação, restore, Rust e S3 ainda não participam. O GC permanece
+naquela etapa snapshot, compactação, restore, Rust e S3 não participavam. O GC permanece
 privado e a corrida não é considerada corrigida. A implementação atende Linux
 e macOS, mas nesta etapa apenas Linux foi executado; demais plataformas falham
 fechadas. A existência permanente do arquivo de trava é necessária para que
 participantes cooperativos compartilhem o mesmo inode: não removê-lo durante
 operações. A prova entre processos até agora cobre apenas a primitiva isolada,
 não os ciclos de captura e GC completos em processos distintos.
+
+**Etapa Go posterior:** o restore incremental e a compactação filesystem também
+adquirem a trava pelo ciclo completo; a compactação reutiliza seu plano ao
+restaurar internamente, sem adquirir a trava novamente. O snapshot inicial,
+restore inicial, Rust, operações remotas e participantes não cooperativos
+continuam fora da coordenação. Testes Go locais verificam contenção e a suíte
+de recovery; isso não fecha o gate de concorrência nem protege S3.
 
 ## Reversão / reconsideração
 
