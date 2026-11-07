@@ -59,6 +59,28 @@ de durabilidade, coordenação do GC com o writer único, homologação CP-01 e
 confirmação de semântica nos provedores de produção. Até lá, M4 não é API pública
 nem promessa de produto.
 
+### Auditoria da janela de coordenação — 2026-11-06
+
+No checkout `8b2d9b3`, os executores privados filesystem Go
+(`go/internal/recovery/gc.go`, `ApplyGCPlan`) e Rust
+(`rust/crates/core/src/recovery.rs`, `apply_gc_plan`) reconstroem e comparam o
+plano antes de excluir candidatos, mas não mantêm um lock compartilhado com o
+writer entre essa comparação e as exclusões. Os executores S3 correspondentes
+(`ApplyS3GCPlan` e `apply_s3_gc_plan`) também reconstroem o plano e, em seguida,
+emitem deletes em lotes separados; o inventário é obtido por listagem e download,
+não como uma transação com os deletes.
+
+Rejeitar um plano já stale ou adulterado antes de começar a exclusão não prova
+segurança contra publicação ou mudança de política após essa verificação. Uma
+coordenação apenas em memória também não protege outro processo ou host, e um
+lock local não coordena por si só o prefixo remoto. Enquanto não houver um
+protocolo compartilhado e verificado com todos os participantes pertinentes,
+GC deve permanecer privado e não deve ser executado concorrentemente com writer,
+compactador, outro GC ou alterações dos pontos prometidos. Esta é uma limitação
+identificada por inspeção, não uma demonstração de corrupção reproduzida nem uma
+homologação de solução; o teste `TestGCPlanIsDryRunExplicitAndRevalidated` cobre
+alteração anterior à aplicação, não essa janela concorrente.
+
 ## Reversão / reconsideração
 
 Não apagar objetos durante rollout do GC. Começar em dry-run; só habilitar
