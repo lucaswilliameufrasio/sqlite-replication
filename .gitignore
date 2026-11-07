@@ -6,5 +6,8 @@ go/coverage.html
 rust/target/
 rust/examples/coordinator-telemetry/target/
 
+# Python conformance cache
+/conformance/__pycache__/
+
 # Local Floci persistence and test output
 infra/floci-data/
