@@ -87,4 +87,24 @@ mod tests {
             io::ErrorKind::WouldBlock
         );
     }
+
+    #[test]
+    #[ignore = "requires a separately built Go repositorylock test binary"]
+    #[cfg(target_os = "linux")]
+    fn go_process_rejects_rust_held_lock() {
+        let binary = std::env::var_os("SQLITE_REPLICATION_GO_LOCK_TEST_BINARY")
+            .expect("set Go lock test binary path");
+        let root = tempfile::tempdir().expect("repository");
+        let _lock = acquire(root.path()).expect("Rust repository lock");
+        let output = std::process::Command::new(binary)
+            .arg("-test.run=^TestExclusiveLockAcrossProcesses$")
+            .env("SQLITE_REPLICATION_LOCK_TEST_ROOT", root.path())
+            .output()
+            .expect("run Go lock test process");
+        assert!(
+            output.status.success(),
+            "Go process did not observe contention: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }
