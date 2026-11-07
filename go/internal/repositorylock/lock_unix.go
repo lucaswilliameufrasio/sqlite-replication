@@ -1,4 +1,4 @@
-//go:build linux
+//go:build linux || darwin
 
 // Package repositorylock provides an experimental cooperative local lock.
 // It does not coordinate remote storage or uncooperative processes.

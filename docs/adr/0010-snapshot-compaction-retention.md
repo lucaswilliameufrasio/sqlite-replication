@@ -88,6 +88,17 @@ candidato do plano anterior. Isso reproduz a janela em diretório temporário,
 mas não demonstra perda de restore point, não exercita processos concorrentes
 e não corrige ou homologa a coordenação local ou remota.
 
+**Integração parcial experimental Go:** captura e aplicação filesystem do GC
+adquirem a mesma trava consultiva não bloqueante antes do ciclo e a mantêm até
+seu término. Um processo que não utiliza a trava não é impedido de publicar;
+snapshot, compactação, restore, Rust e S3 ainda não participam. O GC permanece
+privado e a corrida não é considerada corrigida. A implementação atende Linux
+e macOS, mas nesta etapa apenas Linux foi executado; demais plataformas falham
+fechadas. A existência permanente do arquivo de trava é necessária para que
+participantes cooperativos compartilhem o mesmo inode: não removê-lo durante
+operações. A prova entre processos até agora cobre apenas a primitiva isolada,
+não os ciclos de captura e GC completos em processos distintos.
+
 ## Reversão / reconsideração
 
 Não apagar objetos durante rollout do GC. Começar em dry-run; só habilitar

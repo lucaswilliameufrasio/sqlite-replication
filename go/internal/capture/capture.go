@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/repositorylock"
 	"github.com/lucaswilliameufrasio/sqlite-replication/internal/spool"
 	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
 	"github.com/lucaswilliameufrasio/sqlite-replication/internal/wal"
@@ -41,6 +42,15 @@ func CaptureOnce(ctx context.Context, sourcePath, repositoryRoot string, timesta
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
+	lock, err := repositorylock.AcquireExclusive(repositoryRoot)
+	if err != nil {
+		return Result{}, fmt.Errorf("lock repository for capture: %w", err)
+	}
+	defer func() {
+		if err := lock.Close(); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("release repository capture lock: %w", err))
+		}
+	}()
 	lease, err := sqliteadapter.BeginCaptureLease(ctx, sourcePath)
 	if err != nil {
 		return Result{}, err

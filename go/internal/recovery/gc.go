@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/repositorylock"
 	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 )
 
@@ -84,6 +85,11 @@ func cloneTargets(targets []Target) []Target {
 // ApplyGCPlan explicitly applies a previously reviewed plan only after
 // rebuilding and comparing the complete immutable-object inventory.
 func ApplyGCPlan(root string, reviewed GCPlan) error {
+	lock, err := repositorylock.AcquireExclusive(root)
+	if err != nil {
+		return fmt.Errorf("lock repository for GC: %w", err)
+	}
+	defer lock.Close()
 	return applyGCPlan(root, reviewed, nil)
 }
 
