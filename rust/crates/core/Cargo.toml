@@ -17,6 +17,7 @@ rusqlite.workspace = true
 sha2.workspace = true
 tempfile.workspace = true
 tokio.workspace = true
+libc = "0.2"
 
 [dev-dependencies]
 aws-credential-types.workspace = true

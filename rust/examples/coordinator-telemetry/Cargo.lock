@@ -1892,6 +1892,7 @@ name = "sqlite-replication-core"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "libc",
  "rusqlite",
  "sha2",
  "sqlite-replication-ltx",
