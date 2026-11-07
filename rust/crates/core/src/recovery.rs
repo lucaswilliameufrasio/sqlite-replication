@@ -481,6 +481,7 @@ pub(crate) async fn sync_filesystem_to_s3(
     if remote_id.trim().is_empty() || remote_id.chars().any(char::is_control) {
         return Err(invalid_data("a stable, non-secret remote ID is required"));
     }
+    let _repository_lock = crate::repository_lock::acquire(root)?;
     read_repository(root)?;
     let state = sqlite_replication_spool::recover(root, &[])?;
     build_restore_plan_from_filesystem(root, RestoreTarget::Txid(state.database.txid))?;
@@ -1043,6 +1044,90 @@ mod tests {
     };
 
     const FLAG: u64 = 1 << 63;
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn dropping_s3_sync_during_upload_releases_local_repository_lock() {
+        use std::io::Read;
+        use std::net::TcpListener;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let source = root.path().join("source.sqlite");
+        let repo = root.path().join("repository");
+        let db = Connection::open(&source).expect("open SQLite");
+        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE items(value TEXT);")
+            .expect("initialize SQLite");
+        crate::snapshot(&source, &repo).expect("snapshot");
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind local server");
+        let endpoint = format!("http://{}", listener.local_addr().expect("address"));
+        let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(10)))
+                .expect("read timeout");
+            let mut bytes = [0; 4096];
+            let count = stream.read(&mut bytes).expect("read request");
+            assert!(count > 0);
+            reached_tx.send(()).expect("signal upload");
+            release_rx
+                .recv_timeout(Duration::from_secs(10))
+                .expect("release server");
+        });
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version_latest()
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .endpoint_url(endpoint)
+            .force_path_style(true)
+            .credentials_provider(Credentials::new("test", "test", None, None, "test"))
+            .build();
+        let store =
+            S3Store::new(aws_sdk_s3::Client::from_conf(config), "test-bucket").expect("store");
+        let mut sync = Box::pin(super::sync_filesystem_to_s3(
+            &store, &repo, "test", "remote",
+        ));
+        tokio::select! {
+            result = &mut sync => panic!("sync ended before upload was held: {result:?}"),
+            result = tokio::time::timeout(Duration::from_secs(10), reached_rx) => {
+                result.expect("upload timeout").expect("server signal");
+            }
+        }
+        assert_eq!(
+            crate::repository_lock::acquire(&repo)
+                .expect_err("upload holds lock")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        drop(sync);
+        crate::repository_lock::acquire(&repo).expect("lock released after future dropped");
+        release_tx.send(()).expect("release server");
+        server.join().expect("server thread");
+    }
+
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn s3_sync_rejects_held_local_repository_lock_and_releases_on_error() {
+        let root = tempfile::tempdir().expect("temporary directory");
+        let config = aws_sdk_s3::Config::builder()
+            .behavior_version_latest()
+            .region(aws_sdk_s3::config::Region::new("us-east-1"))
+            .credentials_provider(Credentials::new("test", "test", None, None, "test"))
+            .build();
+        let store =
+            S3Store::new(aws_sdk_s3::Client::from_conf(config), "test-bucket").expect("store");
+        let guard = crate::repository_lock::acquire(root.path()).expect("lock");
+        let error = super::sync_filesystem_to_s3(&store, root.path(), "test", "remote")
+            .await
+            .expect_err("must reject contention");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        drop(guard);
+        super::sync_filesystem_to_s3(&store, root.path(), "test", "remote")
+            .await
+            .expect_err("missing metadata must fail");
+        crate::repository_lock::acquire(root.path()).expect("lock released on error");
+    }
 
     #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]

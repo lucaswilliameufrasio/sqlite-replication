@@ -14,6 +14,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/repositorylock"
 	"github.com/lucaswilliameufrasio/sqlite-replication/internal/spool"
 	"github.com/lucaswilliameufrasio/sqlite-replication/storagefs"
 	"github.com/lucaswilliameufrasio/sqlite-replication/storages3"
@@ -51,6 +52,11 @@ func SyncFilesystemToS3(ctx context.Context, root string, store *storages3.Store
 			return S3SyncResult{}, fmt.Errorf("remote ID must not contain control characters")
 		}
 	}
+	lock, err := repositorylock.AcquireExclusive(root)
+	if err != nil {
+		return S3SyncResult{}, fmt.Errorf("lock local repository for S3 sync: %w", err)
+	}
+	defer lock.Close()
 	state, err := spool.Recover(root, nil)
 	if err != nil {
 		return S3SyncResult{}, fmt.Errorf("validate local LTX chain: %w", err)
