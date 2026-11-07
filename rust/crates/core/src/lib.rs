@@ -210,6 +210,7 @@ pub fn snapshot(
     let database_path = database_path.as_ref();
     let repository_root = repository_root.as_ref();
     ensure_repository(repository_root)?;
+    let _repository_lock = repository_lock::acquire(repository_root)?;
 
     let staging_directory = repository_root.join(".staging");
     fs::create_dir_all(&staging_directory)?;
@@ -252,6 +253,7 @@ pub fn restore_if_missing(
 ) -> io::Result<()> {
     let repository_root = repository_root.as_ref();
     let destination = destination.as_ref();
+    let _repository_lock = repository_lock::acquire(repository_root)?;
     sqlite_replication_storage_fs::read_repository(repository_root)?;
     let source = File::open(ltx_path(repository_root, 1, 1))?;
     let parent = destination

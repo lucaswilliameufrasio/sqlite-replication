@@ -67,4 +67,24 @@ mod tests {
         .expect("capture must fail on contention");
         assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
     }
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn initial_snapshot_and_restore_reject_held_lock() {
+        let root = tempfile::tempdir().expect("repository");
+        sqlite_replication_storage_fs::ensure_repository(root.path()).expect("initialize");
+        let _lock = acquire(root.path()).expect("lock");
+        assert_eq!(
+            crate::snapshot(root.path().join("source.sqlite"), root.path())
+                .expect_err("snapshot must reject contention")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert_eq!(
+            crate::restore_if_missing(root.path(), root.path().join("restored.sqlite"))
+                .expect_err("restore must reject contention")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
 }
