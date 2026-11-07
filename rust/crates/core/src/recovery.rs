@@ -835,6 +835,12 @@ pub(crate) fn build_gc_plan(root: &Path, required_targets: &[RestoreTarget]) -> 
     }
     let repository = read_repository(root)?;
     let (objects, objects_sha256) = list_gc_objects(root)?;
+    // Capture reconstructs from the level-zero base and every level-zero delta.
+    for object in &objects {
+        if object.key.starts_with("ltx/0/") {
+            retained.insert(object.key.clone());
+        }
+    }
     let mut inventory_hash = Sha256::new();
     inventory_hash.update(repository.repository_id.to_string().as_bytes());
     inventory_hash.update([0]);
@@ -1039,6 +1045,55 @@ mod tests {
     const FLAG: u64 = 1 << 63;
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn capture_continues_after_gc_preserves_level_zero_chain() {
+        use std::sync::atomic::AtomicBool;
+
+        let root = tempfile::tempdir().expect("temporary directory");
+        let source = root.path().join("source.sqlite");
+        let repo = root.path().join("repository");
+        let db = Connection::open(&source).expect("open SQLite");
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE items(value TEXT); INSERT INTO items VALUES ('base');")
+            .expect("initialize SQLite");
+        crate::snapshot(&source, &repo).expect("snapshot");
+        db.execute("INSERT INTO items VALUES ('first')", [])
+            .expect("first write");
+        let cancelled = AtomicBool::new(false);
+        let first = crate::capture::capture_once_cancellable(
+            &source,
+            &repo,
+            100,
+            &cancelled,
+            |_, _| Ok(()),
+        )
+        .expect("capture first write");
+        let target = RestoreTarget::Txid(first.state.database.txid);
+        compact_to_snapshot(&repo, target).expect("compact");
+        compact_to_snapshot(&repo, target).expect("replace compacted snapshot");
+        let plan = build_gc_plan(&repo, &[target]).expect("GC plan");
+        assert!(!plan.candidates.is_empty());
+        assert!(
+            plan.candidates
+                .iter()
+                .all(|object| !object.key.starts_with("ltx/0/"))
+        );
+        apply_gc_plan(&repo, &plan).expect("apply GC");
+        db.execute("INSERT INTO items VALUES ('second')", [])
+            .expect("second write");
+        let second = crate::capture::capture_once_cancellable(
+            &source,
+            &repo,
+            101,
+            &cancelled,
+            |_, _| Ok(()),
+        )
+        .expect("capture after GC");
+        assert!(second.state.database.txid > first.state.database.txid);
+        build_restore_plan_from_filesystem(&repo, RestoreTarget::Txid(second.state.database.txid))
+            .expect("plan latest restore");
+    }
+
+    #[test]
     #[ignore = "requires a separately built Go capture test binary"]
     #[cfg(target_os = "linux")]
     fn rust_capture_excludes_go_gc_until_success_or_failure() {
@@ -1055,6 +1110,7 @@ mod tests {
                 .expect("initialize SQLite");
             crate::snapshot(&source, &repo).expect("snapshot");
             compact_to_snapshot(&repo, RestoreTarget::Txid(1)).expect("compact snapshot");
+            compact_to_snapshot(&repo, RestoreTarget::Txid(1)).expect("replacement snapshot");
             db.execute("INSERT INTO items VALUES ('captured')", [])
                 .expect("write");
             let cancelled = AtomicBool::new(false);
@@ -1123,6 +1179,7 @@ mod tests {
                 .expect("initialize SQLite");
             crate::snapshot(&source, &repo).expect("snapshot");
             compact_to_snapshot(&repo, RestoreTarget::Txid(1)).expect("compact snapshot");
+            compact_to_snapshot(&repo, RestoreTarget::Txid(1)).expect("replacement snapshot");
             let plan = build_gc_plan(&repo, &[RestoreTarget::Txid(1)]).expect("plan GC");
             assert!(!plan.candidates.is_empty());
             let candidate = repo.join(&plan.candidates[0].key);
@@ -1419,14 +1476,18 @@ mod tests {
         assert_eq!(compacted_plan.segments.len(), 1);
         assert_eq!(compacted_plan.segments[0].level, 1);
 
+        let newer_snapshot = compact_to_snapshot(directory.path(), RestoreTarget::Txid(2))
+            .expect("publish replacement compacted snapshot");
+
         let gc_plan =
             build_gc_plan(directory.path(), &[RestoreTarget::Txid(2)]).expect("dry-run GC plan");
-        assert_eq!(gc_plan.candidates.len(), 2);
+        assert_eq!(gc_plan.candidates.len(), 1);
         assert!(base_path.exists());
         apply_gc_plan(directory.path(), &gc_plan).expect("apply revalidated GC plan");
-        assert!(!base_path.exists());
-        assert!(!delta_path.exists());
-        assert!(compacted_path.exists());
+        assert!(base_path.exists());
+        assert!(delta_path.exists());
+        assert!(!compacted_path.exists());
+        assert!(newer_snapshot.exists());
         build_restore_plan_from_filesystem(directory.path(), RestoreTarget::Txid(2))
             .expect("promised restore remains available after GC");
     }
@@ -1441,7 +1502,7 @@ mod tests {
         database[..16].copy_from_slice(b"SQLite format 3\0");
         database[16..18].copy_from_slice(&4096_u16.to_be_bytes());
         database[28..32].copy_from_slice(&1_u32.to_be_bytes());
-        for (level, txid) in [(0, 1), (1, 2)] {
+        for (level, txid) in [(0, 1), (1, 1), (2, 2)] {
             let path = directory
                 .path()
                 .join("ltx")
@@ -1855,8 +1916,9 @@ mod tests {
             .await
             .expect("build S3 dry-run GC plan");
         let delta_key = super::join_s3_key(prefix, "0000/0000000000000008-0000000000000008.ltx");
-        assert!(plan.candidate_object_keys.contains(&source_key));
-        assert!(plan.candidate_object_keys.contains(&delta_key));
+        assert!(!plan.candidate_object_keys.contains(&source_key));
+        assert!(!plan.candidate_object_keys.contains(&delta_key));
+        assert!(!plan.candidate_object_keys.is_empty());
         let original_candidates = plan.candidate_object_keys.clone();
 
         let extra_key = super::join_s3_key(prefix, "0002/0000000000000001-0000000000000007.ltx");
@@ -1890,6 +1952,14 @@ mod tests {
                 "GC candidate remains: {key}"
             );
         }
+        store
+            .head(&source_key)
+            .await
+            .expect("level-zero snapshot retained");
+        store
+            .head(&delta_key)
+            .await
+            .expect("level-zero delta retained");
 
         let restored_after_gc = restore_directory.path().join("restored-after-gc.sqlite");
         restore_s3_to_target(&store, prefix, &restored_after_gc, RestoreTarget::Txid(8))

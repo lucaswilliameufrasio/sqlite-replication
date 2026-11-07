@@ -357,7 +357,8 @@ func TestGCPlanIsDryRunExplicitAndRevalidated(t *testing.T) {
 		txid  uint64
 	}{
 		{level: 0, txid: 1},
-		{level: 1, txid: 2},
+		{level: 1, txid: 1},
+		{level: 2, txid: 2},
 	} {
 		finalPath := filepath.Join(root, "ltx", fmt.Sprint(item.level), fmt.Sprintf("%016x-%016x.ltx", 1, item.txid))
 		if err := os.MkdirAll(filepath.Dir(finalPath), 0o750); err != nil {
@@ -385,7 +386,7 @@ func TestGCPlanIsDryRunExplicitAndRevalidated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildGCPlan: %v", err)
 	}
-	if len(reviewed.Candidates) != 1 || !strings.Contains(reviewed.Candidates[0].Key, "0000000000000001-0000000000000001.ltx") {
+	if len(reviewed.Candidates) != 1 || !strings.HasPrefix(reviewed.Candidates[0].Key, "ltx/1/") {
 		t.Fatalf("unexpected dry-run candidates: %+v", reviewed.Candidates)
 	}
 	if _, err := os.Stat(filepath.Join(root, filepath.FromSlash(reviewed.Candidates[0].Key))); err != nil {

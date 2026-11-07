@@ -99,6 +99,9 @@ func TestCaptureGCSeparateProcesses(t *testing.T) {
 			if _, err := recovery.CompactToSnapshot(repo, recovery.Target{TXID: 1}); err != nil {
 				t.Fatal(err)
 			}
+			if _, err := recovery.CompactToSnapshot(repo, recovery.Target{TXID: 1}); err != nil {
+				t.Fatal(err)
+			}
 			plan, err := recovery.BuildGCPlan(repo, []recovery.Target{{TXID: 1}})
 			if err != nil {
 				t.Fatal(err)

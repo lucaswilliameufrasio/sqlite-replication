@@ -301,7 +301,7 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build S3 GC dry-run: %v", err)
 	}
-	if !containsString(plan.CandidateObjectKeys, remoteKeys[1]) || !containsString(plan.CandidateObjectKeys, remoteKeys[2]) {
+	if containsString(plan.CandidateObjectKeys, remoteKeys[1]) || containsString(plan.CandidateObjectKeys, remoteKeys[2]) || len(plan.CandidateObjectKeys) == 0 {
 		t.Fatalf("unexpected S3 GC candidates: %+v", plan.CandidateObjectKeys)
 	}
 	extraKey := joinS3Key(prefix, "0002/0000000000000001-0000000000000007.ltx")
@@ -340,6 +340,11 @@ func TestFlociS3RecoveryRestoreCompactionAndGC(t *testing.T) {
 		}
 		if _, err := store.Head(ctx, key); err == nil {
 			t.Fatalf("collected S3 candidate %q still exists", key)
+		}
+	}
+	for _, key := range remoteKeys[1:] {
+		if _, err := store.Head(ctx, key); err != nil {
+			t.Fatalf("level-zero object %q missing after GC: %v", key, err)
 		}
 	}
 	restoredAfterGC := filepath.Join(t.TempDir(), "restored-after-gc.sqlite")

@@ -160,6 +160,15 @@ evidencia incompatibilidade entre retenção para restore e necessidade do write
 não demonstra perda do ponto retido. GC concorrente e sua habilitação permanecem
 bloqueados até resolver essa necessidade e auditar os demais participantes.
 
+**Retenção conservadora posterior:** os planejadores Go e Rust mantêm todos os
+objetos LTX de nível zero, incluindo base e deltas, além dos caminhos exigidos
+para restore. O planejamento S3 reutiliza essa regra ao construir o inventário
+local; isso não cria coordenação remota. Testes locais verificam captura após
+coleta de snapshots redundantes, e os testes Floci verificam que objetos de nível
+zero permanecem após a coleta. Essa estratégia impede a coleta da cadeia de
+captura atual e, portanto, não limita o crescimento de armazenamento. Não é
+homologação de concorrência ou de provedores de produção.
+
 ## Reversão / reconsideração
 
 Não apagar objetos durante rollout do GC. Começar em dry-run; só habilitar

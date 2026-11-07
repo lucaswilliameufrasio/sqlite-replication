@@ -58,9 +58,17 @@ func TestCaptureWhileGCIsApplyingAcrossProcesses(t *testing.T) {
 	if _, err := CompactToSnapshot(repo, Target{TXID: 1}); err != nil {
 		t.Fatal(err)
 	}
+	if _, err := CompactToSnapshot(repo, Target{TXID: 1}); err != nil {
+		t.Fatal(err)
+	}
 	plan, err := BuildGCPlan(repo, []Target{{TXID: 1}})
 	if err != nil || len(plan.Candidates) == 0 {
 		t.Fatalf("GC plan: %+v, %v", plan, err)
+	}
+	for _, object := range plan.Candidates {
+		if object.Key == "ltx/0/0000000000000001-0000000000000001.ltx" {
+			t.Fatal("GC must retain the base needed by capture")
+		}
 	}
 	candidate := filepath.Join(repo, filepath.FromSlash(plan.Candidates[0].Key))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
@@ -106,9 +114,7 @@ func TestCaptureWhileGCIsApplyingAcrossProcesses(t *testing.T) {
 	if _, err := BuildRestorePlanFromFilesystem(repo, Target{TXID: 1}); err != nil {
 		t.Fatalf("retained point: %v", err)
 	}
-	if _, err := capture.CaptureOnce(context.Background(), source, repo, 101, nil); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("capture after GC = %v, want missing level-zero base", err)
-	} else {
-		t.Logf("capture after GC of level-zero base: %v", err)
+	if _, err := capture.CaptureOnce(context.Background(), source, repo, 101, nil); err != nil {
+		t.Fatalf("capture after GC: %v", err)
 	}
 }

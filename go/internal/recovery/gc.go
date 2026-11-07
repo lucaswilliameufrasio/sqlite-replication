@@ -53,6 +53,13 @@ func BuildGCPlan(root string, requiredTargets []Target) (GCPlan, error) {
 	if err != nil {
 		return GCPlan{}, err
 	}
+	// Capture reconstructs from the level-zero base and every level-zero delta.
+	// A restore-only plan must not collect that still-required writer chain.
+	for _, object := range objects {
+		if strings.HasPrefix(object.Key, "ltx/0/") {
+			retained[object.Key] = struct{}{}
+		}
+	}
 	fingerprint := sha256.Sum256([]byte(repository.RepositoryID + "\x00" + repository.DatabaseID + "\x00" + fmt.Sprintf("%x", inventoryFingerprint)))
 	plan := GCPlan{
 		RequiredTargets: cloneTargets(requiredTargets),
