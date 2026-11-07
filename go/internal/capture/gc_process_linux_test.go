@@ -19,6 +19,40 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+func TestGCFromRustCapture(t *testing.T) {
+	root := os.Getenv("SQLITE_REPLICATION_RUST_CAPTURE_GC_ROOT")
+	if root == "" {
+		t.Skip("helper for Rust capture and Go GC interoperability")
+	}
+	plan, err := recovery.BuildGCPlan(root, []recovery.Target{{TXID: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Candidates) == 0 {
+		t.Fatal("expected GC candidate")
+	}
+	candidate := filepath.Join(root, filepath.FromSlash(plan.Candidates[0].Key))
+	err = recovery.ApplyGCPlan(root, plan)
+	if os.Getenv("SQLITE_REPLICATION_RUST_CAPTURE_GC_CONTENDED") == "1" {
+		if !errors.Is(err, unix.EWOULDBLOCK) {
+			t.Fatalf("GC during Rust capture = %v", err)
+		}
+		if _, err := os.Stat(candidate); err != nil {
+			t.Fatalf("candidate under contention: %v", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("GC after capture: %v", err)
+	}
+	if _, err := os.Stat(candidate); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("candidate after GC: %v", err)
+	}
+	if _, err := recovery.BuildRestorePlanFromFilesystem(root, recovery.Target{TXID: 1}); err != nil {
+		t.Fatalf("retained point: %v", err)
+	}
+}
+
 func TestCaptureGCSeparateProcesses(t *testing.T) {
 	if root := os.Getenv("SQLITE_REPLICATION_CAPTURE_GC_CHILD"); root != "" {
 		injected := errors.New("injected capture failure")

@@ -1041,6 +1041,74 @@ mod tests {
     #[test]
     #[ignore = "requires a separately built Go capture test binary"]
     #[cfg(target_os = "linux")]
+    fn rust_capture_excludes_go_gc_until_success_or_failure() {
+        use std::sync::atomic::AtomicBool;
+
+        let binary = std::env::var_os("SQLITE_REPLICATION_GO_CAPTURE_TEST_BINARY")
+            .expect("set Go capture test binary path");
+        for fail in [false, true] {
+            let root = tempfile::tempdir().expect("temporary repository");
+            let source = root.path().join("source.sqlite");
+            let repo = root.path().join("repository");
+            let db = Connection::open(&source).expect("open SQLite");
+            db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE items (value TEXT); INSERT INTO items VALUES ('base');")
+                .expect("initialize SQLite");
+            crate::snapshot(&source, &repo).expect("snapshot");
+            compact_to_snapshot(&repo, RestoreTarget::Txid(1)).expect("compact snapshot");
+            db.execute("INSERT INTO items VALUES ('captured')", [])
+                .expect("write");
+            let cancelled = AtomicBool::new(false);
+            let mut reached = false;
+            let capture = crate::capture::capture_once_cancellable(
+                &source,
+                &repo,
+                100,
+                &cancelled,
+                |point, _| {
+                    if point == crate::capture::FaultPoint::AfterLeaseAcquire {
+                        reached = true;
+                        let output = Command::new(&binary)
+                            .arg("-test.run=^TestGCFromRustCapture$")
+                            .env("SQLITE_REPLICATION_RUST_CAPTURE_GC_ROOT", &repo)
+                            .env("SQLITE_REPLICATION_RUST_CAPTURE_GC_CONTENDED", "1")
+                            .output()?;
+                        assert!(
+                            output.status.success(),
+                            "Go GC contention: {}",
+                            String::from_utf8_lossy(&output.stdout)
+                        );
+                        if fail {
+                            return Err(io::Error::other("injected capture failure"));
+                        }
+                    }
+                    Ok(())
+                },
+            );
+            assert!(reached);
+            if fail {
+                assert_eq!(
+                    capture.err().expect("injected failure").to_string(),
+                    "injected capture failure"
+                );
+            } else {
+                assert!(capture.is_ok());
+            }
+            let output = Command::new(&binary)
+                .arg("-test.run=^TestGCFromRustCapture$")
+                .env("SQLITE_REPLICATION_RUST_CAPTURE_GC_ROOT", &repo)
+                .output()
+                .expect("run Go GC after capture");
+            assert!(
+                output.status.success(),
+                "Go GC after capture: {}",
+                String::from_utf8_lossy(&output.stdout)
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a separately built Go capture test binary"]
+    #[cfg(target_os = "linux")]
     fn go_capture_excludes_rust_gc_until_success_or_failure() {
         use std::io::{BufRead, BufReader, Write};
 
