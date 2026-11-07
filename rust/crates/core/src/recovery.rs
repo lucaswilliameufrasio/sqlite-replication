@@ -1039,6 +1039,61 @@ mod tests {
     const FLAG: u64 = 1 << 63;
 
     #[test]
+    #[ignore = "requires a separately built Go capture test binary"]
+    #[cfg(target_os = "linux")]
+    fn go_capture_excludes_rust_gc_until_success_or_failure() {
+        use std::io::{BufRead, BufReader, Write};
+
+        let binary = std::env::var_os("SQLITE_REPLICATION_GO_CAPTURE_TEST_BINARY")
+            .expect("set Go capture test binary path");
+        for fail in [false, true] {
+            let root = tempfile::tempdir().expect("temporary repository");
+            let source = root.path().join("source.sqlite");
+            let repo = root.path().join("repository");
+            let db = Connection::open(&source).expect("open SQLite");
+            db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE items (value TEXT); INSERT INTO items VALUES ('base');")
+                .expect("initialize SQLite");
+            crate::snapshot(&source, &repo).expect("snapshot");
+            compact_to_snapshot(&repo, RestoreTarget::Txid(1)).expect("compact snapshot");
+            let plan = build_gc_plan(&repo, &[RestoreTarget::Txid(1)]).expect("plan GC");
+            assert!(!plan.candidates.is_empty());
+            let candidate = repo.join(&plan.candidates[0].key);
+            db.execute("INSERT INTO items VALUES ('captured')", [])
+                .expect("write");
+
+            let mut command = Command::new(&binary);
+            command
+                .arg("-test.run=^TestCaptureGCSeparateProcesses$")
+                .env("SQLITE_REPLICATION_CAPTURE_GC_CHILD", root.path())
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped());
+            if fail {
+                command.env("SQLITE_REPLICATION_CAPTURE_GC_FAIL", "1");
+            }
+            let mut child = command.spawn().expect("spawn Go capture");
+            let mut stdout = BufReader::new(child.stdout.take().expect("stdout"));
+            let mut line = String::new();
+            stdout.read_line(&mut line).expect("read capture readiness");
+            assert_eq!(line, "CAPTURE_LOCKED\n");
+            assert_eq!(
+                apply_gc_plan(&repo, &plan)
+                    .expect_err("GC must contend")
+                    .kind(),
+                io::ErrorKind::WouldBlock
+            );
+            assert!(candidate.is_file());
+            writeln!(child.stdin.take().expect("stdin"), "release").expect("release capture");
+            assert!(child.wait().expect("wait for capture").success());
+            let refreshed =
+                build_gc_plan(&repo, &[RestoreTarget::Txid(1)]).expect("refresh GC plan");
+            apply_gc_plan(&repo, &refreshed).expect("apply GC after capture");
+            assert!(!candidate.exists());
+            build_restore_plan_from_filesystem(&repo, RestoreTarget::Txid(1))
+                .expect("retained point");
+        }
+    }
+
+    #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn restore_and_compaction_reject_held_repository_lock() {
         let root = tempfile::tempdir().expect("repository");
