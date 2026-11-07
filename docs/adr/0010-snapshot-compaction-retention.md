@@ -139,6 +139,27 @@ planejável. Cada direção passou três vezes. Esses testes verificam contenç�
 enquanto a captura detém a trava, não a garantia inversa de captura durante GC,
 nem participantes não cooperativos ou coordenação remota S3.
 
+**Auditoria adicional de participantes:** `go/storagefs.Publish` e
+`rust/crates/storage-fs::publish` são APIs de baixo nível públicas sem trava;
+os respectivos `EnsureRepository`/`ensure_repository` também são públicos e
+os snapshots iniciais os chamam antes de adquirir a trava. Em Go,
+`replicator/coordinator.go` chama `spool.Recover` em `Status` e durante o ciclo;
+`internal/recovery/s3.go` também o chama. Em Rust, o coordinator e o caminho de
+sincronização em `core/src/recovery.rs` chamam `spool::recover`. Essas chamadas
+exigem auditoria de suas próprias fronteiras: recovery pode persistir watermark,
+e sua execução não deve ser presumida protegida apenas porque captura o protege.
+As APIs públicas de spool/storage e processos externos podem contornar a trava;
+o arquivo de trava é consultivo, não uma barreira de segurança.
+
+**Caracterização de GC e captura Go:** em três execuções com `-race`, um GC
+filesystem em processo separado pausado depois da revalidação recusou uma captura
+concorrente; após liberação removeu a base nível zero enquanto o snapshot
+compactado preservado ainda permitia planejar restore TXID 1. A captura seguinte
+falhou com arquivo ausente porque `spool.Recover` exige a base nível zero. Isso
+evidencia incompatibilidade entre retenção para restore e necessidade do writer;
+não demonstra perda do ponto retido. GC concorrente e sua habilitação permanecem
+bloqueados até resolver essa necessidade e auditar os demais participantes.
+
 ## Reversão / reconsideração
 
 Não apagar objetos durante rollout do GC. Começar em dry-run; só habilitar

@@ -85,12 +85,16 @@ func cloneTargets(targets []Target) []Target {
 // ApplyGCPlan explicitly applies a previously reviewed plan only after
 // rebuilding and comparing the complete immutable-object inventory.
 func ApplyGCPlan(root string, reviewed GCPlan) error {
+	return applyGCPlanLocked(root, reviewed, nil)
+}
+
+func applyGCPlanLocked(root string, reviewed GCPlan, afterValidation func() error) error {
 	lock, err := repositorylock.AcquireExclusive(root)
 	if err != nil {
 		return fmt.Errorf("lock repository for GC: %w", err)
 	}
 	defer lock.Close()
-	return applyGCPlan(root, reviewed, nil)
+	return applyGCPlan(root, reviewed, afterValidation)
 }
 
 // afterValidation is an internal test seam for exercising concurrent mutations.
