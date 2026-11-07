@@ -4,8 +4,25 @@ use std::fs::File;
 use std::io;
 use std::path::Path;
 
+#[derive(Debug)]
+pub(crate) struct RepositoryLock {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    file: File,
+}
+
 #[cfg(any(target_os = "linux", target_os = "macos"))]
-pub(crate) fn acquire(root: &Path) -> io::Result<File> {
+impl Drop for RepositoryLock {
+    fn drop(&mut self) {
+        use std::os::fd::AsRawFd;
+
+        // SAFETY: the guard owns a live descriptor. Explicit unlock also releases
+        // the lock if a concurrent fork temporarily inherited that descriptor.
+        unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN) };
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn acquire(root: &Path) -> io::Result<RepositoryLock> {
     use std::fs::OpenOptions;
     use std::os::fd::AsRawFd;
     use std::os::unix::fs::OpenOptionsExt;
@@ -22,11 +39,11 @@ pub(crate) fn acquire(root: &Path) -> io::Result<File> {
     if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
         return Err(io::Error::last_os_error());
     }
-    Ok(file)
+    Ok(RepositoryLock { file })
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-pub(crate) fn acquire(_root: &Path) -> io::Result<File> {
+pub(crate) fn acquire(_root: &Path) -> io::Result<RepositoryLock> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "repository coordination lock is unsupported on this platform",
@@ -48,6 +65,24 @@ mod tests {
         );
         drop(first);
         acquire(root.path()).expect("lock after release");
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn dropping_guard_releases_lock_with_duplicated_descriptor() {
+        use std::os::fd::{AsRawFd, FromRawFd};
+
+        let root = tempfile::tempdir().expect("repository");
+        let first = acquire(root.path()).expect("first lock");
+        // SAFETY: dup returns a new owned descriptor or a negative error.
+        let fd = unsafe { libc::dup(first.file.as_raw_fd()) };
+        assert!(fd >= 0, "dup: {}", io::Error::last_os_error());
+        // SAFETY: fd is a new descriptor owned by this test.
+        let duplicate = unsafe { File::from_raw_fd(fd) };
+        drop(first);
+        acquire(root.path()).expect("lock released despite duplicate descriptor");
+        drop(duplicate);
+        acquire(root.path()).expect("lock after duplicate closed");
     }
 
     #[test]
