@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lucaswilliameufrasio/sqlite-replication/internal/recovery"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/repositorylock"
 	"github.com/lucaswilliameufrasio/sqlite-replication/internal/spool"
 	"github.com/lucaswilliameufrasio/sqlite-replication/storages3"
 )
@@ -159,6 +160,11 @@ func (c *Coordinator) Status(ctx context.Context) (Status, error) {
 	if available {
 		status.ObservedTXID = uint64Pointer(observed)
 	}
+	lock, err := repositorylock.AcquireExclusive(c.config.RepositoryRoot)
+	if err != nil {
+		return status, fmt.Errorf("%w: lock repository for status: %w", errLocalStorage, err)
+	}
+	defer lock.Close()
 	state, err := spool.Recover(c.config.RepositoryRoot, nil)
 	if err != nil {
 		return status, fmt.Errorf("%w: recover local durable position: %w", errLocalStorage, err)
@@ -272,7 +278,13 @@ func (c *Coordinator) Flush(ctx context.Context) (returnErr error) {
 	if err := c.config.DrainWrites(ctx); err != nil {
 		return fmt.Errorf("drain accepted writes before Flush: %w", err)
 	}
-	previous, err := spool.Recover(c.config.RepositoryRoot, nil)
+	lock, err := repositorylock.AcquireExclusive(c.config.RepositoryRoot)
+	if err != nil {
+		return fmt.Errorf("lock repository before Flush: %w", err)
+	}
+	previous, recoverErr := spool.Recover(c.config.RepositoryRoot, nil)
+	closeErr := lock.Close()
+	err = errors.Join(recoverErr, closeErr)
 	if err != nil {
 		return fmt.Errorf("recover durable position before Flush: %w", err)
 	}
