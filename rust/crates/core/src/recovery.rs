@@ -851,6 +851,7 @@ pub(crate) fn build_gc_plan(root: &Path, required_targets: &[RestoreTarget]) -> 
 }
 
 pub(crate) fn apply_gc_plan(root: &Path, reviewed: &GCPlan) -> io::Result<()> {
+    let _repository_lock = crate::repository_lock::acquire(root)?;
     if reviewed.required_targets.is_empty() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -1311,6 +1312,15 @@ mod tests {
         let reviewed = build_gc_plan(directory.path(), &[RestoreTarget::Txid(2)])
             .expect("build dry-run GC plan");
         assert_eq!(reviewed.candidates.len(), 1);
+        let lock = crate::repository_lock::acquire(directory.path()).expect("hold repository lock");
+        assert_eq!(
+            apply_gc_plan(directory.path(), &reviewed)
+                .expect_err("GC must reject a held lock")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+        assert!(directory.path().join(&reviewed.candidates[0].key).is_file());
+        drop(lock);
         let new_path = directory
             .path()
             .join("ltx/2/0000000000000001-0000000000000003.ltx");
