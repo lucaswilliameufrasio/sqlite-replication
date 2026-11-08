@@ -279,7 +279,7 @@ fn sidecar_path(database_path: &Path, suffix: &str) -> PathBuf {
 
 /// Creates a consistent offline image using SQLite's Online Backup API.
 pub fn create_online_backup(source_path: &Path, destination_path: &Path) -> io::Result<()> {
-    create_online_backup_inner(source_path, destination_path, || Ok(()))
+    create_online_backup_inner(source_path, destination_path, None, || Ok(()))
 }
 
 /// Creates a consistent image and cooperatively checks cancellation between
@@ -289,7 +289,33 @@ pub fn create_online_backup_cancellable(
     destination_path: &Path,
     cancelled: &AtomicBool,
 ) -> io::Result<()> {
-    create_online_backup_inner(source_path, destination_path, || {
+    create_online_backup_inner(source_path, destination_path, None, || {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(io::Error::new(
+                io::ErrorKind::Interrupted,
+                "SQLite Online Backup was cancelled",
+            ));
+        }
+        Ok(())
+    })
+}
+
+/// Bounds the logical main database image produced by SQLite Online Backup.
+/// This does not reserve blocks or bound journals, other files, or filesystem
+/// overhead. The caller must use a new, empty destination and remove it on error.
+pub fn create_online_backup_cancellable_with_image_limit(
+    source_path: &Path,
+    destination_path: &Path,
+    cancelled: &AtomicBool,
+    max_image_bytes: u64,
+) -> io::Result<()> {
+    if max_image_bytes == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "zero image limit",
+        ));
+    }
+    create_online_backup_inner(source_path, destination_path, Some(max_image_bytes), || {
         if cancelled.load(Ordering::Acquire) {
             return Err(io::Error::new(
                 io::ErrorKind::Interrupted,
@@ -303,6 +329,7 @@ pub fn create_online_backup_cancellable(
 fn create_online_backup_inner<F>(
     source_path: &Path,
     destination_path: &Path,
+    max_image_bytes: Option<u64>,
     mut check_cancelled: F,
 ) -> io::Result<()>
 where
@@ -325,7 +352,47 @@ where
         ));
     }
 
+    if max_image_bytes.is_some() {
+        match std::fs::symlink_metadata(destination_path) {
+            Ok(metadata) if metadata.file_type().is_file() && metadata.len() == 0 => {}
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "bounded backup destination must be an empty regular file",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
     let mut destination = Connection::open(destination_path).map_err(sqlite_error)?;
+    if let Some(limit) = max_image_bytes {
+        let page_size: u32 = source
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .map_err(sqlite_error)?;
+        let max_pages = limit
+            .checked_div(u64::from(page_size))
+            .filter(|pages| *pages > 0)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "image limit smaller than page size",
+                )
+            })?;
+        destination
+            .pragma_update(None, "page_size", page_size)
+            .map_err(sqlite_error)?;
+        let actual: i64 = destination
+            .query_row(&format!("PRAGMA max_page_count={max_pages}"), [], |row| {
+                row.get(0)
+            })
+            .map_err(sqlite_error)?;
+        if actual <= 0 || u64::try_from(actual).map_or(true, |value| value > max_pages) {
+            return Err(io::Error::other(
+                "SQLite did not accept the requested image limit",
+            ));
+        }
+    }
     let backup = Backup::new(&source, &mut destination).map_err(sqlite_error)?;
     loop {
         check_cancelled()?;
@@ -440,6 +507,65 @@ mod tests {
         begin_capture_lease, create_online_backup, create_online_backup_inner,
         read_stable_wal_file, verify_database, verify_stable_wal_path,
     };
+
+    #[test]
+    fn bounded_online_backup_rejects_growth_and_retries() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let connection = Connection::open(&source).expect("source");
+        connection.execute_batch("PRAGMA page_size=4096; PRAGMA journal_mode=WAL; CREATE TABLE data(value BLOB); INSERT INTO data VALUES (zeroblob(131072));").expect("initialize");
+        let small = directory.path().join("small.sqlite");
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        let error = super::create_online_backup_cancellable_with_image_limit(
+            &source, &small, &cancelled, 8192,
+        )
+        .expect_err("limit must reject source");
+        assert!(!error.to_string().is_empty());
+        assert!(fs::metadata(&small).expect("small destination").len() <= 8192);
+        let large = directory.path().join("large.sqlite");
+        super::create_online_backup_cancellable_with_image_limit(
+            &source,
+            &large,
+            &cancelled,
+            1 << 20,
+        )
+        .expect("retry");
+        assert!(fs::metadata(&large).expect("large destination").len() <= 1 << 20);
+        super::verify_database(&large).expect("verify recovered database");
+        let restored = Connection::open(&large).expect("restore");
+        let size: i64 = restored
+            .query_row("SELECT length(value) FROM data", [], |row| row.get(0))
+            .expect("data");
+        assert_eq!(size, 131072);
+    }
+
+    #[test]
+    fn bounded_online_backup_rejects_existing_destination_and_too_small_limit() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let connection = Connection::open(&source).expect("source");
+        connection
+            .execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE data(value INTEGER);")
+            .expect("initialize");
+        let existing = directory.path().join("existing.sqlite");
+        fs::write(&existing, b"untouched").expect("existing destination");
+        let cancelled = std::sync::atomic::AtomicBool::new(false);
+        assert!(
+            super::create_online_backup_cancellable_with_image_limit(
+                &source, &existing, &cancelled, 8192
+            )
+            .is_err()
+        );
+        assert_eq!(fs::read(&existing).expect("existing bytes"), b"untouched");
+        let small = directory.path().join("small.sqlite");
+        assert!(
+            super::create_online_backup_cancellable_with_image_limit(
+                &source, &small, &cancelled, 1
+            )
+            .is_err()
+        );
+        assert!(fs::metadata(&small).expect("small destination").len() <= 1);
+    }
 
     #[cfg(unix)]
     #[test]
@@ -610,7 +736,7 @@ mod tests {
         drop(connection);
 
         let mut cancellation_checks = 0;
-        let result = create_online_backup_inner(&source_path, &backup_path, || {
+        let result = create_online_backup_inner(&source_path, &backup_path, None, || {
             cancellation_checks += 1;
             if cancellation_checks == 3 {
                 return Err(std::io::Error::new(

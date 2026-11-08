@@ -68,6 +68,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn logical_measurement_rejects_held_lock_then_recovers() {
+        let root = tempfile::tempdir().expect("repository");
+        std::fs::create_dir(root.path().join("ltx")).expect("ltx directory");
+        std::fs::write(root.path().join("ltx/data"), b"1234").expect("data");
+        let guard = acquire(root.path()).expect("lock");
+        assert!(crate::measure_repository_logical_bytes(root.path()).is_err());
+        drop(guard);
+        assert_eq!(
+            crate::measure_repository_logical_bytes(root.path()).expect("measurement"),
+            4
+        );
+    }
+
+    #[test]
     #[cfg(target_os = "linux")]
     fn dropping_guard_releases_lock_with_duplicated_descriptor() {
         use std::os::fd::{AsRawFd, FromRawFd};

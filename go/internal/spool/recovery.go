@@ -32,10 +32,23 @@ type databasePosition struct {
 // a published LTX that may be ahead of its watermark, and validates a retained
 // WAL boundary against the current generation when those bytes are available.
 func Recover(root string, walBytes []byte) (walcapture.State, error) {
+	return recoverWithImageLimit(root, walBytes, 0)
+}
+
+// RecoverWithImageLimit bounds the logical bytes written to the temporary
+// snapshot recovery image. It does not bound other files or reserve disk space.
+func RecoverWithImageLimit(root string, walBytes []byte, maxImageBytes uint64) (walcapture.State, error) {
+	if maxImageBytes == 0 {
+		return walcapture.State{}, fmt.Errorf("recovery image limit must be nonzero")
+	}
+	return recoverWithImageLimit(root, walBytes, maxImageBytes)
+}
+
+func recoverWithImageLimit(root string, walBytes []byte, maxImageBytes uint64) (walcapture.State, error) {
 	if _, err := storagefs.ReadRepository(root); err != nil {
 		return walcapture.State{}, fmt.Errorf("read capture repository: %w", err)
 	}
-	database, err := loadSnapshotState(root)
+	database, err := loadSnapshotState(root, maxImageBytes)
 	if err != nil {
 		return walcapture.State{}, err
 	}
@@ -120,7 +133,7 @@ func Recover(root string, walBytes []byte) (walcapture.State, error) {
 	return state, nil
 }
 
-func loadSnapshotState(root string) (ltx.DatabaseState, error) {
+func loadSnapshotState(root string, maxImageBytes uint64) (ltx.DatabaseState, error) {
 	snapshotPath := storagefs.LTXPath(root, 1, 1)
 	snapshot, err := os.Open(snapshotPath)
 	if err != nil {
@@ -133,7 +146,11 @@ func loadSnapshotState(root string) (ltx.DatabaseState, error) {
 	}
 	stagePath := stage.Name()
 	defer os.Remove(stagePath)
-	header, decodeErr := ltx.DecodeSnapshot(snapshot, stage)
+	var target io.Writer = stage
+	if maxImageBytes != 0 {
+		target = &limitedRecoveryWriter{writer: stage, remaining: maxImageBytes}
+	}
+	header, decodeErr := ltx.DecodeSnapshot(snapshot, target)
 	if decodeErr != nil {
 		_ = stage.Close()
 		return ltx.DatabaseState{}, fmt.Errorf("decode base LTX snapshot: %w", decodeErr)
@@ -159,6 +176,20 @@ func loadSnapshotState(root string) (ltx.DatabaseState, error) {
 		return ltx.DatabaseState{}, fmt.Errorf("base LTX header differs from restored SQLite image")
 	}
 	return state, nil
+}
+
+type limitedRecoveryWriter struct {
+	writer    io.Writer
+	remaining uint64
+}
+
+func (w *limitedRecoveryWriter) Write(data []byte) (int, error) {
+	if uint64(len(data)) > w.remaining {
+		return 0, fmt.Errorf("recovery image size limit exceeded")
+	}
+	n, err := w.writer.Write(data)
+	w.remaining -= uint64(n)
+	return n, err
 }
 
 func listDeltaFiles(root string) ([]deltaFile, error) {

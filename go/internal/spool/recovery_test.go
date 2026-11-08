@@ -320,3 +320,50 @@ func initializeRecoveryRepository(t *testing.T, root string) ltx.DatabaseState {
 	}
 	return baseState
 }
+
+func TestRecoverWithImageLimitRejectsAndRecoversWithoutChangingWatermark(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "repository")
+	state := initializeRecoveryRepository(t, root)
+	before, err := os.ReadFile(filepath.Join(root, "_meta", "capture-watermark.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RecoverWithImageLimit(root, nil, 512); err == nil {
+		t.Fatal("expected bounded recovery to reject image larger than limit")
+	}
+	after, err := os.ReadFile(filepath.Join(root, "_meta", "capture-watermark.json"))
+	if err != nil || !bytes.Equal(before, after) {
+		t.Fatalf("watermark changed after failed recovery: %v", err)
+	}
+	stages, err := filepath.Glob(filepath.Join(root, "_meta", ".recover-snapshot-*.sqlite"))
+	if err != nil || len(stages) != 0 {
+		t.Fatalf("recovery stages after failure: %v, error %v", stages, err)
+	}
+	recovered, err := RecoverWithImageLimit(root, nil, 1024)
+	if err != nil {
+		t.Fatalf("retry at exact image size: %v", err)
+	}
+	if recovered.Database.TXID != state.TXID || recovered.Database.Checksum != state.Checksum {
+		t.Fatalf("recovered state = %+v", recovered.Database)
+	}
+}
+
+func TestLimitedRecoveryWriterRejectsBeforeOversizeWrite(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "image")
+	file, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	writer := &limitedRecoveryWriter{writer: file, remaining: 4}
+	if _, err := writer.Write([]byte("1234")); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := writer.Write([]byte("5")); n != 0 || err == nil {
+		t.Fatalf("oversize write = %d, %v", n, err)
+	}
+	info, err := file.Stat()
+	if err != nil || info.Size() != 4 {
+		t.Fatalf("image size = %v, error = %v", info, err)
+	}
+}

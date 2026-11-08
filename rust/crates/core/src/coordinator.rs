@@ -262,8 +262,8 @@ impl Coordinator {
             local_error: ErrorCategory::None,
             remote_error: ErrorCategory::None,
         };
-        if status.spool_bytes > self.config.limits.max_spool_bytes
-            || status.wal_bytes > self.config.limits.max_wal_bytes
+        if status.spool_bytes >= self.config.limits.max_spool_bytes
+            || status.wal_bytes >= self.config.limits.max_wal_bytes
             || status.unprotected_age > self.config.limits.max_unprotected_age
         {
             health.local = ComponentState::Degraded;
@@ -381,8 +381,8 @@ impl Coordinator {
                 "local durable position did not reach Flush target",
             ));
         }
-        if status.spool_bytes > self.config.limits.max_spool_bytes
-            || status.wal_bytes > self.config.limits.max_wal_bytes
+        if status.spool_bytes >= self.config.limits.max_spool_bytes
+            || status.wal_bytes >= self.config.limits.max_wal_bytes
             || (status.observed_txid.is_some()
                 && status.unprotected_age > self.config.limits.max_unprotected_age)
         {
@@ -513,8 +513,10 @@ impl Coordinator {
 }
 
 fn spool_bytes(root: &Path) -> io::Result<u64> {
-    if !root.exists() {
-        return Ok(0);
+    match fs::metadata(root) {
+        Ok(_) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
     }
     let mut total = 0_u64;
     let mut pending = vec![root.to_path_buf()];
@@ -534,6 +536,21 @@ fn spool_bytes(root: &Path) -> io::Result<u64> {
         }
     }
     Ok(total)
+}
+
+#[cfg(all(test, unix))]
+mod spool_measurement_tests {
+    use super::spool_bytes;
+    use std::os::unix::fs::symlink;
+
+    #[test]
+    fn spool_measurement_does_not_treat_metadata_errors_as_empty() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("loop");
+        symlink("loop", &root).expect("create symlink loop");
+        assert!(spool_bytes(&root).is_err());
+        assert_eq!(spool_bytes(&directory.path().join("absent")).unwrap(), 0);
+    }
 }
 
 fn file_size_if_present(path: &Path) -> io::Result<u64> {

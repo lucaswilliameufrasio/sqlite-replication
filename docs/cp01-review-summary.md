@@ -1,15 +1,17 @@
 # Resumo para revisão do gate de recuperação incremental
 
-**Estado:** aguardando revisão explícita do mantenedor. Até essa revisão, a
-captura WAL e a recuperação incremental continuam privadas; este resumo não é
-aprovação automática.
+**Estado:** os drills locais descritos abaixo foram executados no escopo
+restrito. O plano e a ADR 0004 registram aprovação desse escopo, mas a versão
+anterior deste resumo ainda exigia revisão explícita para liberar a capacidade;
+essa divergência não estabelece, por si só, uma aprovação de uso ou distribuição.
+A conclusão da validação local é separada dessas decisões do mantenedor.
 
 ## Escopo que você escolheu
 
 - Começar com uma garantia restrita: Linux de 64 bits, Go e Rust nas combinações
   SQLite já testadas, e um único escritor coordenado pela biblioteca.
 - Não prometer proteção contra perda física de energia/cache do host.
-- Você fará a revisão final deste resumo antes de liberar a capacidade.
+- A revisão para eventual liberação é uma decisão separada da validação local.
 
 ## O que foi observado nos testes
 
@@ -77,5 +79,7 @@ drills de falha CP-01 em ARM64. A decisão de escopo não cria por si só uma
 implementação pública nem autoriza release/publicação; esses itens continuam
 sujeitos aos gates M5/M6 e às evidências acima.
 
-Captura WAL e recuperação incremental continuam privadas até que a implementação
-e os gates correspondentes sejam concluídos.
+A escolha de escopo e os resultados locais não resolvem a divergência documental
+sobre aprovação final. O estado de APIs existentes deve ser verificado no código;
+este documento não afirma que sejam privadas. Não se infere autorização de uso em
+produção ou distribuição a partir dos drills locais.

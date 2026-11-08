@@ -85,7 +85,15 @@ pub fn capture_once<G: WriteGate>(
     repository_root: impl AsRef<Path>,
     gate: &G,
 ) -> io::Result<CaptureResult> {
-    capture_once_inner(source_path.as_ref(), repository_root.as_ref(), gate, None)
+    capture_once_inner(
+        source_path.as_ref(),
+        repository_root.as_ref(),
+        gate,
+        None,
+        None,
+        (None, None, None, None),
+        false,
+    )
 }
 
 /// Experimental cooperative capture using one process-local logical budget.
@@ -113,6 +121,294 @@ pub fn capture_once_with_budget<G: WriteGate>(
         repository_root.as_ref(),
         gate,
         Some(budget),
+        None,
+        (None, None, None, None),
+        false,
+    )
+}
+
+/// Experimental preflight using a caller-supplied conservative cost covering
+/// recovery, staging and spool growth. This neither enforces that estimate nor
+/// reserves filesystem blocks. All producers and mutations must cooperate.
+pub fn capture_once_with_reserved_budget<G: WriteGate>(
+    source_path: impl AsRef<Path>,
+    repository_root: impl AsRef<Path>,
+    gate: &G,
+    budget: &ConservativeBudget,
+    cost: u64,
+) -> io::Result<CaptureResult> {
+    if cost == 0 {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "zero cost"));
+    }
+    capture_once_inner(
+        source_path.as_ref(),
+        repository_root.as_ref(),
+        gate,
+        Some(budget),
+        Some(cost),
+        (None, None, None, None),
+        false,
+    )
+}
+
+/// Also bounds logical writes to the decoded temporary recovery image. It does
+/// not bound the source backup, LTX files, metadata, or physical disk usage.
+pub fn capture_once_with_recovery_image_limit<G: WriteGate>(
+    source_path: impl AsRef<Path>,
+    repository_root: impl AsRef<Path>,
+    gate: &G,
+    budget: &ConservativeBudget,
+    cost: u64,
+    recovery_limit: u64,
+) -> io::Result<CaptureResult> {
+    if cost == 0 || recovery_limit == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "limits must be nonzero",
+        ));
+    }
+    capture_once_inner(
+        source_path.as_ref(),
+        repository_root.as_ref(),
+        gate,
+        Some(budget),
+        Some(cost),
+        (Some(recovery_limit), None, None, None),
+        false,
+    )
+}
+
+/// Experimental per-image logical limits for capture. Does not bound LTX,
+/// SQLite journals, metadata, other operations or physical filesystem blocks.
+pub fn capture_once_with_image_limits<G: WriteGate>(
+    source_path: impl AsRef<Path>,
+    repository_root: impl AsRef<Path>,
+    gate: &G,
+    budget: &ConservativeBudget,
+    cost: u64,
+    recovery_limit: u64,
+    backup_limit: u64,
+) -> io::Result<CaptureResult> {
+    if cost == 0 || recovery_limit == 0 || backup_limit == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "limits must be nonzero",
+        ));
+    }
+    capture_once_inner(
+        source_path.as_ref(),
+        repository_root.as_ref(),
+        gate,
+        Some(budget),
+        Some(cost),
+        (Some(recovery_limit), Some(backup_limit), None, None),
+        false,
+    )
+}
+
+/// Experimental logical limits; the batch limit is checked after encoding and
+/// does not cover existing spool, journals, other producers or disk blocks.
+pub struct CaptureLimits {
+    pub recovery_image: u64,
+    pub backup_image: u64,
+    pub ltx_batch: u64,
+}
+
+/// Measures logical regular-file bytes under `ltx` and `.staging` while holding
+/// the advisory local repository lock. A missing `ltx`, symlink, unsupported
+/// entry, overflow or I/O error fails closed; missing `.staging` counts as zero.
+/// Call during budget reconciliation while all other producers are excluded.
+/// This excludes journals, metadata, external files and physical blocks.
+pub fn measure_repository_logical_bytes(root: impl AsRef<Path>) -> io::Result<u64> {
+    let root = root.as_ref();
+    let _lock = repository_lock::acquire(root)?;
+    measure_repository_logical_bytes_locked(root)
+}
+
+// Caller holds the repository coordination lock through measurement.
+fn measure_repository_logical_bytes_locked(root: &Path) -> io::Result<u64> {
+    let mut total = 0u64;
+    let mut directories = vec![root.join("ltx")];
+    let staging = root.join(".staging");
+    match std::fs::symlink_metadata(&staging) {
+        Ok(metadata) if metadata.file_type().is_dir() => directories.push(staging),
+        Ok(_) => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported staging entry",
+            ));
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    while let Some(dir) = directories.pop() {
+        if !std::fs::symlink_metadata(&dir)?.file_type().is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unsupported repository directory",
+            ));
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let metadata = std::fs::symlink_metadata(entry.path())?;
+            if metadata.file_type().is_dir() {
+                directories.push(entry.path());
+            } else if metadata.file_type().is_file() {
+                total = total
+                    .checked_add(metadata.len())
+                    .ok_or_else(|| io::Error::other("logical occupancy overflow"))?;
+            } else {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "unsupported repository entry",
+                ));
+            }
+        }
+    }
+    Ok(total)
+}
+
+/// Reserves the sum of logical image and batch ceilings from the cooperative
+/// budget. The caller must reconcile all existing relevant bytes and coordinate
+/// producers. Journals, metadata and physical blocks are not covered.
+pub fn capture_once_with_derived_reservation<G: WriteGate>(
+    source_path: impl AsRef<Path>,
+    repository_root: impl AsRef<Path>,
+    gate: &G,
+    budget: &ConservativeBudget,
+    limits: CaptureLimits,
+    spool_limit: u64,
+) -> io::Result<CaptureResult> {
+    let cost = limits
+        .recovery_image
+        .checked_add(limits.backup_image)
+        .and_then(|value| value.checked_add(limits.ltx_batch))
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "capture reservation overflow")
+        })?;
+    capture_once_with_spool_limit(
+        source_path,
+        repository_root,
+        gate,
+        budget,
+        cost,
+        limits,
+        spool_limit,
+    )
+}
+
+/// Captures with logical image and encoded-batch limits, not a physical quota.
+/// Measures and captures under one cooperative budget mutex. The gate must
+/// drain all producers; filesystem writers that ignore the local lock can bypass
+/// coordination. This does not reserve physical disk blocks.
+pub fn capture_once_with_measured_reservation<G: WriteGate>(
+    source_path: impl AsRef<Path>,
+    repository_root: impl AsRef<Path>,
+    gate: &G,
+    budget: &ConservativeBudget,
+    limits: CaptureLimits,
+    spool_limit: u64,
+) -> io::Result<CaptureResult> {
+    if limits.recovery_image == 0
+        || limits.backup_image == 0
+        || limits.ltx_batch == 0
+        || spool_limit == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "limits must be nonzero",
+        ));
+    }
+    let cost = limits
+        .recovery_image
+        .checked_add(limits.backup_image)
+        .and_then(|value| value.checked_add(limits.ltx_batch))
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "capture reservation overflow")
+        })?;
+    capture_once_inner(
+        source_path.as_ref(),
+        repository_root.as_ref(),
+        gate,
+        Some(budget),
+        Some(cost),
+        (
+            Some(limits.recovery_image),
+            Some(limits.backup_image),
+            Some(limits.ltx_batch),
+            Some(spool_limit),
+        ),
+        true,
+    )
+}
+
+/// Captures with logical image and encoded-batch limits, not a physical quota.
+pub fn capture_once_with_batch_limit<G: WriteGate>(
+    source_path: impl AsRef<Path>,
+    repository_root: impl AsRef<Path>,
+    gate: &G,
+    budget: &ConservativeBudget,
+    cost: u64,
+    limits: CaptureLimits,
+) -> io::Result<CaptureResult> {
+    if cost == 0 || limits.recovery_image == 0 || limits.backup_image == 0 || limits.ltx_batch == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "limits must be nonzero",
+        ));
+    }
+    capture_once_inner(
+        source_path.as_ref(),
+        repository_root.as_ref(),
+        gate,
+        Some(budget),
+        Some(cost),
+        (
+            Some(limits.recovery_image),
+            Some(limits.backup_image),
+            Some(limits.ltx_batch),
+            None,
+        ),
+        false,
+    )
+}
+
+/// Experimental spool preflight alongside logical image limits. This does not
+/// bound metadata, journals, memory, other producers or physical disk blocks.
+pub fn capture_once_with_spool_limit<G: WriteGate>(
+    source_path: impl AsRef<Path>,
+    repository_root: impl AsRef<Path>,
+    gate: &G,
+    budget: &ConservativeBudget,
+    cost: u64,
+    limits: CaptureLimits,
+    spool_limit: u64,
+) -> io::Result<CaptureResult> {
+    if cost == 0
+        || limits.recovery_image == 0
+        || limits.backup_image == 0
+        || limits.ltx_batch == 0
+        || spool_limit == 0
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "limits must be nonzero",
+        ));
+    }
+    capture_once_inner(
+        source_path.as_ref(),
+        repository_root.as_ref(),
+        gate,
+        Some(budget),
+        Some(cost),
+        (
+            Some(limits.recovery_image),
+            Some(limits.backup_image),
+            Some(limits.ltx_batch),
+            Some(spool_limit),
+        ),
+        false,
     )
 }
 
@@ -121,6 +417,9 @@ fn capture_once_inner<G: WriteGate>(
     repository_root: &Path,
     gate: &G,
     budget: Option<&ConservativeBudget>,
+    cost: Option<u64>,
+    limits: (Option<u64>, Option<u64>, Option<u64>, Option<u64>),
+    measure_before_capture: bool,
 ) -> io::Result<CaptureResult> {
     if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         return Err(io::Error::new(
@@ -150,19 +449,49 @@ fn capture_once_inner<G: WriteGate>(
         }
     };
     let cancelled = AtomicBool::new(false);
-    let capture = || {
-        capture::capture_once_cancellable(
+    let repository_guard = std::cell::RefCell::new(None);
+    let capture = || match (measure_before_capture, limits.0) {
+        (true, Some(_)) => capture::capture_once_with_cancellation_locked(
+            source_path,
+            repository_root,
+            timestamp_millis,
+            Some(&cancelled),
+            limits,
+            |_, _| Ok(()),
+        ),
+        (false, Some(limit)) => capture::capture_once_cancellable_with_recovery_limit(
+            source_path,
+            repository_root,
+            timestamp_millis,
+            &cancelled,
+            limit,
+            (limits.1, limits.2, limits.3),
+            |_, _| Ok(()),
+        ),
+        (_, None) => capture::capture_once_cancellable(
             source_path,
             repository_root,
             timestamp_millis,
             &cancelled,
             |_, _| Ok(()),
-        )
+        ),
     };
-    let mut capture_result = match budget {
-        Some(budget) => budget.with_occupancy_mutation(capture),
-        None => capture(),
+    let mut capture_result = match (budget, cost) {
+        (Some(budget), Some(cost)) if measure_before_capture => budget
+            .with_measured_reserved_mutation(
+                cost,
+                || {
+                    let guard = repository_lock::acquire(repository_root)?;
+                    *repository_guard.borrow_mut() = Some(guard);
+                    measure_repository_logical_bytes_locked(repository_root)
+                },
+                capture,
+            ),
+        (Some(budget), Some(cost)) => budget.with_reserved_mutation(cost, capture),
+        (Some(budget), None) => budget.with_occupancy_mutation(capture),
+        (None, _) => capture(),
     };
+    drop(repository_guard);
     let mut release_result = permit.release();
     if (capture_result.is_err() || release_result.is_err())
         && let Some(budget) = budget

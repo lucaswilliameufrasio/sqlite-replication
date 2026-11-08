@@ -12,6 +12,25 @@
 > final, fazer push, tag, release ou publicação. Homologação de produção continua
 > separada da validação local. Os registros datados abaixo são históricos e não
 > devem prevalecer automaticamente sobre evidências posteriores.
+>
+> **Escopo local confirmado nesta retomada:** homologação de serviços reais,
+> aprovação de distribuição e demais decisões reservadas ao mantenedor não são
+> etapas nem bloqueios do plano de desenvolvimento e validação local. Isso não
+> transforma testes locais em aprovação dessas atividades. Os candidatos de
+> empacotamento e a revisão técnica de notices podem ser examinados localmente
+> sem escolher nem autorizar os artefatos finais.
+>
+> **Capacidade — estado local:** Go e Rust têm caminhos experimentais opt-in
+> com limites lógicos para imagens de recovery e backup e para a soma do lote
+> LTX já codificado, antes do staging. O budget cooperativo depende do custo e
+> da medição fornecidos pelo chamador; não constitui quota física. Testes locais
+> cobriram rejeição, retry e restore; retries idênticos também recriam staging.
+> A contabilização integrada do spool existente, temporários e demais produtores
+> permanece incompleta. O último `make test` passou com 96 restores cruzados e
+> Floci local, com alguns testes Go em cache e sem os drills CP-01 opt-in.
+> A revisão técnica de notices continua parcial e os candidatos anteriores estão
+> desatualizados; regeneração não implica autorização de distribuição.
+>
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.

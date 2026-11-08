@@ -158,6 +158,96 @@ func TestCaptureCyclePublishesAndRecoversCheckpointedChanges(t *testing.T) {
 	}
 }
 
+func TestCaptureBatchLimitRejectsBeforePublicationAndRetries(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.sqlite")
+	repository := filepath.Join(dir, "repository")
+	db, err := sql.Open("sqlite", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replication.Snapshot(ctx, source, repository); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE data SET value='after limit'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CaptureOnceWithBatchLimit(ctx, source, repository, 100, nil, 1<<20, 1<<20, 1); err == nil {
+		t.Fatal("expected LTX batch limit failure")
+	}
+	watermark, err := spool.ReadWatermark(repository)
+	if err != nil || watermark.TXID != 1 {
+		t.Fatalf("watermark after failure: %+v, %v", watermark, err)
+	}
+	result, err := CaptureOnceWithBatchLimit(ctx, source, repository, 100, nil, 1<<20, 1<<20, 1<<20)
+	if err != nil || result.State.Database.TXID != 2 {
+		t.Fatalf("retry: %+v, %v", result.State.Database, err)
+	}
+	restored := filepath.Join(dir, "restored.sqlite")
+	if err := recovery.RestoreToTarget(ctx, repository, restored, recovery.Target{TXID: 2}); err != nil {
+		t.Fatalf("restore after retry: %v", err)
+	}
+	reader, err := sql.Open("sqlite", restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var value string
+	if err := reader.QueryRowContext(ctx, "SELECT value FROM data").Scan(&value); err != nil || value != "after limit" {
+		t.Fatalf("restored value: %q, %v", value, err)
+	}
+}
+
+func TestCaptureSpoolLimitRejectsAndRestoresAfterRetry(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	source := filepath.Join(dir, "source.sqlite")
+	repository := filepath.Join(dir, "repository")
+	db, err := sql.Open("sqlite", source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base')"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replication.Snapshot(ctx, source, repository); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE data SET value='spool retry'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := CaptureOnceWithSpoolLimit(ctx, source, repository, 100, nil, 1); err == nil {
+		t.Fatal("expected spool limit failure")
+	}
+	watermark, err := spool.ReadWatermark(repository)
+	if err != nil || watermark.TXID != 1 {
+		t.Fatalf("watermark after failure: %+v, %v", watermark, err)
+	}
+	result, err := CaptureOnceWithSpoolLimit(ctx, source, repository, 100, nil, 1<<20)
+	if err != nil || result.State.Database.TXID != 2 {
+		t.Fatalf("retry: %+v, %v", result.State.Database, err)
+	}
+	restored := filepath.Join(dir, "restored.sqlite")
+	if err := recovery.RestoreToTarget(ctx, repository, restored, recovery.Target{TXID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := sql.Open("sqlite", restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var value string
+	if err := reader.QueryRowContext(ctx, "SELECT value FROM data").Scan(&value); err != nil || value != "spool retry" {
+		t.Fatalf("restored value: %q, %v", value, err)
+	}
+}
+
 func TestCaptureAfterSnapshotWithUncheckpointedWALIsNoOp(t *testing.T) {
 	ctx := context.Background()
 	directory := t.TempDir()

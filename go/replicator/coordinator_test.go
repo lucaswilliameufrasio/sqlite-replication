@@ -425,6 +425,198 @@ func TestCoordinatorFlushLeavesWritesBlockedWhenSpoolLimitIsExceeded(t *testing.
 	}
 }
 
+func TestCoordinatorSpoolLimitAtCapacityAndRecovery(t *testing.T) {
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	createSourceDatabase(t, databasePath)
+	repositoryRoot := filepath.Join(directory, "repository")
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatalf("create initial snapshot: %v", err)
+	}
+	config := coordinatorConfig(repositoryRoot, databasePath, 1)
+	probe, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := probe.Status(ctx)
+	if err != nil || status.SpoolBytes == 0 {
+		t.Fatalf("spool status = %+v, error = %v", status, err)
+	}
+	var admission []bool
+	config.Limits.MaxSpoolBytes = status.SpoolBytes
+	config.SetAdmission = func(_ context.Context, enabled bool, _ replicator.Limits) error {
+		admission = append(admission, enabled)
+		return nil
+	}
+	limited, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health := limited.Health(ctx); health.Local != replicator.ComponentDegraded || health.LocalError != replicator.ErrorBackpressure {
+		t.Fatalf("health at capacity = %+v", health)
+	}
+	if err := limited.Flush(ctx); !errors.Is(err, replicator.ErrBackpressure) {
+		t.Fatalf("flush at capacity = %v, want backpressure", err)
+	}
+	if !reflect.DeepEqual(admission, []bool{false}) {
+		t.Fatalf("admission at capacity = %v", admission)
+	}
+	config.Limits.MaxSpoolBytes++
+	recovered, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Flush(ctx); err != nil {
+		t.Fatalf("flush below limit: %v", err)
+	}
+	if !reflect.DeepEqual(admission, []bool{false, false, true}) {
+		t.Fatalf("admission after recovery = %v", admission)
+	}
+}
+
+func TestCoordinatorWALLimitAtCapacityAndRecovery(t *testing.T) {
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	createSourceDatabase(t, databasePath)
+	repositoryRoot := filepath.Join(directory, "repository")
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE boundary_test(value INTEGER); INSERT INTO boundary_test VALUES (1)"); err != nil {
+		t.Fatal(err)
+	}
+	config := coordinatorConfig(repositoryRoot, databasePath, 1)
+	probe, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := probe.Status(ctx)
+	if err != nil || status.WALBytes == 0 {
+		t.Fatalf("WAL status = %+v, error = %v", status, err)
+	}
+	var admission []bool
+	config.Limits.MaxWALBytes = status.WALBytes
+	config.SetAdmission = func(_ context.Context, enabled bool, _ replicator.Limits) error {
+		admission = append(admission, enabled)
+		return nil
+	}
+	limited, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if health := limited.Health(ctx); health.Local != replicator.ComponentDegraded || health.LocalError != replicator.ErrorBackpressure {
+		t.Fatalf("health at capacity = %+v", health)
+	}
+	if err := limited.Flush(ctx); !errors.Is(err, replicator.ErrBackpressure) {
+		t.Fatalf("flush at capacity = %v, want backpressure", err)
+	}
+	if !reflect.DeepEqual(admission, []bool{false}) {
+		t.Fatalf("admission at capacity = %v", admission)
+	}
+	config.Limits.MaxWALBytes++
+	recovered, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Flush(ctx); err != nil {
+		t.Fatalf("flush below limit: %v", err)
+	}
+	if !reflect.DeepEqual(admission, []bool{false, false, true}) {
+		t.Fatalf("admission after recovery = %v", admission)
+	}
+}
+
+func TestCoordinatorRealCaptureExceedsSpoolLimitAndRestores(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("incremental capture requires Linux amd64")
+	}
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	database, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.ExecContext(ctx, "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT); INSERT INTO records VALUES ('base')"); err != nil {
+		t.Fatal(err)
+	}
+	repositoryRoot := filepath.Join(directory, "repository")
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatal(err)
+	}
+	config := coordinatorConfig(repositoryRoot, databasePath, 1)
+	probe, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status, err := probe.Status(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := status.SpoolBytes
+	config.Limits.MaxSpoolBytes = baseline + 1
+	config.ObserveTXID = func(context.Context) (uint64, bool, error) { return 2, true, nil }
+	config.Capture = func(ctx context.Context) (replicator.CaptureResult, error) {
+		return replicator.CaptureOnce(ctx, databasePath, repositoryRoot, func(context.Context) (func() error, error) {
+			return func() error { return nil }, nil
+		})
+	}
+	var admission []bool
+	config.SetAdmission = func(_ context.Context, enabled bool, _ replicator.Limits) error {
+		admission = append(admission, enabled)
+		return nil
+	}
+	limited, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.ExecContext(ctx, "UPDATE records SET value='durable despite saturation'"); err != nil {
+		t.Fatal(err)
+	}
+	if err := limited.Flush(ctx); !errors.Is(err, replicator.ErrBackpressure) {
+		t.Fatalf("flush = %v, want backpressure", err)
+	}
+	status, err = limited.Status(ctx)
+	if err != nil || status.SpoolBytes <= baseline || status.LocalDurable == nil || status.LocalDurable.TXID != 2 {
+		t.Fatalf("saturated status = %+v, error = %v", status, err)
+	}
+	if !reflect.DeepEqual(admission, []bool{false}) {
+		t.Fatalf("admission = %v, want closed", admission)
+	}
+	restored := filepath.Join(directory, "restored.sqlite")
+	if err := replicator.RestoreToTarget(ctx, repositoryRoot, restored, replicator.RestoreTarget{TXID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := sql.Open("sqlite", restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var value string
+	if err := reader.QueryRowContext(ctx, "SELECT value FROM records").Scan(&value); err != nil || value != "durable despite saturation" {
+		t.Fatalf("restored value = %q, error = %v", value, err)
+	}
+	config.Limits.MaxSpoolBytes = status.SpoolBytes + 1
+	recovered, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recovered.Flush(ctx); err != nil {
+		t.Fatalf("retry with headroom: %v", err)
+	}
+	if !reflect.DeepEqual(admission, []bool{false, false, true}) {
+		t.Fatalf("admission after retry = %v", admission)
+	}
+}
+
 func TestCoordinatorRejectsCapturePositionWithoutDurableSpool(t *testing.T) {
 	for _, test := range []struct {
 		name string

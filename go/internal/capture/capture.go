@@ -39,6 +39,61 @@ type Result struct {
 // It intentionally does not run a checkpoint; callers may only checkpoint
 // after durable publication and after separately proving CP-01 for their setup.
 func CaptureOnce(ctx context.Context, sourcePath, repositoryRoot string, timestampMillis int64, hook FaultHook) (result Result, returnErr error) {
+	return captureOnce(ctx, sourcePath, repositoryRoot, timestampMillis, hook, 0, 0, 0, 0)
+}
+
+// CaptureOnceWithRecoveryImageLimit bounds only the temporary decoded snapshot
+// used during recovery. Other staging, metadata and LTX files are not bounded.
+func CaptureOnceWithRecoveryImageLimit(ctx context.Context, sourcePath, repositoryRoot string, timestampMillis int64, hook FaultHook, maxImageBytes uint64) (Result, error) {
+	if maxImageBytes == 0 {
+		return Result{}, fmt.Errorf("recovery image limit must be nonzero")
+	}
+	return captureOnce(ctx, sourcePath, repositoryRoot, timestampMillis, hook, maxImageBytes, 0, 0, 0)
+}
+
+// CaptureOnceWithImageLimits bounds the logical recovery and backup images only.
+func CaptureOnceWithImageLimits(ctx context.Context, sourcePath, repositoryRoot string, timestampMillis int64, hook FaultHook, recoveryLimit, backupLimit uint64) (Result, error) {
+	if recoveryLimit == 0 || backupLimit == 0 {
+		return Result{}, fmt.Errorf("image limits must be nonzero")
+	}
+	return captureOnce(ctx, sourcePath, repositoryRoot, timestampMillis, hook, recoveryLimit, backupLimit, 0, 0)
+}
+
+// CaptureOnceWithBatchLimit also limits the encoded LTX batch before staging.
+func CaptureOnceWithBatchLimit(ctx context.Context, sourcePath, repositoryRoot string, timestampMillis int64, hook FaultHook, recoveryLimit, backupLimit, batchLimit uint64) (Result, error) {
+	if recoveryLimit == 0 || backupLimit == 0 || batchLimit == 0 {
+		return Result{}, fmt.Errorf("capture limits must be nonzero")
+	}
+	return captureOnce(ctx, sourcePath, repositoryRoot, timestampMillis, hook, recoveryLimit, backupLimit, batchLimit, 0)
+}
+
+// CaptureOnceWithSpoolLimit checks existing ltx bytes and the encoded batch
+// under the local repository lock. It does not bound recovery, backup or disk.
+func CaptureOnceWithSpoolLimit(ctx context.Context, sourcePath, repositoryRoot string, timestampMillis int64, hook FaultHook, spoolLimit uint64) (Result, error) {
+	if spoolLimit == 0 {
+		return Result{}, fmt.Errorf("spool limit must be nonzero")
+	}
+	return captureOnce(ctx, sourcePath, repositoryRoot, timestampMillis, hook, 0, 0, 0, spoolLimit)
+}
+
+// CaptureOnceWithAllLimits applies separate image, batch and spool limits.
+func CaptureOnceWithAllLimits(ctx context.Context, sourcePath, repositoryRoot string, timestampMillis int64, hook FaultHook, recoveryLimit, backupLimit, batchLimit, spoolLimit uint64) (Result, error) {
+	if recoveryLimit == 0 || backupLimit == 0 || batchLimit == 0 || spoolLimit == 0 {
+		return Result{}, fmt.Errorf("capture limits must be nonzero")
+	}
+	return captureOnce(ctx, sourcePath, repositoryRoot, timestampMillis, hook, recoveryLimit, backupLimit, batchLimit, spoolLimit)
+}
+
+// CaptureOnceWithAllLimitsLocked requires the caller to hold the repository's
+// exclusive coordination lock until this function returns.
+func CaptureOnceWithAllLimitsLocked(ctx context.Context, sourcePath, repositoryRoot string, timestampMillis int64, hook FaultHook, recoveryLimit, backupLimit, batchLimit, spoolLimit uint64) (Result, error) {
+	if recoveryLimit == 0 || backupLimit == 0 || batchLimit == 0 || spoolLimit == 0 {
+		return Result{}, fmt.Errorf("capture limits must be nonzero")
+	}
+	return captureOnceLocked(ctx, sourcePath, repositoryRoot, timestampMillis, hook, recoveryLimit, backupLimit, batchLimit, spoolLimit)
+}
+
+func captureOnce(ctx context.Context, sourcePath, repositoryRoot string, timestampMillis int64, hook FaultHook, maxImageBytes, backupLimit, batchLimit, spoolLimit uint64) (result Result, returnErr error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
@@ -51,6 +106,10 @@ func CaptureOnce(ctx context.Context, sourcePath, repositoryRoot string, timesta
 			returnErr = errors.Join(returnErr, fmt.Errorf("release repository capture lock: %w", err))
 		}
 	}()
+	return captureOnceLocked(ctx, sourcePath, repositoryRoot, timestampMillis, hook, maxImageBytes, backupLimit, batchLimit, spoolLimit)
+}
+
+func captureOnceLocked(ctx context.Context, sourcePath, repositoryRoot string, timestampMillis int64, hook FaultHook, maxImageBytes, backupLimit, batchLimit, spoolLimit uint64) (result Result, returnErr error) {
 	lease, err := sqliteadapter.BeginCaptureLease(ctx, sourcePath)
 	if err != nil {
 		return Result{}, err
@@ -84,7 +143,12 @@ func CaptureOnce(ctx context.Context, sourcePath, repositoryRoot string, timesta
 		return Result{}, err
 	}
 
-	state, err := spool.Recover(repositoryRoot, stableWAL.Bytes)
+	var state walcapture.State
+	if maxImageBytes == 0 {
+		state, err = spool.Recover(repositoryRoot, stableWAL.Bytes)
+	} else {
+		state, err = spool.RecoverWithImageLimit(repositoryRoot, stableWAL.Bytes, maxImageBytes)
+	}
 	if err != nil {
 		return Result{}, fmt.Errorf("recover local LTX spool: %w", err)
 	}
@@ -103,7 +167,12 @@ func CaptureOnce(ctx context.Context, sourcePath, repositoryRoot string, timesta
 		return Result{}, fmt.Errorf("close source image staging file: %w", err)
 	}
 	defer os.Remove(imagePath)
-	if err := sqliteadapter.CreateOnlineBackup(ctx, sourcePath, imagePath); err != nil {
+	if backupLimit == 0 {
+		err = sqliteadapter.CreateOnlineBackup(ctx, sourcePath, imagePath)
+	} else {
+		err = sqliteadapter.CreateOnlineBackupWithImageLimit(ctx, sourcePath, imagePath, backupLimit)
+	}
+	if err != nil {
 		return Result{}, fmt.Errorf("create source image under capture lease: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
@@ -171,7 +240,7 @@ func CaptureOnce(ctx context.Context, sourcePath, repositoryRoot string, timesta
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
-	if err := spool.PublishTransactions(repositoryRoot, transactions, nextState, func(point spool.FaultPoint, index int) error {
+	spoolHook := func(point spool.FaultPoint, index int) error {
 		if point == spool.AfterWatermark {
 			if hook == nil {
 				return nil
@@ -187,7 +256,25 @@ func CaptureOnce(ctx context.Context, sourcePath, repositoryRoot string, timesta
 			}
 		}
 		return ctx.Err()
-	}); err != nil {
+	}
+	if spoolLimit != 0 {
+		if batchLimit != 0 {
+			remaining := batchLimit
+			for _, transaction := range transactions {
+				size := uint64(len(transaction.Encoded))
+				if size > remaining {
+					return Result{}, fmt.Errorf("LTX batch size limit exceeded")
+				}
+				remaining -= size
+			}
+		}
+		err = spool.PublishTransactionsWithSpoolLimit(repositoryRoot, transactions, nextState, spoolHook, spoolLimit)
+	} else if batchLimit == 0 {
+		err = spool.PublishTransactions(repositoryRoot, transactions, nextState, spoolHook)
+	} else {
+		err = spool.PublishTransactionsWithBatchLimit(repositoryRoot, transactions, nextState, spoolHook, batchLimit)
+	}
+	if err != nil {
 		return Result{}, fmt.Errorf("publish capture spool: %w", err)
 	}
 	if err := invokeHook(hook, AfterPublication, len(transactions)); err != nil {

@@ -535,6 +535,287 @@ restart. Os drills CP-01 não foram repetidos nessa execução.
 
 ## Quem controla os escritores
 
+### Fronteira de saturação do spool
+
+Os coordenadores Go e Rust tratam `spool_bytes == max_spool_bytes` como
+saturação: `Health` degrada e `Flush` deixa a admissão fechada. Os testes
+`TestCoordinatorSpoolLimitAtCapacityAndRecovery` e
+`spool_limit_at_capacity_blocks_and_higher_limit_recovers` usam um snapshot
+SQLite real, medem o spool, exercitam igualdade e demonstram a reabertura com
+um novo coordenador configurado com limite um byte maior. Antes da correção,
+ambos falharam porque `Health` reportava saudável. Após a correção, o teste Go
+passou três vezes com `-race` e o teste Rust passou uma vez.
+
+Essa fronteira é uma verificação posterior à captura, baseada em comprimentos
+lógicos sob `ltx`: não reserva espaço antes de aceitar cada escrita, não conta
+todo o staging e não impõe quota física. A recuperação testada altera o limite
+configurado; não demonstra liberação de espaço via GC, nem recuperação após
+crash.
+
+Na continuação, a mesma fronteira foi corrigida para WAL em Go e Rust: o
+tamanho igual ao máximo também degrada `Health` e impede reabertura após
+`Flush`. `TestCoordinatorWALLimitAtCapacityAndRecovery` e
+`wal_limit_at_capacity_blocks_and_higher_limit_recovers` criam WAL SQLite real,
+verificam saturação e recuperação mediante aumento do limite. Ambos falharam
+antes da correção e passaram depois; Go repetiu três vezes com race detector.
+Nesses testes o adapter de captura é um stub que informa o TXID do snapshot,
+portanto eles testam somente o limiar observado, não captura das novas escritas
+nem proteção de dados. Tampouco demonstram reserva antecipada ou quota física.
+
+O teste Rust `real_capture_exceeds_spool_limit_preserves_restore_and_recovers_with_headroom`
+exercita captura SQLite/LTX real: após o commit, a captura publica TXID 2 e
+ultrapassa o limite de spool; `Flush` retorna erro, mantém admissão fechada e o
+restore por TXID recupera a alteração. Um novo coordenador com limite maior
+completa o retry e reabre admissão. Esse resultado demonstra explicitamente que
+o limite observado pode ser ultrapassado antes da rejeição; não é quota física,
+liberação por GC, nem teste de crash. O adapter e o orçamento são de teste.
+O teste Go `TestCoordinatorRealCaptureExceedsSpoolLimitAndRestores` verificou
+o mesmo fluxo de captura, erro de backpressure, restore do TXID 2 e retry com
+limite maior, três vezes com `-race`. O write gate é no-op no ensaio sequencial;
+isso não valida coordenação de escritores concorrentes nem quota física.
+
+Na medição Rust, erros de `metadata` distintos de `NotFound` agora são
+propagados em vez de serem interpretados como diretório vazio por `exists()`.
+O teste unitário com laço de symlink falhou antes da correção e passou depois;
+também verifica que um caminho ausente retorna zero. Esse teste isolado não
+prova exclusão de alterações externas concorrentes, contabilização de staging
+ou detecção de symlinks quebrados classificados como `NotFound`.
+
+### Reserva cooperativa experimental em Go
+
+`replicator.ConservativeBudget` fornece contabilização process-local de um
+recurso, ligada ao `AdmissionGate`: inicia sem ocupação conhecida, reserva
+atomicamente custos informados, impede reconciliação com reservas ativas e
+invalida ocupação antes de `WithOccupancyMutation`. Erros de medição, abandono
+e custo subestimado mantêm reservas bloqueadas até reconciliação. Go não tem
+destrutor determinístico: cada reserva exige `Settle` ou `Abandon`; esquecimento
+mantém o permit ativo e pode impedir o drain. Callbacks são síncronos sob mutex e
+não devem reentrar ou esperar por escritor que precisa do mesmo budget.
+
+Os testes `TestConservativeBudget*` passaram três vezes com `go test -race`:
+cobrem saturação concorrente, falha, abandono, cancelamento e reinicialização
+com medição de arquivo temporário real. A escrita de teste não é captura LTX.
+O coordenador e `CaptureOnce` ainda não integram automaticamente o budget, e
+custos, todos os produtores, staging, recovery e filesystem não são cobertos por
+ele automaticamente. Valores fornecidos pelo chamador precisam ser limites
+conservadores e a medição deve excluir todas as mutações externas. Não é quota
+física, reserva de espaço no disco, recuperação durável ou proteção contra
+processos que não cooperam.
+O estado de conclusão é compartilhado entre cópias de um `BudgetReservation`,
+impedindo liquidação duplicada; o próprio `ConservativeBudget` contém mutex e
+não deve ser copiado. O teste de cópia e os demais testes de budget passaram
+três vezes com o detector de corrida.
+
+`CaptureOnceWithBudget` oferece integração explícita experimental em Go: adquire
+o write gate fora do mutex, executa a captura sob `WithOccupancyMutation` e
+libera o gate fora do mutex. Em erro de aquisição, captura ou liberação,
+invalida a ocupação; erro após a captura não desfaz LTX já durável. Um callback
+de liberação pode reconciliar independentemente após captura bem-sucedida, de
+modo que a aplicação precisa coordenar essa medição. Os testes de integração
+`TestCaptureOnceWithBudget*` passaram três vezes com `-race`; um restaura dados
+de SQLite real e outro verifica invalidação após callback de liberação que tenta
+reconciliar durante uma falha. O gate de teste é sequencial, não prova proteção
+de produtores externos, limites de staging nem quota de disco. O coordenador não
+conecta automaticamente essa API.
+Um teste adicional mantém uma reserva ativa, verifica que a captura é rejeitada
+e a ocupação fica desconhecida, depois liquida, reconcilia e repete a captura.
+Isso testa o contrato cooperativo, não a drenagem automática pelo coordenador.
+
+`TestCooperativeBudgetCoordinatorRealCaptureAndFailedMeasurement` conecta o
+budget e o mesmo `AdmissionGate` a um coordenador Go de teste. Uma escrita
+SQLite real é capturada; falha de reconciliação ao reabrir mantém o gate e o
+budget fechados, enquanto o restore do TXID 2 contém a alteração. Com medição
+novamente bem-sucedida, o retry reabre a admissão. Passou três vezes com
+`go test -race`. A medição retorna custo lógico artificial zero; o teste não
+mede WAL ou staging, não comprova limites físicos e não homologa o adapter.
+
+`WithReservedMutation` e `CaptureOnceWithReservedBudget` adicionam uma
+verificação lógica **antes** de iniciar a mutação/captura Go: se ocupação mais
+custo informado exceder o limite, rejeitam antes do callback; após iniciá-lo,
+invalidam a ocupação até nova medição. Testes `TestReserved*` passaram três
+vezes com `-race`, cobrindo rejeição antes de publicar watermark, erro de
+staging simulado, reconciliação, retry e restore SQLite por TXID. O custo 6 e
+as ocupações 5/4 nos testes de captura são unidades artificiais, não limites
+de bytes reais. O método não verifica se o callback respeita o custo e não
+reserva blocos físicos: o chamador deve fornecer limite conservador incluindo
+recovery, staging e spool, fechar e drenar todos os produtores e coordenar
+mutações externas. Portanto quota física e integração completa permanecem
+pendentes.
+
+Rust oferece agora os equivalentes `with_reserved_mutation` e
+`capture_once_with_reserved_budget`. Testes direcionados passaram para rejeição
+antes do callback, erro de mutação, reconciliação e retry, e para captura e
+restore SQLite por TXID após uma rejeição anterior sem watermark. As unidades de
+custo também são artificiais; as mesmas limitações de estimativa fornecida pelo
+chamador e ausência de reserva ou enforcement físico se aplicam.
+
+Em Go, `CaptureOnceWithRecoveryImageLimit` combina a pré-verificação lógica
+experimental com limite efetivo por escrita para a imagem temporária que
+`spool.Recover` decodifica do snapshot base. A escrita que ultrapassaria o
+limite lógico é rejeitada antes de ser enviada ao arquivo; falha remove o
+temporário e não avança o watermark. Os testes de arquivo, recovery e captura
+real passaram três vezes com `-race`, incluindo retry e restore após aumentar o
+limite. O limite cobre somente a imagem de recovery durante essa captura opt-in;
+não cobre `Coordinator.Status`, backup SQLite de origem, WAL, metadados, demais
+temporários, LTX nem tamanho físico alocado. Não reserva blocos e não é quota
+de filesystem.
+
+Rust oferece o equivalente opt-in `capture_once_with_recovery_image_limit`,
+apoiado por `recover_with_image_limit` na crate de spool. Testes direcionados
+verificaram rejeição antes da escrita excedente, remoção do temporário e
+watermark inalterado após falha, além de retry e restore SQLite real. As mesmas
+exclusões de staging, outros temporários, `Coordinator::status` e blocos físicos
+se aplicam; não é quota de filesystem nem limite global do repositório.
+
+Foi acrescentado no adapter Rust um Online Backup experimental com teto lógico
+da imagem principal usando `PRAGMA max_page_count` na conexão de destino,
+ajustada ao tamanho de página da origem. O teste com SQLite embutido criou um
+blob de 128 KiB, verificou falha com limite de 8 KiB, tamanho do destino não
+superior ao teto nesse cenário e backup/`integrity_check` e leitura corretos no
+retry com limite maior. Outro teste rejeitou destino não vazio sem modificá-lo
+e teto menor que uma página. Destino precisa ser novo/vazio. Não limita journals, outros arquivos, blocos
+físicos ou espaço disponível, nem prova comportamento de outros drivers/VFS.
+O caminho opt-in `capture_once_with_image_limits` agora usa esse backup limitado
+junto ao limite de recovery. Teste de captura com SQLite real verificou erro com
+limite de backup insuficiente, watermark no TXID base, retry com limite maior e
+restore do TXID 2. A medição de custo usada é lógica/artificial; o teste não
+prova quota global nem a posição da admissão em uma aplicação real.
+
+No adapter Go, `TestOnlineBackupImageLimitModernc` verificou o driver `modernc`
+com a conexão de destino criada por `NewBackup` e pragmas na URI: uma imagem
+de 128 KiB falhou com erro SQLite de disco cheio sob teto de 8 KiB, e o retry
+com teto maior preservou os dados. O teste também preservou um destino não
+vazio e usou nomes com caracteres especiais; passou três vezes com `-race`.
+O caminho opt-in `CaptureOnceWithImageLimits` conecta esse backup ao limite de
+recovery. `TestCaptureWithImageLimitsBackupFailureAndRetry` passou três vezes
+com `-race`: verificou erro SQLite de disco cheio, watermark no TXID base,
+limpeza do arquivo de staging, invalidação do budget e retry com restore do
+TXID 2. A medição do budget no teste é artificial. A evidência é limitada ao
+runtime e cenário testados, não cobre journals nem assegura quota física.
+`TestOnlineBackupImageLimitPageSizes` também passou três vezes com `-race` em
+páginas de 512, 1024, 4096, 8192 e 65536 bytes, verificando falha SQLite e
+comprimento lógico do destino dentro do teto de duas páginas. Isso amplia a
+matriz local desse adapter, mas não demonstra quota para arquivos auxiliares.
+
+Em Go, `spool.PublishTransactionsWithBatchLimit` verifica a soma dos bytes LTX
+já codificados antes de criar o repositório ou qualquer staging do lote. O teste
+`TestPublishTransactionsBatchLimitRejectsBeforeStagingAndRetries` passou três
+vezes com `-race`: lote acima do teto não chama hooks nem cria o repositório;
+no teto exato, publica e atualiza watermark. A função é interna e ainda não
+estava isolada da captura; não limita alocação em memória para codificação,
+spool preexistente, outros produtores, metadados ou blocos físicos. Não é uma
+quota global nem prova recuperação após crash.
+O caminho interno experimental `CaptureOnceWithBatchLimit` agora aplica a
+verificação após codificação e antes do staging LTX. Com SQLite real, o teste
+`TestCaptureBatchLimitRejectsBeforePublicationAndRetries` passou três vezes com
+`-race`: limite insuficiente preserva o watermark no TXID 1 e retry com teto
+maior publica TXID 2; o restore desse TXID recupera o valor alterado. O caminho
+agora também está acessível pela API experimental Go `CaptureOnceWithBatchLimit`.
+O teste de API `TestCaptureWithBatchLimitFailureAndRetry` passou três vezes com
+`-race`, com erro de limite, watermark preservado e restore após retry. Os testes
+não comprovam quota física ou limite de memória; o equivalente Rust e a
+contabilização do spool existente permanece pendente.
+Na crate de spool Rust, `publish_transactions_with_batch_limit` agora rejeita
+lotes codificados acima do limite antes de criar staging. O teste direcionado
+`batch_limit_rejects_before_staging_and_retries` passou: rejeição não cria o
+repositório nem chama o hook; retry no limite exato publica o watermark. Esse
+método está ligado à captura experimental Rust por
+`capture_once_with_batch_limit`: o teste de API com SQLite real confirmou
+rejeição, watermark preservado e restore após retry. Não contabiliza spool
+existente, memória de codificação, outros produtores ou blocos físicos.
+Testes adicionais em Go e Rust confirmam que a checagem soma todo o lote:
+dois itens individualmente dentro do teto foram rejeitados antes de criar o
+repositório. Os itens são duplicatas intencionalmente inválidas, portanto esse
+ensaio prova a ordem e a soma da pré-checagem, não publicação de uma cadeia
+multitransação válida. Go passou três vezes com `-race`; Rust passou uma vez.
+Em Go, `TestPublishTransactionsBatchLimitRetriesAfterPublicationFailure` passou
+três vezes com `-race` após injetar erro depois da publicação LTX e antes do
+watermark: o retry idêntico no mesmo teto concluiu a publicação. O mecanismo
+atual regrava um staging antes de comparar o arquivo imutável existente;
+portanto um limite futuro do spool total deve contabilizar esse espaço
+temporário mesmo em retries. Esse ensaio não simula crash ou quota de disco.
+O teste Rust `batch_limit_retries_after_ltx_publication_failure` também passou:
+uma falha injetada após publicação preservou o LTX sem avançar o watermark;
+retry idêntico no teto do lote concluiu. Não é um teste de crash real.
+
+As funções de spool `PublishTransactionsWithSpoolLimit` (Go, interna) e
+`publish_transactions_with_spool_limit` (Rust) verificam os comprimentos
+lógicos existentes sob `ltx` e o lote inteiro antes de publicar, contando
+inclusive staging residual e staging de retry idêntico. Os testes direcionados
+`TestSpoolLimitCountsExistingStagingAndRetry` (três vezes com `-race`) e
+`spool_limit_counts_existing_staging_and_retry` passaram com falha injetada e
+retry após ampliar o teto. O chamador deve manter a trava do repositório e
+excluir todas as mutações durante medição e publicação. O caminho interno Go
+`CaptureOnceWithSpoolLimit` agora executa a checagem sob a trava local; seu
+teste com SQLite real passou três vezes com `-race`, preservando watermark
+após rejeição e restaurando TXID 2 após retry. Ele não está exposto na API
+pública original; há agora uma API experimental com limites separados. Rust expõe
+`capture_once_with_spool_limit`, que combina limites individuais de imagem,
+lote e spool: o teste de API com SQLite real verificou rejeição, watermark
+inalterado e restore após retry. A API experimental Go
+`CaptureOnceWithSpoolLimit` também combina limites individuais, com teste real
+de rejeição, watermark e restore após retry passando três vezes com `-race`.
+Os testes também verificam que o limite de lote continua ativo ao habilitar o
+limite de spool; Go passou três vezes com `-race` e Rust uma vez. Usam medição
+artificial do budget e não provam quota combinada dessas imagens e do spool.
+As APIs experimentais `CaptureOnceWithDerivedReservation` (Go) e
+`capture_once_with_derived_reservation` (Rust) derivam o custo reservado como
+soma dos tetos de recovery, backup e lote LTX, com verificação de overflow.
+Testes direcionados rejeitaram overflow e capacidade insuficiente: Go passou
+três vezes com `-race` e Rust uma vez. A medição nesses testes é artificial;
+testes posteriores com SQLite real mediram os arquivos `ltx` existentes e
+resíduos deliberados em `ltx` e `.staging`, e
+verificaram rejeição um byte abaixo da soma reservada, retry no limite exato e
+restore do TXID 2 (Go três vezes com `-race`, Rust uma vez). Os testes agora
+usam `MeasureRepositoryLogicalBytes` em Go e `measure_repository_logical_bytes`
+em Rust: a medição de `ltx` e `.staging` mantém a trava local e rejeita diretório
+LTX ausente e symlinks; staging ausente conta zero. Os testes de falha passaram
+três vezes com `-race` em Go e uma em Rust. A trava não permanece entre medição
+e captura: o chamador precisa excluir outros produtores nesse intervalo. Os
+testes não demonstram concorrência nem cobertura de todos os produtores. Assim, a
+reconciliação e coordenação de todos os produtores seguem sendo obrigação do
+chamador. Journals, metadados e blocos físicos não estão cobertos.
+Testes adicionais de contenção confirmaram que a medição rejeita uma trava local
+já adquirida e funciona após sua liberação (Go três vezes com `-race`, Rust uma
+vez). Eles não eliminam o intervalo entre liberar a trava de medição e iniciar a
+captura nem cobrem escritores não cooperativos.
+Go oferece agora `CaptureOnceWithMeasuredReservation`: fecha o gate do chamador
+e mantém o mutex do mesmo budget desde a medição até o término da captura. O
+teste real de spool e resíduos passou três vezes com `-race` sem reconciliação
+prévia; um teste adicional verificou exclusão de reservas e reconciliação após
+mutação. Na versão posterior, a trava filesystem é mantida continuamente da
+medição até o fim da captura. O teste Go com SQLite real verificou falha quando
+outro detentor mantém a trava e retry com restore após liberação, três vezes com
+`-race`. Não demonstra todos os interleavings nem operações não cooperativas.
+Rust agora oferece `capture_once_with_measured_reservation` com o mesmo limite
+de coordenação. Um teste com SQLite real e resíduos verificou rejeição e retry
+com restore; outro verificou exclusão de reservas e reconciliação após mutação.
+Ambos passaram uma vez. Na versão posterior, Rust também mantém a trava local
+continuamente entre medição e captura. O teste de API com SQLite real verificou
+rejeição com a trava mantida por outro descritor e retry com restore após sua
+liberação. Operações que respeitam a mesma trava são excluídas mesmo com budgets
+distintos; o teste não cobre todos os interleavings nem escritores que ignoram a
+trava. Nenhum desses caminhos é quota física.
+Testes adicionais pausaram capturas SQLite após adquirir o lease e tentaram uma
+segunda aquisição da trava: Go testou o caminho público medido com falha
+injetada e retry (três execuções com `-race`); Rust testou a função interna sob
+trava já adquirida, também com falha e retry (uma execução). Não representam
+uma prova exaustiva dos interleavings nem testam processos não cooperativos.
+O teste Rust `locked_capture_excludes_other_repository_operation_and_retries`
+foi ampliado: enquanto a captura interna real está pausada sob a trava, uma
+captura pela API pública medida com budget independente é rejeitada; após a
+falha injetada e liberação, a mesma API publica TXID 2. A execução direcionada
+offline passou. Este cenário não testa restore nem prova todas as concorrências.
+Após essa ampliação, `make test` passou, incluindo formatação, vet, Clippy,
+testes Go e Rust, exemplos de telemetria, fuzz, 96 restores cruzados e Floci
+local. Os testes Go do módulo principal usaram cache; os drills CP-01 opt-in
+não foram executados. Floci não constitui homologação de AWS S3 ou R2 reais.
+Testes adicionais verificaram que spool ausente ou contendo symlink é rejeitado
+sem avançar watermark: Go passou três vezes com `-race` e Rust uma vez em Unix.
+Isso não testa corridas com mutações não cooperativas durante a varredura.
+Não cobrem metadados,
+memória, blocos físicos ou participantes não cooperativos, e não são quota.
+
 | Mecanismo | Controle efetivo e limite observado |
 |---|---|
 | Go `replicator.WriteGate` e Rust `WriteGate` | São callbacks/trait fornecidos pela aplicação para pausar escritores durante `CaptureOnce`/`capture_once`. Os contratos exigem encaminhar todos os escritores da aplicação pelo gate. O repositório não pode impedir que outra conexão ou processo ignore esse mecanismo. O gate é liberado após sucesso ou falha da captura, de acordo com o fluxo da API; não é por si só o admission controller do coordenador. |

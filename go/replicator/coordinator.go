@@ -229,7 +229,7 @@ func (c *Coordinator) Health(ctx context.Context) Health {
 	}
 	if status.LocalDurable != nil {
 		health.Local = ComponentHealthy
-		if status.SpoolBytes > c.config.Limits.MaxSpoolBytes || status.WALBytes > c.config.Limits.MaxWALBytes || status.UnprotectedAge > c.config.Limits.MaxUnprotectedAge {
+		if status.SpoolBytes >= c.config.Limits.MaxSpoolBytes || status.WALBytes >= c.config.Limits.MaxWALBytes || status.UnprotectedAge > c.config.Limits.MaxUnprotectedAge {
 			health.Local = ComponentDegraded
 			health.LocalError = ErrorBackpressure
 		}
@@ -319,7 +319,7 @@ func (c *Coordinator) Flush(ctx context.Context) (returnErr error) {
 	if status.LocalDurable == nil || status.LocalDurable.TXID < target {
 		return ErrNoProgress
 	}
-	if status.SpoolBytes > c.config.Limits.MaxSpoolBytes || status.WALBytes > c.config.Limits.MaxWALBytes || (status.ObservedTXID != nil && status.UnprotectedAge > c.config.Limits.MaxUnprotectedAge) {
+	if status.SpoolBytes >= c.config.Limits.MaxSpoolBytes || status.WALBytes >= c.config.Limits.MaxWALBytes || (status.ObservedTXID != nil && status.UnprotectedAge > c.config.Limits.MaxUnprotectedAge) {
 		return ErrBackpressure
 	}
 	if c.config.Remote != nil && (!status.RemoteAckMatches || status.RemoteConfirmed == nil || status.RemoteConfirmed.TXID < target) {

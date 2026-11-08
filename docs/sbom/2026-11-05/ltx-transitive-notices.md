@@ -29,6 +29,18 @@ nomes `LICENSE`, `NOTICE` e `COPYING` nas árvores locais dessas crates encontro
 somente os dois arquivos acima; isso não elimina avisos em comentários ou a
 necessidade de revisar o conteúdo efetivamente distribuído.
 
+Na archive `lz4_flex 0.14.0`, SHA-256
+`ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226`
+igual ao lockfile do workspace, foram conferidos os três membros com marcadores
+`origin` do índice de telemetria. Em `src/block/compress.rs`, linhas 460 e 596
+afirmam que o deslocamento `- 2` e o passo de três bytes foram copiados da
+implementação de referência, sem identificá-la por commit nesses comentários.
+Os quatro resultados em `decompress.rs` e `decompress_safe.rs` descrevem cópia
+de dados durante descompressão e derivação de tamanho do token, não alegam
+origem do código. Essas observações não comprovam a versão da referência ou
+suas condições, nem substituem revisão dos demais arquivos e avisos. O trecho
+da especificação de frame abaixo é uma questão separada.
+
 ## Trecho da especificação LZ4
 
 `lz4_flex 0.14.0/src/frame/header.rs:93-126` atribui ao documento upstream

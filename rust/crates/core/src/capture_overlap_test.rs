@@ -492,6 +492,89 @@ impl CoordinatorAdapter for BudgetCaptureAdapter {
     }
 }
 
+#[tokio::test]
+async fn real_capture_exceeds_spool_limit_preserves_restore_and_recovers_with_headroom() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database = directory.path().join("source.sqlite");
+    let repository = directory.path().join("repository");
+    let connection = Connection::open(&database).expect("open source");
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base');").expect("create source");
+    crate::snapshot(&database, &repository).expect("snapshot");
+    let adapter = Arc::new(BudgetCaptureAdapter {
+        database: database.clone(),
+        repository: repository.clone(),
+        target: AtomicUsize::new(1),
+        fail: AtomicBool::new(false),
+        panic_capture: AtomicBool::new(false),
+        admission: Mutex::new(Vec::new()),
+        budget: Mutex::new(None),
+    });
+    let limits = Limits {
+        max_spool_bytes: 1 << 30,
+        max_wal_bytes: 1 << 30,
+        max_unprotected_age: Duration::from_secs(3600),
+        max_uploads_in_flight: 1,
+    };
+    let probe = Coordinator::new(CoordinatorConfig {
+        repository_root: repository.clone(),
+        database_path: database.clone(),
+        adapter: adapter.clone(),
+        limits,
+        remote: None,
+    })
+    .expect("probe");
+    let baseline = probe.status().expect("baseline").spool_bytes;
+    let limited = Coordinator::new(CoordinatorConfig {
+        repository_root: repository.clone(),
+        database_path: database.clone(),
+        adapter: adapter.clone(),
+        limits: Limits {
+            max_spool_bytes: baseline + 1,
+            ..limits
+        },
+        remote: None,
+    })
+    .expect("limited coordinator");
+    *adapter.budget.lock().expect("budget") =
+        Some(ConservativeBudget::new(limited.admission_gate(), 1 << 30).expect("budget"));
+    limited.flush().await.expect("open before write");
+    connection
+        .execute("UPDATE data SET value='durable despite saturation'", [])
+        .expect("commit");
+    adapter.target.store(2, Ordering::SeqCst);
+    assert!(
+        limited.flush().await.is_err(),
+        "capture should exceed limit"
+    );
+    let saturated = limited.status().expect("saturated status");
+    assert!(saturated.spool_bytes > baseline);
+    assert_eq!(saturated.local_durable.expect("durable position").txid, 2);
+    assert!(limited.admission_gate().try_accept().is_err());
+    let restored = directory.path().join("restored.sqlite");
+    crate::restore_to_target(&repository, &restored, RestoreTarget::Txid(2)).expect("restore");
+    let value: String = Connection::open(restored)
+        .expect("reader")
+        .query_row("SELECT value FROM data", [], |row| row.get(0))
+        .expect("read restored value");
+    assert_eq!(value, "durable despite saturation");
+
+    let recovered = Coordinator::new(CoordinatorConfig {
+        repository_root: repository,
+        database_path: database,
+        adapter: adapter.clone(),
+        limits: Limits {
+            max_spool_bytes: saturated.spool_bytes + 1,
+            ..limits
+        },
+        remote: None,
+    })
+    .expect("recovered coordinator");
+    *adapter.budget.lock().expect("budget") =
+        Some(ConservativeBudget::new(recovered.admission_gate(), 1 << 30).expect("budget"));
+    recovered.flush().await.expect("retry with headroom");
+    assert!(recovered.admission_gate().try_accept().is_ok());
+}
+
 // Test-only policy: a WAL length is an observation, not a conservative bound.
 struct ReconcilingAdapter {
     inner: BudgetCaptureAdapter,

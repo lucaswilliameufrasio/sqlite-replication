@@ -55,6 +55,103 @@ func (g *cooperativeTestGate) drain(ctx context.Context) error {
 	return g.gate.Drain(ctx)
 }
 
+func TestCooperativeBudgetCoordinatorRealCaptureAndFailedMeasurement(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("incremental capture requires Linux amd64")
+	}
+	ctx := context.Background()
+	directory := t.TempDir()
+	databasePath := filepath.Join(directory, "source.sqlite")
+	createSourceDatabase(t, databasePath)
+	repository := filepath.Join(directory, "repository")
+	if _, err := replication.Snapshot(ctx, databasePath, repository); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	gate := &cooperativeTestGate{gate: replicator.NewAdmissionGate()}
+	budget, err := replicator.NewConservativeBudget(gate.gate, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var failMeasurement atomic.Bool
+	config := coordinatorConfig(repository, databasePath, 1)
+	config.ObserveTXID = func(context.Context) (uint64, bool, error) { return 0, false, nil }
+	config.SetAdmission = func(ctx context.Context, enabled bool, limits replicator.Limits) error {
+		if enabled {
+			if err := budget.Reconcile(func() (uint64, error) {
+				if failMeasurement.Load() {
+					return 0, errors.New("injected measurement failure")
+				}
+				return 0, nil // A logical test cost, not a WAL or disk measurement.
+			}); err != nil {
+				return err
+			}
+		}
+		return gate.setAdmission(ctx, enabled, limits)
+	}
+	config.DrainWrites = gate.drain
+	config.Capture = func(ctx context.Context) (replicator.CaptureResult, error) {
+		return replicator.CaptureOnceWithBudget(ctx, databasePath, repository, func(context.Context) (func() error, error) {
+			return func() error { return nil }, nil
+		}, budget)
+	}
+	coordinator, err := replicator.NewCoordinator(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := coordinator.Flush(ctx); err != nil {
+		t.Fatalf("initial flush: %v", err)
+	}
+	reservation, err := budget.TryReserve(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "UPDATE records SET value = 'budgeted coordinator' WHERE id = 1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := reservation.Settle(0, true); err != nil {
+		t.Fatal(err)
+	}
+	failMeasurement.Store(true)
+	if err := coordinator.Flush(ctx); err == nil {
+		t.Fatal("flush should fail when reconciliation fails")
+	}
+	if _, err := budget.TryReserve(1); err == nil {
+		t.Fatal("failed measurement reopened budget")
+	}
+	if _, err := gate.accept(); err == nil {
+		t.Fatal("failed measurement reopened admission")
+	}
+	restored := filepath.Join(directory, "restored.sqlite")
+	if err := replicator.RestoreToTarget(ctx, repository, restored, replicator.RestoreTarget{TXID: 2}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := sql.Open("sqlite", restored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	var value string
+	if err := reader.QueryRowContext(ctx, "SELECT value FROM records WHERE id = 1").Scan(&value); err != nil || value != "budgeted coordinator" {
+		t.Fatalf("restored value = %q, error = %v", value, err)
+	}
+	failMeasurement.Store(false)
+	if err := coordinator.Flush(ctx); err != nil {
+		t.Fatalf("retry: %v", err)
+	}
+	reservation, err = budget.TryReserve(1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := reservation.Settle(0, true); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestCooperativeBarrierDrainsRealSQLiteWriter(t *testing.T) {
 	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
 		t.Skip("incremental capture requires Linux amd64")

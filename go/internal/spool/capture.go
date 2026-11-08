@@ -52,6 +52,64 @@ func PublishTransactions(root string, transactions []walcapture.Transaction, sta
 	}, storagefs.SyncDirectory)
 }
 
+// PublishTransactionsWithBatchLimit rejects a batch whose encoded LTX bytes
+// exceed limit before creating staging files. It does not count existing spool,
+// metadata, encoding allocations, other producers, or physical disk blocks.
+func PublishTransactionsWithBatchLimit(root string, transactions []walcapture.Transaction, state walcapture.State, hook FaultHook, limit uint64) error {
+	if limit == 0 {
+		return fmt.Errorf("LTX batch limit must be nonzero")
+	}
+	var total uint64
+	for _, transaction := range transactions {
+		size := uint64(len(transaction.Encoded))
+		if size > limit-total {
+			return fmt.Errorf("LTX batch size limit exceeded")
+		}
+		total += size
+	}
+	return PublishTransactions(root, transactions, state, hook)
+}
+
+// PublishTransactionsWithSpoolLimit bounds logical bytes under ltx plus the
+// entire encoded batch. The caller must hold the repository lock and exclude all
+// other mutations until return. Retries count their staging bytes even when the
+// destination already exists. This is not a physical quota and excludes files
+// outside ltx, encoding memory and non-cooperating writers.
+func PublishTransactionsWithSpoolLimit(root string, transactions []walcapture.Transaction, state walcapture.State, hook FaultHook, limit uint64) error {
+	if limit == 0 {
+		return fmt.Errorf("spool limit must be nonzero")
+	}
+	remaining := limit
+	err := filepath.Walk(filepath.Join(root, "ltx"), func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if !info.Mode().IsRegular() || info.Size() < 0 {
+			return fmt.Errorf("unsupported spool entry: %s", path)
+		}
+		size := uint64(info.Size())
+		if size > remaining {
+			return fmt.Errorf("spool size limit exceeded")
+		}
+		remaining -= size
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("measure spool: %w", err)
+	}
+	for _, transaction := range transactions {
+		size := uint64(len(transaction.Encoded))
+		if size > remaining {
+			return fmt.Errorf("spool size limit exceeded")
+		}
+		remaining -= size
+	}
+	return PublishTransactions(root, transactions, state, hook)
+}
+
 func publishTransactionsWithSync(
 	root string,
 	transactions []walcapture.Transaction,

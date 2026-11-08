@@ -124,6 +124,85 @@ impl ConservativeBudget {
         operation()
     }
 
+    /// Checks a caller-supplied conservative cost before an exclusive mutation.
+    /// The caller must close and drain producers and include all transient costs.
+    /// This does not enforce the estimate, reserve disk blocks, or coordinate
+    /// other budgets and external writers. The callback must not reenter the budget.
+    pub fn with_reserved_mutation<T, F>(&self, cost: u64, operation: F) -> io::Result<T>
+    where
+        F: FnOnce() -> io::Result<T>,
+    {
+        if cost == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "zero cost"));
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("budget poisoned"))?;
+        if state.active != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "reservations active",
+            ));
+        }
+        let occupied = state
+            .persisted
+            .ok_or_else(|| io::Error::other("occupancy unknown"))?;
+        if occupied
+            .checked_add(cost)
+            .is_none_or(|total| total > state.limit)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "budget exhausted",
+            ));
+        }
+        state.persisted = None;
+        operation()
+    }
+
+    /// Measures and runs a reserved mutation under one budget mutex. Callers
+    /// must drain producers and exclude operations using independent budgets.
+    /// Callbacks must not reenter this budget; no disk blocks are reserved.
+    pub fn with_measured_reserved_mutation<T, M, F>(
+        &self,
+        cost: u64,
+        measure: M,
+        operation: F,
+    ) -> io::Result<T>
+    where
+        M: FnOnce() -> io::Result<u64>,
+        F: FnOnce() -> io::Result<T>,
+    {
+        if cost == 0 {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "zero cost"));
+        }
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| io::Error::other("budget poisoned"))?;
+        if state.active != 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "reservations active",
+            ));
+        }
+        state.persisted = None;
+        let occupied = measure()?;
+        state.persisted = Some(occupied);
+        if occupied
+            .checked_add(cost)
+            .is_none_or(|total| total > state.limit)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::WouldBlock,
+                "budget exhausted",
+            ));
+        }
+        state.persisted = None;
+        operation()
+    }
+
     /// Reject unknown costs or occupancy; do not wait on capacity.
     /// Acquiring the mutex may block, especially during `reconcile_with`;
     /// this API does not guarantee bounded latency or prompt cancellation.
@@ -198,6 +277,69 @@ impl Drop for BudgetReservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn measured_mutation_excludes_reservations_and_recovers() {
+        let gate = AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = ConservativeBudget::new(gate, 10).expect("budget");
+        let worker_budget = budget.clone();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            worker_budget.with_measured_reserved_mutation(
+                6,
+                || Ok(4),
+                || {
+                    entered_tx.send(()).expect("notify");
+                    release_rx.recv().expect("release");
+                    Ok(())
+                },
+            )
+        });
+        entered_rx.recv().expect("entered mutation");
+        let contender_budget = budget.clone();
+        let contender = std::thread::spawn(move || contender_budget.try_reserve(Some(1)).is_err());
+        release_tx.send(()).expect("release worker");
+        worker.join().expect("worker thread").expect("mutation");
+        assert!(contender.join().expect("contender"));
+        budget.reconcile_with(|| Ok(Some(5))).expect("reconcile");
+        budget
+            .try_reserve(Some(5))
+            .expect("reservation")
+            .settle(Some(0))
+            .expect("settle");
+        assert_eq!(
+            budget
+                .with_measured_reserved_mutation(7, || Ok(4), || Ok(()))
+                .expect_err("saturation")
+                .kind(),
+            io::ErrorKind::WouldBlock
+        );
+    }
+
+    #[test]
+    fn reserved_mutation_rejects_before_operation_and_recovers() {
+        let budget = ConservativeBudget::new(AdmissionGate::new(), 10).expect("budget");
+        budget.reconcile_with(|| Ok(Some(7))).expect("baseline");
+        let mut called = false;
+        let error = budget
+            .with_reserved_mutation(4, || {
+                called = true;
+                Ok(())
+            })
+            .expect_err("saturation");
+        assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
+        assert!(!called);
+        assert!(
+            budget
+                .with_reserved_mutation(3, || Err::<(), _>(io::Error::other("staging failed")))
+                .is_err()
+        );
+        assert!(budget.with_reserved_mutation(1, || Ok(())).is_err());
+        budget.reconcile_with(|| Ok(Some(5))).expect("reconcile");
+        budget.with_reserved_mutation(5, || Ok(())).expect("retry");
+    }
 
     #[test]
     fn cooperative_mutation_waits_for_measurement_and_invalidates_it() {

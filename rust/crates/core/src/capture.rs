@@ -14,6 +14,7 @@ use sqlite_replication_ltx::{DatabaseState, decode_delta, encode_delta};
 use sqlite_replication_spool::{self, FaultPoint as SpoolFaultPoint};
 use sqlite_replication_sqlite::{
     CaptureLease, begin_capture_lease, create_online_backup, create_online_backup_cancellable,
+    create_online_backup_cancellable_with_image_limit,
 };
 use sqlite_replication_wal::scan;
 use sqlite_replication_wal::translate::{State, Transaction, position_from_wal, translate_wal};
@@ -58,7 +59,14 @@ fn capture_once_with_hook<F>(
 where
     F: FnMut(FaultPoint, usize) -> io::Result<()>,
 {
-    capture_once_with_cancellation(source_path, repository_root, timestamp_millis, None, hook)
+    capture_once_with_cancellation(
+        source_path,
+        repository_root,
+        timestamp_millis,
+        None,
+        (None, None, None, None),
+        hook,
+    )
 }
 
 pub(crate) fn capture_once_cancellable<F>(
@@ -76,6 +84,29 @@ where
         repository_root,
         timestamp_millis,
         Some(cancelled),
+        (None, None, None, None),
+        hook,
+    )
+}
+
+pub(crate) fn capture_once_cancellable_with_recovery_limit<F>(
+    source_path: &Path,
+    repository_root: &Path,
+    timestamp_millis: i64,
+    cancelled: &AtomicBool,
+    recovery_limit: u64,
+    limits: (Option<u64>, Option<u64>, Option<u64>),
+    hook: F,
+) -> io::Result<Result>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    capture_once_with_cancellation(
+        source_path,
+        repository_root,
+        timestamp_millis,
+        Some(cancelled),
+        (Some(recovery_limit), limits.0, limits.1, limits.2),
         hook,
     )
 }
@@ -85,13 +116,37 @@ fn capture_once_with_cancellation<F>(
     repository_root: &Path,
     timestamp_millis: i64,
     cancelled: Option<&AtomicBool>,
-    mut hook: F,
+    image_limits: (Option<u64>, Option<u64>, Option<u64>, Option<u64>),
+    hook: F,
 ) -> io::Result<Result>
 where
     F: FnMut(FaultPoint, usize) -> io::Result<()>,
 {
     check_cancelled(cancelled)?;
     let _repository_lock = crate::repository_lock::acquire(repository_root)?;
+    capture_once_with_cancellation_locked(
+        source_path,
+        repository_root,
+        timestamp_millis,
+        cancelled,
+        image_limits,
+        hook,
+    )
+}
+
+// The caller must hold the matching repository coordination lock.
+pub(crate) fn capture_once_with_cancellation_locked<F>(
+    source_path: &Path,
+    repository_root: &Path,
+    timestamp_millis: i64,
+    cancelled: Option<&AtomicBool>,
+    image_limits: (Option<u64>, Option<u64>, Option<u64>, Option<u64>),
+    mut hook: F,
+) -> io::Result<Result>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    check_cancelled(cancelled)?;
     let lease = begin_capture_lease(source_path)?;
     let capture_result = capture_under_lease(
         &lease,
@@ -99,6 +154,7 @@ where
         repository_root,
         timestamp_millis,
         cancelled,
+        image_limits,
         &mut hook,
     );
     let release_result = lease.release();
@@ -120,6 +176,7 @@ fn capture_under_lease<F>(
     repository_root: &Path,
     timestamp_millis: i64,
     cancelled: Option<&AtomicBool>,
+    image_limits: (Option<u64>, Option<u64>, Option<u64>, Option<u64>),
     hook: &mut F,
 ) -> io::Result<Result>
 where
@@ -134,7 +191,14 @@ where
     hook(FaultPoint::AfterWalRead, 0)?;
     check_cancelled(cancelled)?;
 
-    let state = sqlite_replication_spool::recover(repository_root, &stable_wal.bytes)?;
+    let state = match image_limits.0 {
+        Some(limit) => sqlite_replication_spool::recover_with_image_limit(
+            repository_root,
+            &stable_wal.bytes,
+            limit,
+        )?,
+        None => sqlite_replication_spool::recover(repository_root, &stable_wal.bytes)?,
+    };
     check_cancelled(cancelled)?;
     let staging_directory = repository_root.join(".staging");
     fs::create_dir_all(&staging_directory)?;
@@ -142,12 +206,25 @@ where
         .prefix(".capture-source-")
         .suffix(".sqlite")
         .tempfile_in(&staging_directory)?;
-    match cancelled {
-        Some(token) => {
+    match (cancelled, image_limits.1) {
+        (Some(token), Some(limit)) => {
+            create_online_backup_cancellable_with_image_limit(
+                source_path,
+                source_image.path(),
+                token,
+                limit,
+            )?;
+        }
+        (Some(token), None) => {
             create_online_backup_cancellable(source_path, source_image.path(), token)?;
         }
-        None => {
+        (None, None) => {
             create_online_backup(source_path, source_image.path())?;
+        }
+        (None, Some(_)) => {
+            return Err(io::Error::other(
+                "bounded backup requires cancellation token",
+            ));
         }
     }
     source_image.as_file().sync_all()?;
@@ -201,21 +278,48 @@ where
     hook(FaultPoint::AfterWalTranslation, transactions.len())?;
     check_cancelled(cancelled)?;
 
-    sqlite_replication_spool::publish_transactions(
-        repository_root,
-        &transactions,
-        &next_state,
-        |point, index| {
-            if point != SpoolFaultPoint::AfterWatermark {
-                check_cancelled(cancelled)?;
-            }
-            hook(FaultPoint::Spool(point), index)?;
-            if point == SpoolFaultPoint::AfterWatermark {
-                return Ok(());
-            }
-            check_cancelled(cancelled)
-        },
-    )?;
+    if let (Some(_), Some(batch_limit)) = (image_limits.3, image_limits.2) {
+        let mut remaining = batch_limit;
+        for transaction in &transactions {
+            let size = u64::try_from(transaction.encoded.len()).map_err(io::Error::other)?;
+            remaining = remaining.checked_sub(size).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "LTX batch size limit exceeded")
+            })?;
+        }
+    }
+
+    let spool_hook = |point, index| {
+        if point != SpoolFaultPoint::AfterWatermark {
+            check_cancelled(cancelled)?;
+        }
+        hook(FaultPoint::Spool(point), index)?;
+        if point == SpoolFaultPoint::AfterWatermark {
+            return Ok(());
+        }
+        check_cancelled(cancelled)
+    };
+    match (image_limits.3, image_limits.2) {
+        (Some(limit), _) => sqlite_replication_spool::publish_transactions_with_spool_limit(
+            repository_root,
+            &transactions,
+            &next_state,
+            spool_hook,
+            limit,
+        )?,
+        (None, Some(limit)) => sqlite_replication_spool::publish_transactions_with_batch_limit(
+            repository_root,
+            &transactions,
+            &next_state,
+            spool_hook,
+            limit,
+        )?,
+        (None, None) => sqlite_replication_spool::publish_transactions(
+            repository_root,
+            &transactions,
+            &next_state,
+            spool_hook,
+        )?,
+    }
     hook(FaultPoint::AfterSpoolPublication, transactions.len())?;
     Ok(Result {
         transactions,
@@ -270,6 +374,86 @@ mod tests {
     use sqlite_replication_spool::{FaultPoint as SpoolFaultPoint, read_watermark};
 
     use super::{FaultPoint, capture_once, capture_once_cancellable, capture_once_with_hook};
+
+    #[test]
+    fn locked_capture_excludes_other_repository_operation_and_retries() {
+        struct Gate;
+        struct Permit;
+        impl crate::WriteGate for Gate {
+            type Permit = Permit;
+            fn acquire(&self) -> io::Result<Permit> {
+                Ok(Permit)
+            }
+        }
+        impl crate::WritePermit for Permit {
+            fn release(self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("directory");
+        let source = dir.path().join("source.sqlite");
+        let repository = dir.path().join("repository");
+        let db = Connection::open(&source).expect("database");
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base')").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        db.execute("UPDATE data SET value='retry'", [])
+            .expect("commit");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let thread_source = source.clone();
+        let thread_repository = repository.clone();
+        let worker = thread::spawn(move || {
+            let _guard = crate::repository_lock::acquire(&thread_repository).expect("lock");
+            super::capture_once_with_cancellation_locked(
+                &thread_source,
+                &thread_repository,
+                100,
+                None,
+                (Some(1 << 20), Some(1 << 20), Some(1 << 20), Some(4 << 20)),
+                |point, _| {
+                    if point == FaultPoint::AfterLeaseAcquire {
+                        entered_tx.send(()).expect("signal");
+                        release_rx.recv().expect("release");
+                        return Err(io::Error::other("injected capture failure"));
+                    }
+                    Ok(())
+                },
+            )
+        });
+        entered_rx.recv().expect("capture entered");
+        assert!(crate::repository_lock::acquire(&repository).is_err());
+        let budget = crate::ConservativeBudget::new(crate::AdmissionGate::new(), 8 << 20)
+            .expect("independent budget");
+        let limits = || crate::CaptureLimits {
+            recovery_image: 1 << 20,
+            backup_image: 1 << 20,
+            ltx_batch: 1 << 20,
+        };
+        let blocked = crate::capture_once_with_measured_reservation(
+            &source,
+            &repository,
+            &Gate,
+            &budget,
+            limits(),
+            4 << 20,
+        );
+        assert!(blocked.is_err(), "public capture ignored the held lock");
+        release_tx.send(()).expect("release");
+        assert!(worker.join().expect("thread").is_err());
+        let result = crate::capture_once_with_measured_reservation(
+            &source,
+            &repository,
+            &Gate,
+            &budget,
+            limits(),
+            4 << 20,
+        )
+        .expect("public retry");
+        assert_eq!(result.txid, 2);
+    }
 
     #[test]
     fn characterize_capture_does_not_exclude_budget_reservations() {

@@ -152,6 +152,80 @@ where
     )
 }
 
+/// Limits encoded bytes in this batch before staging. Does not include existing
+/// spool, encoding memory, metadata, other producers, or filesystem blocks.
+pub fn publish_transactions_with_batch_limit<F>(
+    root: &Path,
+    transactions: &[Transaction],
+    state: &State,
+    hook: F,
+    limit: u64,
+) -> io::Result<()>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    if limit == 0 {
+        return Err(invalid_input("LTX batch limit must be nonzero"));
+    }
+    let mut remaining = limit;
+    for transaction in transactions {
+        let size = u64::try_from(transaction.encoded.len())
+            .map_err(|_| invalid_input("LTX batch size overflow"))?;
+        remaining = remaining
+            .checked_sub(size)
+            .ok_or_else(|| invalid_input("LTX batch size limit exceeded"))?;
+    }
+    publish_transactions(root, transactions, state, hook)
+}
+
+/// Limits logical bytes under `ltx` plus the entire encoded batch, including
+/// staging for identical retries. Caller must hold the repository lock and
+/// exclude all other mutations through return. This is not a physical quota;
+/// files outside `ltx`, encoding memory and uncooperative writers are excluded.
+pub fn publish_transactions_with_spool_limit<F>(
+    root: &Path,
+    transactions: &[Transaction],
+    state: &State,
+    hook: F,
+    limit: u64,
+) -> io::Result<()>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    if limit == 0 {
+        return Err(invalid_input("spool limit must be nonzero"));
+    }
+    let mut remaining = limit;
+    let mut directories = vec![root.join("ltx")];
+    while let Some(directory) = directories.pop() {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if !metadata.file_type().is_dir() {
+            return Err(invalid_input("unsupported spool directory"));
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.file_type().is_dir() {
+                directories.push(entry.path());
+            } else if metadata.file_type().is_file() {
+                remaining = remaining
+                    .checked_sub(metadata.len())
+                    .ok_or_else(|| invalid_input("spool size limit exceeded"))?;
+            } else {
+                return Err(invalid_input("unsupported spool entry"));
+            }
+        }
+    }
+    for transaction in transactions {
+        let size = u64::try_from(transaction.encoded.len())
+            .map_err(|_| invalid_input("LTX batch size overflow"))?;
+        remaining = remaining
+            .checked_sub(size)
+            .ok_or_else(|| invalid_input("spool size limit exceeded"))?;
+    }
+    publish_transactions(root, transactions, state, hook)
+}
+
 fn publish_transactions_with_sync<F, S, D>(
     root: &Path,
     transactions: &[Transaction],
@@ -242,13 +316,35 @@ pub fn read_watermark(root: &Path) -> io::Result<Watermark> {
 /// LTX publication. The caller must reconcile this state with the live database
 /// image before capture when the WAL generation is no longer present.
 pub fn recover(root: &Path, wal_bytes: &[u8]) -> io::Result<State> {
+    recover_inner(root, wal_bytes, None)
+}
+
+/// Bounds logical bytes written to the decoded temporary recovery image only.
+/// This is not a filesystem quota and does not reserve physical blocks.
+pub fn recover_with_image_limit(root: &Path, wal_bytes: &[u8], limit: u64) -> io::Result<State> {
+    if limit == 0 {
+        return Err(invalid_input("recovery image limit must be nonzero"));
+    }
+    recover_inner(root, wal_bytes, Some(limit))
+}
+
+fn recover_inner(root: &Path, wal_bytes: &[u8], limit: Option<u64>) -> io::Result<State> {
     let snapshot_path = ltx_path(root, 1, 1);
     let snapshot = File::open(&snapshot_path)?;
     let mut restored = Builder::new()
         .prefix(".recover-snapshot-")
         .suffix(".sqlite")
         .tempfile_in(root.join("_meta"))?;
-    let snapshot_header = decode_snapshot(snapshot, restored.as_file_mut())?;
+    let snapshot_header = match limit {
+        Some(remaining) => {
+            let mut limited = LimitedRecoveryWriter {
+                writer: restored.as_file_mut(),
+                remaining,
+            };
+            decode_snapshot(snapshot, &mut limited)?
+        }
+        None => decode_snapshot(snapshot, restored.as_file_mut())?,
+    };
     restored.as_file().sync_all()?;
     let mut database = DatabaseState::load(restored.as_file_mut(), 1)?;
     if database.page_size != snapshot_header.page_size || database.commit != snapshot_header.commit
@@ -328,6 +424,26 @@ pub fn recover(root: &Path, wal_bytes: &[u8]) -> io::Result<State> {
         publish_transactions(root, &[], &state, |_, _| Ok(()))?;
     }
     Ok(state)
+}
+
+struct LimitedRecoveryWriter<W> {
+    writer: W,
+    remaining: u64,
+}
+
+impl<W: Write> Write for LimitedRecoveryWriter<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if data.len() as u64 > self.remaining {
+            return Err(io::Error::other("recovery image size limit exceeded"));
+        }
+        let written = self.writer.write(data)?;
+        self.remaining -= written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -986,6 +1102,42 @@ mod tests {
     }
 
     #[test]
+    fn limited_recovery_rejects_and_retries_without_changing_watermark() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path();
+        initialize_fuse_recovery_repository(root);
+        let watermark_path = root.join("_meta/capture-watermark.json");
+        let before = fs::read(&watermark_path).expect("watermark");
+        assert!(super::recover_with_image_limit(root, &[], 512).is_err());
+        assert_eq!(fs::read(&watermark_path).expect("watermark"), before);
+        assert!(
+            !fs::read_dir(root.join("_meta"))
+                .expect("metadata")
+                .any(|entry| {
+                    entry
+                        .expect("entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".recover-snapshot-")
+                })
+        );
+        let recovered = super::recover_with_image_limit(root, &[], 1024).expect("retry");
+        assert_eq!(recovered.database.txid, 1);
+    }
+
+    #[test]
+    fn limited_recovery_writer_rejects_before_oversize_write() {
+        let mut output = Vec::new();
+        let mut writer = super::LimitedRecoveryWriter {
+            writer: &mut output,
+            remaining: 4,
+        };
+        std::io::Write::write_all(&mut writer, b"1234").expect("within limit");
+        assert!(std::io::Write::write_all(&mut writer, b"5").is_err());
+        assert_eq!(output, b"1234");
+    }
+
+    #[test]
     fn recovery_repairs_published_ltx_ahead_of_watermark() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let root = directory.path();
@@ -1058,6 +1210,196 @@ mod tests {
         assert_eq!(read_watermark(root).unwrap().txid, 2);
         let repeated = recover(root, &[]).expect("repeat recovery");
         assert_eq!(repeated.database, recovered.database);
+    }
+
+    #[test]
+    fn batch_limit_rejects_before_staging_and_retries() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let (transaction, state) = sample_capture();
+        let limit = transaction.encoded.len() as u64;
+        assert!(limit > 1);
+        let mut called = false;
+        let result = super::publish_transactions_with_batch_limit(
+            &root,
+            std::slice::from_ref(&transaction),
+            &state,
+            |_, _| {
+                called = true;
+                Ok(())
+            },
+            limit - 1,
+        );
+        assert!(result.is_err());
+        assert!(!called);
+        assert!(!root.exists());
+        super::publish_transactions_with_batch_limit(
+            &root,
+            &[transaction],
+            &state,
+            |_, _| Ok(()),
+            limit,
+        )
+        .expect("retry");
+        assert_eq!(
+            read_watermark(&root).expect("watermark").txid,
+            state.database.txid
+        );
+    }
+
+    #[test]
+    fn batch_limit_counts_all_transactions_before_validation() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let (transaction, state) = sample_capture();
+        let limit = transaction.encoded.len() as u64;
+        // Duplicates are deliberately invalid: aggregate rejection precedes
+        // batch validation and any filesystem mutation.
+        let batch = [transaction.clone(), transaction];
+        let error = super::publish_transactions_with_batch_limit(
+            &root,
+            &batch,
+            &state,
+            |_, _| Ok(()),
+            limit,
+        )
+        .expect_err("aggregate limit");
+        assert!(error.to_string().contains("LTX batch size limit exceeded"));
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn batch_limit_retries_after_ltx_publication_failure() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let (transaction, state) = sample_capture();
+        let limit = transaction.encoded.len() as u64;
+        let error = super::publish_transactions_with_batch_limit(
+            &root,
+            std::slice::from_ref(&transaction),
+            &state,
+            |point, _| {
+                if point == FaultPoint::AfterLtxPublish {
+                    return Err(std::io::Error::other("injected after publication"));
+                }
+                Ok(())
+            },
+            limit,
+        )
+        .expect_err("injected failure");
+        assert!(error.to_string().contains("injected after publication"));
+        assert!(
+            sqlite_replication_storage_fs::ltx_path(
+                &root,
+                transaction.header.min_txid,
+                transaction.header.max_txid
+            )
+            .exists()
+        );
+        assert!(read_watermark(&root).is_err());
+        super::publish_transactions_with_batch_limit(
+            &root,
+            &[transaction],
+            &state,
+            |_, _| Ok(()),
+            limit,
+        )
+        .expect("identical retry");
+        assert_eq!(
+            read_watermark(&root).expect("watermark").txid,
+            state.database.txid
+        );
+    }
+
+    #[test]
+    fn spool_limit_counts_existing_staging_and_retry() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let ltx = root.join("ltx");
+        std::fs::create_dir_all(&ltx).expect("ltx directory");
+        std::fs::write(ltx.join(".old.stage"), b"12345").expect("stale staging");
+        let (transaction, state) = sample_capture();
+        let size = transaction.encoded.len() as u64;
+        let batch = std::slice::from_ref(&transaction);
+        assert!(
+            super::publish_transactions_with_spool_limit(
+                &root,
+                batch,
+                &state,
+                |_, _| Ok(()),
+                size + 4
+            )
+            .is_err()
+        );
+        let error = super::publish_transactions_with_spool_limit(
+            &root,
+            batch,
+            &state,
+            |point, _| {
+                if point == FaultPoint::AfterLtxPublish {
+                    return Err(std::io::Error::other("published"));
+                }
+                Ok(())
+            },
+            size + 5,
+        )
+        .expect_err("injected failure");
+        assert!(error.to_string().contains("published"));
+        assert!(
+            super::publish_transactions_with_spool_limit(
+                &root,
+                batch,
+                &state,
+                |_, _| Ok(()),
+                size + 5
+            )
+            .is_err()
+        );
+        super::publish_transactions_with_spool_limit(
+            &root,
+            batch,
+            &state,
+            |_, _| Ok(()),
+            size * 2 + 5,
+        )
+        .expect("retry with headroom");
+        assert_eq!(
+            read_watermark(&root).expect("watermark").txid,
+            state.database.txid
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spool_limit_rejects_symlink_and_missing_directory() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let (transaction, state) = sample_capture();
+        let batch = std::slice::from_ref(&transaction);
+        assert!(
+            super::publish_transactions_with_spool_limit(
+                &root,
+                batch,
+                &state,
+                |_, _| Ok(()),
+                1 << 20
+            )
+            .is_err()
+        );
+        let ltx = root.join("ltx");
+        std::fs::create_dir_all(&ltx).expect("ltx directory");
+        std::os::unix::fs::symlink(root.join("outside"), ltx.join("unexpected")).expect("symlink");
+        assert!(
+            super::publish_transactions_with_spool_limit(
+                &root,
+                batch,
+                &state,
+                |_, _| Ok(()),
+                1 << 20
+            )
+            .is_err()
+        );
+        assert!(read_watermark(&root).is_err());
     }
 
     fn sample_capture() -> (Transaction, State) {

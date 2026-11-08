@@ -731,6 +731,87 @@ async fn flush_and_run_close_admission_on_limit_and_shutdown() {
 }
 
 #[tokio::test]
+async fn spool_limit_at_capacity_blocks_and_higher_limit_recovers() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let probe = coordinator(&repository_root, &database_path, Some(1), None);
+    let size = probe.status().expect("status").spool_bytes;
+    assert!(size > 0);
+    let adapter = coordinator_adapter(Some(1));
+    let limited = Coordinator::new(CoordinatorConfig {
+        repository_root: repository_root.clone(),
+        database_path: database_path.clone(),
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: limits(size),
+        remote: None,
+    })
+    .expect("limited coordinator");
+    let health = limited.health().await;
+    assert_eq!(health.local, ComponentState::Degraded);
+    assert!(limited.flush().await.is_err());
+    assert_eq!(*adapter.admission.lock().expect("admission"), vec![false]);
+
+    let recovered = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: limits(size + 1),
+        remote: None,
+    })
+    .expect("recovered coordinator");
+    recovered.flush().await.expect("flush below limit");
+    assert_eq!(
+        *adapter.admission.lock().expect("admission"),
+        vec![false, false, true]
+    );
+}
+
+#[tokio::test]
+async fn wal_limit_at_capacity_blocks_and_higher_limit_recovers() {
+    let directory = tempfile::tempdir().expect("temporary directory");
+    let database_path = directory.path().join("source.sqlite");
+    create_database(&database_path);
+    let repository_root = directory.path().join("repository");
+    sqlite_replication_core::snapshot(&database_path, &repository_root).expect("snapshot");
+    let connection = Connection::open(&database_path).expect("open database");
+    connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE boundary_test(value INTEGER); INSERT INTO boundary_test VALUES (1)").expect("create WAL");
+    let probe = coordinator(&repository_root, &database_path, Some(1), None);
+    let size = probe.status().expect("status").wal_bytes;
+    assert!(size > 0);
+    let adapter = coordinator_adapter(Some(1));
+    let mut configured = limits(1 << 30);
+    configured.max_wal_bytes = size;
+    let limited = Coordinator::new(CoordinatorConfig {
+        repository_root: repository_root.clone(),
+        database_path: database_path.clone(),
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: configured,
+        remote: None,
+    })
+    .expect("limited coordinator");
+    assert_eq!(limited.health().await.local, ComponentState::Degraded);
+    assert!(limited.flush().await.is_err());
+    assert_eq!(*adapter.admission.lock().expect("admission"), vec![false]);
+    configured.max_wal_bytes += 1;
+    let recovered = Coordinator::new(CoordinatorConfig {
+        repository_root,
+        database_path,
+        adapter: Arc::clone(&adapter) as Arc<dyn CoordinatorAdapter>,
+        limits: configured,
+        remote: None,
+    })
+    .expect("recovered coordinator");
+    recovered.flush().await.expect("flush below limit");
+    assert_eq!(
+        *adapter.admission.lock().expect("admission"),
+        vec![false, false, true]
+    );
+}
+
+#[tokio::test]
 async fn run_with_preexisting_cancellation_never_opens_admission() {
     let directory = tempfile::tempdir().expect("temporary directory");
     let database_path = directory.path().join("source.sqlite");
