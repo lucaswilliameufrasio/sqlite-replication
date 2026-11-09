@@ -35,7 +35,63 @@ dependências de outros workspaces; tampouco verificam o conteúdo dos SBOMs.
 
 As revisões identificadas são parciais. A definição do conjunto final de
 artefatos e a aprovação de distribuição continuam distintas da validação local;
-nenhuma publicação, tag, licença final ou push está autorizada por este registro.
+este registro não autoriza publicação, tag, licença final ou novos pushes.
+
+## Escopo esclarecido: bibliotecas instaladas pelos consumidores
+
+O mantenedor esclareceu que pretende oferecer as bibliotecas para que outras
+pessoas as instalem e usem, em vez de distribuir binários compilados próprios.
+Para esta revisão, priorizam-se os **fontes e metadados efetivamente entregues**
+de Go e Rust, inclusive arquivos, fixtures ou documentação que cada pacote
+realmente contiver. Dependências obtidas separadamente pelos consumidores não
+devem ser descritas como vendorizadas no candidato apenas por constarem no grafo;
+seus avisos e eventuais obrigações para uma distribuição concreta continuam
+sujeitos à avaliação apropriada. A triagem anterior de componentes nativos e
+binários permanece preservada, mas não representa um binário próprio pretendido.
+
+As seguintes distinções continuam relevantes antes de afirmar que as bibliotecas
+estão prontas para instalação e distribuição:
+
+* O candidato Rust `8avAZthl` é uma **archive local do workspace**, não uma
+  publicação de crates independentes. Ensaios anteriores de `cargo package`
+  falharam para `core`, `wal` e `spool` por dependências locais sem versão;
+  `wal` também declara `publish = false`. Outros pacotes isolados tiveram
+  limitações de testes e fixtures descritas em `distribution-candidate-inventory.md`.
+  Esses resultados não demonstram que o consumidor consegue instalar qualquer
+  crate via registry ou que uma alternativa Git funciona; isso requer verificar
+  o fluxo de instalação escolhido em uma cópia limpa.
+* O candidato Go `JIr2oOeH` é uma **cópia local validada**, não prova de
+  instalação por terceiros a partir de uma versão publicada. É necessário
+  verificar o fluxo de consumo real e o conteúdo efetivo do módulo entregue.
+  No commit `d95837f`, `git ls-tree HEAD go.mod go/go.mod` listou apenas
+  `go/go.mod`; executado em `go/`, `go list -m` retornou
+  `github.com/lucaswilliameufrasio/sqlite-replication`, sem sufixo `/go`.
+  Em um módulo consumidor novo e isolado, com `GOWORK=off`, acesso direto ao
+  repositório via `GOPRIVATE` e prompts Git desabilitados, foram testados dois
+  caminhos no commit `d95837f` (resolvido à pseudo-versão
+  `v0.0.0-20261108223436-d95837fe4d05`):
+  * `go get github.com/lucaswilliameufrasio/sqlite-replication/replicator@d95837f`
+    encontrou o módulo, mas informou que ele não contém esse pacote;
+  * `go get github.com/lucaswilliameufrasio/sqlite-replication/go/replicator@d95837f`
+    encontrou o módulo em `go/`, mas recusou a divergência entre o caminho
+    declarado sem `/go` e o caminho requerido com `/go`.
+
+  Ambos retornaram erro. Isso identifica uma falha concreta desses dois fluxos
+  Git diretos para esse commit, não de todas as estratégias possíveis de
+  distribuição. Corrigir o layout ou o caminho do módulo implica uma decisão de
+  compatibilidade de imports; não foi feita alteração automática nem publicação.
+* `rust/Cargo.toml` declara `license = "Apache-2.0"`, herdada pelos crates;
+  essa declaração existente não constitui escolha ou aprovação da licença final
+  pelo mantenedor. Um texto de licença próprio e os avisos pertinentes ao
+  conteúdo final devem ser revisados antes de distribuição.
+* Os candidatos são snapshots anteriores à ampliação documental e não são
+  automaticamente os pacotes finais. A correspondência de seu manifesto e os
+  testes anteriores não substituem a inspeção do pacote escolhido.
+
+O esclarecimento sobre o uso como bibliotecas não autoriza publicar, criar tag
+ou release, nem aprova licença ou notices. As dúvidas de proveniência que
+afetem apenas fontes obtidas separadamente ou binários de consumidores devem
+ser apresentadas como tais, sem tratá-las como conteúdo comprovado da archive.
 
 ### Triagem adicional: constantes ML-DSA x86-64 AWS-LC
 
