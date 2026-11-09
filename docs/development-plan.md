@@ -1,7 +1,36 @@
-# Plano de Desenvolvimento — SQLite Replication para Go e Rust
+# Development Plan — SQLite Replication for Go and Rust
 
 > **Versão:** 1.0 — 21/10/2026  
-> **Estado em 2026-10-25:** execução em andamento; M0 parcial, M1 implementado, M2 bloqueado por CP-01.
+> **Status on 2026-11-05:** M0 partial, M1 verified, CP-01 approved only for Linux x86-64; M3 implemented/locally verified, M4 implemented/locally verified with operational closure pending; M5 coordinator implemented with local/Floci gates, but production adapters, stress and observability remain pending; M6 in progress.
+
+> **Retomada e escopo acordados em 2026-11-06:** concluir os critérios do plano
+> executáveis localmente e conferir as evidências mais recentes antes de marcar
+> cada marco como concluído. O mantenedor fará a eventual validação de S3/R2
+> reais; ela não integra o gate local. O mantenedor confirmou ter autorização
+> para distribuir as contribuições e fixtures sob Apache-2.0. A revisão técnica
+> de notices permanece necessária; essa confirmação não autoriza criar a licença
+> final, fazer push, tag, release ou publicação. Homologação de produção continua
+> separada da validação local. Os registros datados abaixo são históricos e não
+> devem prevalecer automaticamente sobre evidências posteriores.
+>
+> **Escopo local confirmado nesta retomada:** homologação de serviços reais,
+> aprovação de distribuição e demais decisões reservadas ao mantenedor não são
+> etapas nem bloqueios do plano de desenvolvimento e validação local. Isso não
+> transforma testes locais em aprovação dessas atividades. Os candidatos de
+> empacotamento e a revisão técnica de notices podem ser examinados localmente
+> sem escolher nem autorizar os artefatos finais.
+>
+> **Capacidade — estado local:** Go e Rust têm caminhos experimentais opt-in
+> com limites lógicos para imagens de recovery e backup e para a soma do lote
+> LTX já codificado, antes do staging. O budget cooperativo depende do custo e
+> da medição fornecidos pelo chamador; não constitui quota física. Testes locais
+> cobriram rejeição, retry e restore; retries idênticos também recriam staging.
+> A contabilização integrada do spool existente, temporários e demais produtores
+> permanece incompleta. O último `make test` passou com 96 restores cruzados e
+> Floci local, com alguns testes Go em cache e sem os drills CP-01 opt-in.
+> A revisão técnica de notices continua parcial e os candidatos anteriores estão
+> desatualizados; regeneração não implica autorização de distribuição.
+>
 > **Natureza:** duas bibliotecas independentes, open source, embarcadas no processo da aplicação  
 > **Testes S3:** Floci local, sem homologação obrigatória em AWS S3 ou Cloudflare R2  
 > **Nome de produto:** propositalmente indefinido; identificadores de código são provisórios.
@@ -48,9 +77,11 @@ Construir **dois motores próprios de backup/replicação assíncrona de SQLite*
 | D-12 | Sem criação de um formato próprio para substituir LTX | Metadados externos podem complementar layout/versão sem modificar bytes LTX |
 | D-13 | Checkpoint sob política coordenada pelo motor | Não assumir que fazer `tail` do `-wal` é seguro |
 | D-14 | OpenTelemetry + métricas Prometheus | Sem servidor HTTP obrigatório; registrador opcional da aplicação |
-| D-15 | Licença Apache-2.0 proposta | Verificar atribuições e licenças de fixtures/referências antes da publicação |
+| D-15 | Apache-2.0 escolhida para Go/Rust | Nome de aviso veio do perfil público GitHub a pedido do mantenedor; notices e direitos das fixtures ainda precisam ser revisados antes de criar `LICENSE`/publicar (ADR 0014) |
 | D-16 | Linux amd64/arm64 como primeira matriz de produção | macOS arm64 na integração; Windows 11 amd64 como fase posterior |
 | D-17 | Segurança de dados tem prioridade sobre latência | Falhas explícitas e bloqueio de promoção quando um invariante não for comprovado |
+| D-18 | Caminho canônico Go: `github.com/lucaswilliameufrasio/sqlite-replication` | Alteração pré-publicação registrada na ADR 0014; revisar antes de publicar se owner/path mudar |
+| D-19 | Primeira garantia incremental restrita a Linux 64-bit, Go/Rust e um escritor controlado | Limites e revisão explícitos em `docs/cp01-review-summary.md`; perda física de energia fica fora da garantia inicial |
 
 **Nota sobre formatos:** a documentação do Litestream descreve arquivos LTX v2; o projeto `superfly/ltx` documenta v3 com quadros de página e compressão diferentes, embora ambos usem `LTX1`. Para a v1, os leitores e escritores **v2** precisam interoperar com fixtures reconhecidas da versão de Litestream testada. Suporte de escrita v3 **não** será misturado ao mesmo prefixo e não será anunciado como compatível com leitores v2.
 
@@ -218,7 +249,7 @@ Cada linguagem possui sua própria lógica de encode/decode LTX, WAL e máquina 
 ### 6.4 Convenções de restauração
 
 - TXID: limite **inclusivo**; compactados só podem ser aplicados quando seu `MaxTXID` cabe integralmente no alvo.
-- Timestamp: limite **exclusivo** (`arquivo.timestamp < alvo`), documentado explicitamente para manter semântica do perfil de referência.
+- Timestamp: limite **inclusivo**; selecionar o maior TXID disponível cujo timestamp LTX seja `<= alvo`, conforme `spec/RECOVERY_PROTOCOL.md` e ADR 0010.
 - A precisão de recuperação é a fronteira entre LTX preservados, não a de cada COMMIT SQLite, e pode piorar quando a retenção elimina intervalos finos.
 - Nunca tentar aplicar parte de um arquivo LTX compactado para atingir um TXID intermediário.
 
@@ -326,7 +357,9 @@ Em caso de queda entre upload e confirmação local, a reconciliação enumera o
 ### 10.2 API de restauração
 
 - Operação offline antes da abertura do pool de aplicação; `RestoreIfMissing` é **opt-in** e só atua se arquivo destino não existir.
-- Alvos: último recuperável, TXID, timestamp exclusivo, ou snapshot explícito.
+- Alvos: último recuperável, TXID inclusivo, instante UTC inclusivo (maior TXID
+  com timestamp LTX `<=` ao instante) ou snapshot explícito. Timestamp seleciona
+  fronteiras LTX disponíveis, não commits intermediários.
 - Descoberta de arquivos → plano de recuperação → validação da cadeia/checksums → arquivo temporário → aplicar páginas/truncamento lógico → `PRAGMA quick_check` e `integrity_check` → `fsync` → promoção atômica.
 - Falha em qualquer passo preserva arquivo anterior e registra diagnóstico. Não aceitar DB final com `-wal`/`-shm` antigos e incompatíveis.
 - `RestoreTo(path)` nunca abre o banco destino para escrita concorrente; arquivo de destino preexistente é rejeitado por padrão, com modo de substituição explícito e precondições fortes.
@@ -543,8 +576,9 @@ aguarda health, assina requests S3 com credenciais sintéticas, cria bucket e
 objeto, para/inicia o mesmo serviço, lê e compara os bytes persistidos, remove
 objeto/bucket e derruba somente o projeto/volume desta execução. A porta host é
 selecionada para a execução e publicada em loopback. Não foram usados AWS S3,
-R2 ou credenciais reais. Evidência corresponde ao smoke do emulador, não a um
-adapter de storage da biblioteca (ainda não implementado).
+R2 ou credenciais reais. O adapter S3 Go/Rust e os fluxos de sync/restore da
+biblioteca também passam no gate Floci; essa evidência local não homologa outros
+provedores S3.
 
 O ambiente inicial é `persistent`, que é a semântica requerida para este
 smoke. Uma suite rápida em modo `memory` pode ser adicionada junto dos testes do
@@ -570,10 +604,28 @@ capabilities e erros explícitos.
 contratos WAL/LTX/layout/restore, snapshots LTX v2 independentes para páginas
 512/1024/4096/8192/65536, vetores WAL para ambas as ordens de checksum e página
 65536, parsers isolados Go/Rust com casos de corrupção/cauda, exemplos de
-snapshot/restore em ambas as linguagens e smoke Floci persistente aprovado. M0
-permanece parcial no escopo amplo: a matriz da seção 6 ainda não inclui DB
-vazio, deltas/compactados e todos os casos de stress; CI remoto também não foi
-observado nesta execução.
+snapshot/restore em ambas as linguagens e smoke Floci persistente aprovado. Os
+incrementos de 2026-10-27 adicionaram fixtures LTX v2 fixas e geradas pelo
+oráculo v0.4.0 para snapshot-base, dois deltas, snapshot compactado, um delta de
+uma transação de 4 MiB (512 BLOBs de 8192 bytes) e uma cadeia de 32 deltas; Go e
+Rust restauram os casos e validam o conteúdo. O runner também verifica os
+arquivos com o decoder independente `superfly/ltx v0.4.0` em cada execução. M0
+permanece parcial: a cadeia longa dá cobertura de stress local, mas ainda falta
+a matriz de stress mais ampla e observação de CI remoto. O incremento local de
+2026-10-25 acrescentou bancos
+sem tabelas e tabelas vazias nos cinco tamanhos de página, além de
+1/100 mil/1 milhão de
+linhas, BLOBs de 1/16 MiB, rollback e VACUUM/reutilização em páginas de 4096.
+`make test` passou com 16 casos e 96 restores Go↔Rust↔oráculo v0.4.0, cada um
+com schema/valores completos verificados por SHA-256 lógico e checks SQLite.
+A matriz também rejeitou 32 restores com metadados inválidos e aceitou duas
+restaurações com UUIDs válidos em maiúsculas. Os parsers Go/Rust agora concordam
+na identidade UUID v4 hifenizada e variante RFC 4122. O caso de um milhão
+excedeu 300 s nos restores Rust antes da otimização do CRC. Após a tabela CRC-64
+ISO, a matriz final passou com o binário Rust release, sem remover o caso,
+aumentar o timeout ou reduzir as verificações. As suites Rust de
+unidade/integração continuam no perfil debug. Isso não é baseline de performance
+nem prova de captura incremental nesses workloads.
 
 ### Fase 1 — Primeiro vertical: snapshot consistente → LTX → filesystem → restore [M1]
 
@@ -632,20 +684,171 @@ nativa. Gitleaks 8.30.1 não encontrou segredos na árvore de trabalho nem nos
 três commits disponíveis. Esses resultados locais não substituem a matriz nativa
 manual nem aprovam CP-01.
 
+**Validação adicional deste incremento:** `make test` e
+`make test-cp01-enospc` passaram novamente depois da otimização de CRC. A
+implementação de CRC-64 ISO do
+decoder Rust foi otimizada de oito passos de bits por byte para tabela de 256
+entradas calculada em compilação; o check value padrão e o conformance LTX
+cruzado passaram. Depois dessa correção, os 16 casos/96 restores da matriz
+passaram com limite de 300 s. Os testes CP-01 Go/Rust também passaram em Btrfs
+local: Go `internal/capture` e `internal/sqliteadapter` cinco vezes; Rust
+`core::capture` e todos os testes `sqlite-adapter` uma vez. As primeiras
+repetições do crash de checkpoint Go encontraram
+`ESRCH`: instrumentação confirmou migração da thread do tracer, corrigida com
+`runtime.LockOSThread` no pai. A nova regressão rastreia oito filhos em paralelo;
+ela falhou antes da correção e passou, junto ao teste sequencial, em 50
+execuções após a correção. Go compilou `storagefs`, `sqliteadapter` e `capture`
+para Linux arm64, Darwin arm64 e Windows amd64; não houve execução nativa nesses
+sistemas. As repetições CP-01 descritas acima usaram Btrfs local, e o drill
+ENOSPC segue em tmpfs dedicado; isso não prova falha física de `fsync`/energia
+nem substitui a matriz nativa/filesystem pendente. O gate
+completo final inclui a matriz ampliada de snapshots descrita em M0 e o smoke
+Floci; esses testes não aprovam CP-01. Os adapters S3 foram implementados e a
+conformance M3 verificada posteriormente em Floci, sem homologar provedores
+externos.
+
+**CI observada em 2026-10-25:** o gate de push do commit `03f9b83` falhou no
+checkpoint final concorrente (`busy=1`, contagens `-1`); a matriz manual passou
+em Linux arm64 e falhou em macOS arm64 por `mapfile` incompatível com Bash 3.2.
+O runner agora evita `mapfile` e `find -maxdepth`; o teste Go fecha a conexão de
+verificação antes do `TRUNCATE` final. A matriz de snapshots passou novamente
+isolada (16 casos/96 restores), o teste concorrente passou 100 repetições com
+`GOMAXPROCS=2` e o `make test` completo passou localmente. As correções foram
+publicadas no commit `72c834d`; a matriz manual pós-correção (run
+`40172962620`) passou em Linux arm64 e macOS arm64, incluindo conformance. O
+gate padrão Linux amd64 passou no run `40173262007` (commit `961583f`); a
+atualização de evidências também passou no run `40266208888` (commit `e6ee152`).
+
+**Atualização em 2026-10-26:** o drill opt-in QEMU de ext4/virtio-blk passou três
+execuções para Go e Rust: após `SIGKILL` do processo QEMU e novo boot, ambas as
+implementações recuperaram TXID/checksum e passaram recovery idempotente. Para
+contornar o limite local de io_uring sem mudar configuração global, o QEMU rodou
+numa unidade temporária `systemd-run --user` com seccomp restrito. A imagem raw
+residia em tmpfs do host; isso não prova falha do host, mídia persistente ou
+perda física de energia. **O gate CP-01 completo permanece pendente**, conforme
+pedido do operador: não avançar para aprovação nem para exposição WAL/M2 enquanto
+a matriz e a revisão restantes não forem concluídas. O trabalho independente
+de storage M3 pode avançar em paralelo, conforme a seção 18.
+
+### Próximos passos — CP-01 (atualizado em 2026-10-26)
+
+1. **Concluído:** corrigir os gates reproduzíveis. `make test`, conformance
+   (16 casos/96 restores), 100 repetições do cenário concorrente e os gates
+   remotos Linux amd64, Linux arm64 e macOS arm64 passaram. O commit `826c8e6`
+   também passou o quality gate remoto no run `40298291303`; a job da matriz
+   nativa foi ignorada nesse evento push. Após o fixture FUSE, `make test` e
+   `make test-cp01-fsync-interrupt` passaram localmente para Go/Rust. O código do
+   slice em `0c977eb` passou Linux arm64 e macOS arm64 no run manual
+   `40300871827`; o push gate do HEAD `4259009` passou no run `40300905561`.
+   O run `40300698296` usava `826c8e6`, foi cancelado e não conta como evidência
+   deste slice. Isso não aprova CP-01.
+2. **Concluído — seam de erro no limite de I/O:** Go/Rust agora permitem, somente
+   em funções internas de teste, fazer o sync de arquivo e o sync do diretório
+   pós-rename retornarem EIO. `make test` passou: watermark não avança quando
+   falha o sync do LTX ou do watermark staged; erro após rename pode deixar o
+   watermark novo visível; retries repetidos e recovery de LTX publicado com
+   watermark antigo são idempotentes. Isso injeta o retorno da operação na seam,
+   não provoca EIO do kernel nem prova durabilidade física.
+3. **Concluído — interrupção de syscall via FUSE:** o alvo
+   `make test-cp01-fsync-interrupt` passou em Go e Rust. O processo é morto com `SIGKILL`
+   enquanto seu `fsync` real está pendente no callback FUSE; depois o callback é
+   liberado, a captura recupera o watermark anterior, repete a publicação e
+   valida recovery idempotente. Isso prova tratamento de um pedido FUSE em voo,
+   não interrupção de um `fsync` já executando no filesystem subjacente, nem
+   perda física de energia/cache.
+4. **Concluído — queda abrupta QEMU, evidência limitada (commit `07da8d6`):** `make
+   test-cp01-qemu-poweroff` passou três execuções, usando `systemd-run --user`
+   com filtro seccomp apenas na unidade temporária (`SystemCallFilter=~io_uring_setup`,
+   `SystemCallErrorNumber=EPERM`). Isso faz QEMU 11.1.2 usar o fallback epoll sem
+   alterar o `RLIMIT_MEMLOCK` 8 MiB nem política global. Em cada execução, Go e
+   Rust publicaram e verificaram a captura, QEMU recebeu `SIGKILL`, e novo boot
+   recuperou o mesmo TXID/checksum e repetiu recovery idempotente. Guest kernel
+   7.3.0-5-cachyos, ext4 sobre virtio-blk, imagem raw com `cache=writeback`; a
+   imagem host ficou em `/tmp/opencode` (tmpfs). Isso prova somente restart abrupto
+   do VMM/guest com o backing file ainda disponível no host — não perda do host,
+   corte físico de energia ou perda de cache de hardware.
+5. **Pendente — matriz homologada:** enumerar e executar as combinações
+   pretendidas de SQLite/driver, VFS, OS e filesystem; registrar versões e
+   resultados por combinação. Não ampliar suporte por extrapolação dos runners
+   arm64/macOS atuais.
+6. **Pendente por solicitação do operador — CP-01 completo:** deixar em aberto a
+   matriz ampliada e revisão; não expor captura WAL nem declarar M2 concluído.
+   Avançar somente nos slices independentes do gate. M3 foi concluído; M4 pode
+   ser desenvolvido e testado em cópias filesystem isoladas, mas não habilitado
+   publicamente como recuperação incremental enquanto CP-01 estiver pendente.
+
 ### Fase 3 — S3-compatible e Floci [M3]
 
 **Entregáveis:** interface storage unificada, SDKs S3 idiomáticos, uploads imutáveis, multipart, reconciliação, retry, métricas básicas e testes Floci persistente. Implementação paralela Go/Rust, não compartilhada.
 
 **Gate M3:** Floci persistente + kill/restart + restauração cruzada; operação sem qualquer dependência de S3 real.
 
-**Estado observado:** não iniciado como adapter de biblioteca. O smoke Floci
-validou somente o serviço S3 local e sua persistência; não é prova do gate M3.
+**Estado observado em 2026-10-26:** adapters Go/Rust implementados e testados
+contra Floci local; estratégia de SDK registrada em ADR 0013. `make test-floci`
+passa create-only, upload simples/multipart, retry idempotente, conflito de
+bytes/metadados, zero bytes, checksum, HEAD/GET range, paginação, reconciliação
+de objetos missing/divergent/unexpected e delete batch. Também publica fixture
+LTX com Go, encerra Floci por `SIGKILL`, reinicia com o mesmo volume, baixa e
+restaura com Rust; repete na direção Rust→Go. **Gate M3 local Floci verificado.**
+Os dois adapters também expõem hooks de métricas de baixa
+cardinalidade (operação, duração, bytes e classe de erro), com testes unitários.
+Reconciliação read-only (ausentes/divergentes/inesperados com SHA-256 dos bytes)
+e testes de retry limitado/exaustão, timeout, cancelamento, classes de erro e
+resposta perdida após PUT estão implementados. Limites/capabilities e obrigações
+do deployment estão documentados em `spec/STORAGE_CONTRACT.md`; a política do
+SDK em ADR 0013. `make test` passou após essas mudanças; a entrega M3 foi
+commitada em `1cf06be`: **M3 implementado e gate local verificado.** Evidência
+não homologa AWS/R2/outros serviços. CP-01 continua pendente; captura WAL
+permanece privada.
 
 ### Fase 4 — Recoverability, compaction e retention [M4]
 
 **Entregáveis:** restauração por TXID/timestamp, plano explicável, verificação integral da cadeia, compactação, snapshots periódicos, GC seguro, retenção configurável, runbook DR.
 
 **Gate M4:** restaurar qualquer ponto **prometido pela retenção**; snapshots e LTX ainda necessários nunca são excluídos.
+
+**Estado observado em 2026-10-27 (commits `8ad39a0`–`ba208f4`):** as
+implementações privadas Go/Rust validam inventário/header/checksum, planejam
+restore inclusivo por TXID e timestamp UTC, reconstroem em staging com
+verificação SQLite, compactam sem remover fontes e planejam GC apenas com
+restore points explicitamente fornecidos. GC começa em dry-run; aplicação é
+explícita e revalida SHA-256 do inventário e identidade do repositório.
+
+O avaliador de cadência TXID exige intervalo positivo (`6af1f28`) e a execução
+condicional foi exercitada com cadeia SQLite real (`90125b1`). Não há scheduler
+automático, conforme a decisão de não assumir agendamento/default implícito. As
+integrações **privadas Go/S3** (`364f281`) e **Rust/S3** (`469df73`) baixam o
+repositório para staging filesystem temporário, reutilizam validação/restore,
+publicam compactação no layout S3 e oferecem GC dry-run com revalidação antes da
+exclusão. O Floci local exercitou snapshot + delta, restore por TXID e timestamp
+antes/depois do delta, compactação, rejeição de plano stale, GC e restore dos
+pontos retidos nos dois engines (`bb35b18`), além de compactação concorrente no
+mesmo ponto (`d15b443`) e retomada segura de GC após exclusão parcial simulada:
+plano anterior é rejeitado como stale, o novo plano coleta o restante e o ponto
+retido continua restaurável (`e88e60d`). A recuperação também é exercitada após
+encerrar abruptamente o processo cliente logo depois de uma exclusão S3: o plano
+antigo é rejeitado, o GC é replanejado e o ponto prometido segue restaurável
+(`58dafae`). Também se injeta crash após a publicação do snapshot de compactação:
+o retry publica/retorna um objeto presente e o restore point permanece coberto
+(`fafd57a`). O retry pode criar snapshot imutável em nível superior, em vez de
+reutilizar a mesma chave; a ADR 0010 não especifica idempotência lógica nem
+reutilização de chave entre chamadas repetidas, e o teste não presume esse
+comportamento.
+`make test-floci` e `make test` passaram após essas coberturas com a imagem Floci
+local cacheada no digest conferido. O smoke agora
+restaura o mesmo repositório S3 publicado pelo Go no Rust; depois o Rust publica
+outro repositório e o Go o restaura no bucket isolado compartilhado, após restart
+do Floci (`de4604e`). Conformance de snapshots compactados Go→Rust e Rust→Go
+(TXIDs não iniciais) também passou em `6e15075`.
+
+As rotinas continuam internas, sem API pública. CP-01 segue bloqueando a
+habilitação pública de recuperação incremental e operações que dependam dessa
+garantia; os drills opt-in não aprovam CP-01. Permanecem fora do aceite deste
+trabalho homologação em AWS/outros provedores, fault-injection nas demais
+fronteiras de durabilidade e coordenação operacional com o writer sob
+single-writer. `docs/recovery-runbook.md` registra o procedimento M1 e foi
+ajustado para distinguir a integração M4 privada filesystem/S3 dos procedimentos
+públicos ainda bloqueados (`ba208f4`).
 
 ### Fase 5 — API pública, segurança e observabilidade [M5]
 
@@ -707,6 +910,28 @@ Permitir desenvolvimento independente de adapters S3 e codecs durante a prova de
 
 ### Correção
 
+#### Auditoria da retomada — 2026-11-06
+
+Esta matriz é um mapa inicial de evidências, não substitui os critérios abaixo
+nem declara o projeto concluído. A revisão foi feita no checkout `89d97ca`;
+os commits de implementação referenciados são anteriores a ele.
+
+| Área | Situação e evidência | Falta para o fechamento |
+|---|---|---|
+| Barreira cooperativa Go/Rust | Implementada em `da84d1d`/`738df2f`; teste Rust com SQLite, ACK TXID 2 e restore no Floci em `b68fd09`; gate Go compartilhado em `851fcbd` | Validar integração com produtores reais e limites; `Cancel` e `TryAccept` devem usar o mesmo gate |
+| Concorrência Go da barreira | `go test -race ./replicator -run '^(TestAdmissionGate\|TestCooperativeBarrierDrainsRealSQLiteWriter)' -count=3` passou no checkout `89d97ca` | O teste não comprova quotas físicas nem proteção de escritores externos |
+| CP-01 | Drills ENOSPC, FUSE e QEMU descritos em `docs/cp01-review-summary.md` passaram nas combinações locais registradas | O plano chama o escopo inicial de aprovado, mas o resumo ainda exige revisão explícita do mantenedor; não inferir aprovação final dessa divergência. Sem garantia de perda física de energia/cache |
+| Backpressure | `ConservativeBudget` Rust e gate de admissão existem; são mecanismos experimentais e process-local | A quota física exigida em Operação e integração não foi comprovada; custos, reconciliação e cobertura dos produtores precisam de integração real |
+| Compactação e GC | Testes locais e Floci documentados em M4 | API operacional pública e seus contratos/gates continuam pendentes conforme a matriz M4 |
+| Supply chain e distribuição | SBOMs e revisões preliminares estão em `docs/sbom/2026-11-05/`; o mantenedor confirmou direitos das contribuições e fixtures | Concluir revisão dos notices e artefatos efetivamente distribuídos; candidato `341d682` antecede as alterações atuais. Licença final e publicação não estão autorizadas |
+| Provedor real | Exclusão definida pelo mantenedor nesta retomada | Validação AWS/R2 será feita pelo mantenedor e não bloqueia o gate local; Floci não a substitui |
+
+O `make test` integral passou no trabalho anterior ao commit `851fcbd`, com as
+alterações do gate Go presentes, incluindo Floci e conformance. A auditoria
+acima não reexecutou o gate integral nem garante que todos os critérios globais
+foram satisfeitos. O executor local é Bash; shell de login Fish; daemon Docker
+rootless foi verificado, sem troca de contexto persistente.
+
 - [ ] Dois motores realmente independentes compilam sem código de replicação do Litestream ou de outro port.
 - [ ] SQLite suportado é validado ao iniciar; configurações/combinações inseguras falham explicitamente.
 - [ ] Snapshot, WAL incremental, persistência, restauração e compactação têm testes automatizados por linguagem.
@@ -738,9 +963,10 @@ Permitir desenvolvimento independente de adapters S3 e codecs durante a prova de
 
 ## 21. Documentos ADR a escrever (mínimos)
 
-As ADRs estão registradas em `docs/adr/`: 0001–0009 e 0010–0012. A ADR 0010
-(retenção/compactação) e partes das ADRs 0011–0012 permanecem propostas, como
-indicado em seus estados; não são decisões de produto já implementadas.
+As ADRs estão registradas em `docs/adr/`: 0001–0014. ADR 0010 define a política
+de retenção/compactação para implementação M4; a habilitação pública permanece
+bloqueada por CP-01. Partes das ADRs 0011–0012 permanecem propostas, conforme
+seus estados.
 
 Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, provas/testes e plano de reversão**. Alterações relevantes no contrato exigem atualização simultânea de specs e fixtures.
 
@@ -774,11 +1000,251 @@ Cada ADR contém **contexto, decisão, alternativas rejeitadas, consequências, 
 
 ---
 
-**Estado do plano:** arquitetura e execução definidas; gate M0 local verificado
-(matriz ampla ainda parcial), M1 implementado/verificado localmente, M2
-bloqueado por CP-01 e M3 ainda sem adapter S3 de biblioteca. `make test`, o
-smoke de persistência Floci e o drill ENOSPC limitado passaram localmente. Os
-jobs `make test-native` Linux arm64/macOS arm64 passaram no despacho manual
-40114086587 (`e2a1bc8`); isso é evidência parcial, não aprovação CP-01. A
-compatibilidade comprovada é LTX v2 contra `superfly/ltx v0.4.0`, não qualquer
-release genérica do Litestream.
+**Estado do plano em 2026-10-27:** M0 parcial, M1 implementado/verificado, M2
+bloqueado por CP-01, M3 implementado e verificado no gate local Floci; M4
+implementado/verificado localmente com fechamento operacional pendente; M5
+incompleto e M6 em andamento. O sub-drill QEMU anterior foi repetido três vezes, mas sua evidência
+limitada não aprova CP-01. A captura WAL permanece privada. M3 inclui
+reconciliação read-only, falhas/retry/cancelamento testados e métricas básicas
+instrumentadas. Em 2026-10-27, `make test-native` passou após a inclusão do
+fuzz-smoke: formatação, vet/clippy, suites Go/Rust, fuzz limitado e conformance,
+incluindo restore cruzado das fixtures e validação pelo decoder independente.
+na execução mais recente dessa etapa, `make test` passou integralmente, incluindo
+Floci persistente, adapters, restore Go↔Rust e cleanup dos recursos isolados. O
+daemon rootless já estava ativo; não foi iniciado/reconfigurado. Os drills CP-01
+executados depois estão registrados abaixo e em `spec/CHECKPOINT_PROTOCOL.md`.
+A compatibilidade comprovada continua sendo LTX v2 contra `superfly/ltx v0.4.0`,
+não qualquer release genérica do Litestream.
+
+**Retomada em 2026-10-27:** os commits `1594687`/`9e9e917`/`54b8d45` ampliaram
+fixtures independentes de cadeia, compactação e transação grande; `a51a613`
+adiciona uma cadeia de 32 deltas restaurada por Go/Rust. O fuzzing Go cobre
+`DecodeSnapshot`/`DecodeDelta` e o parser WAL, com seeds independentes/válidas e
+inválidas; as execuções de cinco segundos dos dois decoders LTX completaram 415
+mil e 264 mil casos sem falhas. `make test-fuzz` executa fuzz-smokes de 1 s por
+alvo e integra a verificação a `make test-native`/`make test` (logo, ao job CI
+padrão). Rust tem teste de
+propriedades que percorre truncamentos e mutações em todas as posições dos
+vetores locais pequenos e inclui seeds do oráculo independente: as fixtures
+maiores usam posições representativas para manter o custo do teste limitado.
+`make test-native` passou após adicionar seeds independentes aos decoders Go/Rust
+e fuzzing do parser WAL Go, mais mutações/truncamentos do parser WAL Rust
+(fixtures independentes nos dois formatos), incluindo format, vet/clippy,
+suites, fuzz-smoke e conformance. `make test-native` passou novamente após
+adicionar o alvo de benchmark Rust, e `make bench-ltx` rodou os dois harnesses.
+O smoke WAL completou
+centenas a milhares de execuções em 1–2 s com workers limitados; isso é apenas
+smoke, não fuzz prolongado.
+`make test` passou com Floci persistente no daemon rootless preexistente. A
+primeira campanha `make test-fuzz-extended` mostrou longas janelas de zero
+execuções; o dump SIGQUIT apontou o Go fuzz runner em `workerClient.minimize`,
+enquanto cada corpus cacheado reproduziu em menos de 1,4 ms. Limitando a
+minimização a 1 s por tentativa (`-fuzzminimizetime=1s`), os três alvos passaram
+com progresso contínuo: snapshot 5.630.343, delta 7.423.365 e WAL 8.294.326
+execuções em 60 s cada. Isso esclarece o stall do runner, não demonstra
+exaustividade. `make test-native` passou novamente após o ajuste. Os itens
+restantes de M0/M5/M6 e as lacunas CP-01 continuam; nenhuma evidência autoriza
+expor captura WAL ou declarar M2 concluído.
+
+**Baseline inicial de decoder (2026-10-27):** `make bench-ltx` executou
+sequencialmente cinco amostras de 1 s por fixture em Linux amd64, Go 1.27.1,
+Rust 1.98.1 e Ryzen 9 7900; o bench Rust usa perfil `cargo bench` otimizado.
+Medianas Go/Rust: snapshot independente (6,1 KiB), 752.544/1.009.959 ns/op e
+8,12/6,05 MB/s; delta independente de transação de 4 MiB,
+13.508.305/17.315.460 ns/op e 316,21/246,68 MB/s. Go também reportou medianas
+de 3.076.507 B/op (656 allocs/op) e 77.150.565 B/op (20.172 allocs/op),
+respectivamente. Os harnesses têm overheads distintos e os valores são uma
+comparação local inicial, não uma campanha controlada com Litestream nem
+evidência de capacidade ponta a ponta. Não há baseline de revisão candidata; o
+entregável de benchmarks M6 permanece parcial.
+
+### Matriz de fechamento dos marcos — retomada 2026-10-27
+
+| Marco | Estado | Evidência atual | Trabalho ainda necessário |
+|---|---|---|---|
+| M0 — contratos/infra | Parcial | Fixtures independentes, cadeia de 32 deltas, conformance e `make test` completo com Floci usando import path canônico Go | Evidência de CI remoto; matriz ampla de stress ainda não equivale a stress concorrente de WAL |
+| M1 — snapshot/restore | Verificado localmente | Go/Rust/oráculo; matriz de 16 casos e 96 restores em `make test` | Nenhum item novo identificado nesta retomada |
+| M2 — WAL/checkpoint | CP-01 aprovado para Linux x86-64; captura e restore locais públicos em revisão | Drills ENOSPC, interrupção FUSE e QEMU passaram para Go/Rust; testes públicos Go/Rust cobrem captura e restore por TXID/timestamp; gates nativos GitHub Actions passaram em Linux/macOS ARM64 (`40592150987`) | Fechar API/testes/docs da captura; repetir os drills CP-01 antes de ampliar para ARM64 |
+| M3 — storage/observabilidade básica | Verificado localmente com Floci | Gate Floci previamente aprovado, retry/cancelamento/reconciliação registrados | Não generalizar para AWS S3, R2 ou outros provedores |
+| M4 — compactação/retenção | Restore público; compactação/GC privados | Restore filesystem e S3 por TXID/timestamp coberto; compactação e GC filesystem/S3 exercitados no Floci, mas ainda sem API operacional pública | Expor compactação/GC somente com contratos e gates próprios; Floci não substitui homologação de provedor |
+| M5 — API/segurança/observabilidade | Parcial; integração de adapters e telemetria pendentes | Coordenador Go/Rust com `Status`/`Health`/`Flush`/`Run`, limites obrigatórios, admission control e sync com ACK; evento/cancelamento Go, contratos Rust e 64 operações concorrentes de `Flush` Rust passam; fluxo Floci passa | Validar adapters de produção; stress/cancelamento do worker Rust, métricas/traces e exemplos; não ampliar além de Linux x86-64 |
+| M6 — stress/bench/release | Em andamento; gate de supply-chain bloqueado por findings | Smokes e campanha Go de 60 s por alvo (5,63 M snapshot; 7,42 M delta; 8,29 M WAL), propriedades Rust, `make bench-ltx`/baseline Go-Rust; scanners locais executados | Remediar/avaliar findings Go/Rust e repetir audit atualizado; SBOM, chaos/stress amplo, comparação Litestream controlada, release/semver/pacotes e documentação de migração |
+
+### Pendências que requerem decisão/ação do mantenedor
+
+- **CP-01/M2:** escopo inicial decidido e aprovado para Linux x86-64, Go/Rust nas
+  combinações testadas e um escritor coordenado. A Actions passou nos gates
+  nativos ARM64, mas não executou os drills CP-01; ARM64 permanece fora até essa
+  bateria ser repetida. Captura síncrona para spool local e restore incremental
+  filesystem por TXID/timestamp e sync S3 explícito com ACK estão ligados à API
+  Go/Rust. O fluxo integrado Floci foi repetido com a imagem local do digest
+  fixado; `make test` passou integralmente nesta revisão. Não generalizar para
+  outros provedores.
+- **M5:** modo estrito por padrão e base `Status`/`Health`/`Flush` foram
+  aprovados em ADR 0011. O coordenador oferece `Status`/`Health`/`Flush` e loop
+  explícito acionado por eventos, exigindo limites e admission controller. O
+  teste Rust de stress concorrente verifica 64 `Flush` em quatro lotes de 16 e
+  transições de admissão serializadas. Ainda faltam homologação de adapters de
+  produção, stress/cancelamento do worker Rust e métricas/traces; não amplia o
+  escopo de plataforma do CP-01.
+- **M6/publicação:** caminho Go `github.com/lucaswilliameufrasio/sqlite-replication`
+  foi aplicado em `307da59`; Apache-2.0 escolhida (ADRs 0014/D-15), e o nome
+  público GitHub “Lucas Eufrasio” foi indicado para o aviso. Falta revisar
+  notices/dependências e direitos das fixtures. Nenhum release será criado a
+  partir deste checkout sem essa revisão e autorização específica de publicação.
+- **M6/evidência:** campanha atual é fuzz Go de um minuto, não chaos/stress
+  prolongado; baseline Go/Rust não é comparação controlada com Litestream. SBOM,
+  supply-chain e guia de migração ainda não têm artefatos aprovados.
+- **M6/supply-chain — 2026-10-28 (baseline histórica):** `govulncheck -C go -test ./...` saiu com
+  código 3 e encontrou 10 avisos de vulnerabilidade na standard library Go
+  1.27.1, com caminhos de uso em `crypto/x509`, `net/http`/HTTP2, `crypto/tls`,
+  `mime/multipart` e outros; o relatório indica correções em Go 1.27.2/1.27.3.
+  Também reportou advisories de módulos importados/requeridos. `cargo audit
+  --no-fetch --stale --file rust/Cargo.lock` saiu com código 1: 10 vulnerabilidades
+  (incluindo `rustls`, `rustls-webpki`, `h2`, `time`, `crypto-bigint` e `tokio`)
+  e quatro warnings (`rustls-pemfile`, `lru` e crates AWS transitivos), lidos do
+  advisory DB local. Isto é triagem inicial, não avaliação de explorabilidade
+  nem auditoria com DB atualizado. Atualizar toolchain/dependências e repetir os
+  scans com advisories atuais é pré-requisito do gate; não foram alterados
+  manifests/lockfiles nem criadas exceções.
+  A verificação local também não encontrou `litestream`, `syft`, `cyclonedx` ou
+  `cargo-cyclonedx`; portanto não foi produzido benchmark controlado contra
+  Litestream nem SBOM. Nenhuma ferramenta foi instalada nesta etapa.
+
+- **M6/supply-chain — atualização 2026-11-05:** toolchains atualizadas para Go
+  1.27.3 e Rust/Cargo 1.99.1; dependências Go e crates Rust atualizados para as
+  versões compatíveis mais recentes, exceto LZ4 Go 4.1.22 por regressão de
+  compatibilidade LTX. `go mod tidy -diff`, `go vet ./...` e `cargo fmt --check`
+  passaram. `cargo audit --no-fetch --stale` agora reporta 7 vulnerabilidades
+  concentradas no conector TLS legado de `aws-smithy-http-client` (inclui
+  `h2` 0.3 e `rustls` 0.21); portanto o gate supply-chain segue bloqueado. O
+  `govulncheck` instalado não concluiu: o processo encerrou com código 2 durante
+  construção SSA e produziu stack trace; o resultado Go permanece sem
+  verificação. Clippy 1.99 apontou o lint novo `chunks_exact_to_as_chunks` em
+  `wal_checksum`; os usos foram adaptados para `as_chunks::<N>()` preservando o
+  tratamento do resto já existente. Depois desses ajustes, `make test` passou
+  integralmente: format, vet, Clippy, suites Go/Rust, fuzz smoke, matriz de
+  conformance (16 casos/96 restores) e integração Floci com restart do serviço.
+  Nenhuma ferramenta de SBOM foi instalada e nenhum release/tag/push foi feito.
+
+- **M6/supply-chain — investigação posterior:** `go run
+  golang.org/x/vuln/cmd/govulncheck@latest -C . -test ./...`, executado em
+  `go/` com `GOMAXPROCS=2`, retornou `No vulnerabilities found`. O SDK S3 Rust
+  agora seleciona explicitamente o cliente HTTPS padrão moderno, HTTP 1.x,
+  Tokio e SigV4a, sem a feature `rustls` legada. `cargo audit --file Cargo.lock`
+  atualizou o banco para 1.409 advisories e encerrou sem findings para as 231
+  dependências do lockfile. O adapter Rust compilou offline e seus nove testes
+  locais passaram em container rootless isolado, com rede externa desabilitada.
+  `cargo test --offline --workspace --all-features -j 2` também passou nesse
+  ambiente; os testes de drills e de integração opt-in permaneceram ignorados.
+  `make test-native` passou após a mudança, incluindo as 16 fixtures de snapshot
+  e 96 restores. Os comandos do smoke Floci foram executados separadamente no
+  mesmo ambiente isolado, com a imagem 2.3.0 pinada, e passaram antes e depois
+  de SIGKILL/restart: adapters e recovery Go/Rust, sync, restores cruzados e
+  marcador persistente. O comando literal `make test` não foi executado nessa
+  revisão, pois seu script invoca Docker e o socket do daemon não foi exposto ao
+  processo testado; a orquestração foi feita fora dos containers de teste. A
+  unificação de features em consumidores pode reativar o conector legado.
+
+### Coordenador M5 — evidência local 2026-10-28
+
+**M6/SBOM — 2026-11-05:** dez SBOMs CycloneDX locais (Go, Go com testes,
+oráculo e sete crates Rust) e triagem inicial de licenças/fixtures estão em
+`docs/sbom/2026-11-05/`. Os JSONs passaram na validação de schema; a revisão de
+notices, de direitos das fixtures e da cobertura de todos os builds permanece
+pendente, assim como qualquer autorização de publicação.
+
+**Regressão de cancelamento inicial — 2026-11-05:** `Run` Rust com
+`watch::Receiver` inicialmente `true` ficava aguardando uma alteração e podia
+reabrir a admissão. O teste `run_with_preexisting_cancellation_never_opens_admission`
+falhou por timeout antes da correção; após verificar o valor inicial antes de
+`Flush`, passou junto dos cinco testes do coordinator em container isolado.
+Após a alteração, `make test-native` passou, incluindo 16 casos/96 restores.
+Os comandos do smoke Floci passaram separadamente antes e depois de SIGKILL e
+restart do serviço isolado; `make test` literal não foi executado porque o
+script exige o socket Docker, que não foi exposto ao processo testado.
+Cancelamento durante captura/sync em voo e stress do worker ainda estão
+pendentes; a correção não torna a captura bloqueante cancelável nem amplia o
+escopo CP-01.
+
+**Eventos do worker — 2026-11-05:** teste adicional envia 16 notificações ao
+`Run` Rust, aguarda cada ciclo e verifica que o cancelamento ao final fecha a
+admissão. Passou 10 execuções consecutivas em container isolado. Ele usa o
+adapter de teste com alvo já durável: não comprova captura SQLite real, evento
+coalescido sob sobrecarga nem cancelamento durante captura ou sync em voo. Após
+adicionar o teste, `make test-native` passou novamente (alguns testes Go usaram
+cache); o smoke Floci havia passado após a última alteração de código, antes da
+adição apenas do teste. `make test` literal segue não executado por isolamento.
+
+**Cancelamento durante captura — 2026-11-05:** teste determinístico no
+coordenador Rust suspende `capture_once` no write-gate de teste, sinaliza
+cancelamento e libera a captura real. Antes da mudança, a admissão foi reaberta
+após o cancelamento; após a checagem em `flush_internal`, a admissão ficou
+fechada na sequência testada e o restore do TXID 2 confirmou a linha persistida.
+O teste passou cinco repetições e a suíte do coordinator passou (7 testes).
+`make test-native` e os comandos do smoke Floci, executados separadamente em
+containers isolados, passaram após a mudança; não se executou `make test` literal.
+Ainda há uma janela entre consultar o sinal e reabrir a admissão: o teste não
+prova exclusão mútua nessa janela. Captura bloqueante também não é interrompida
+nem tem prazo garantido, o gate de teste não é adapter de produção e cancelamento
+durante sync remoto permanece sem cobertura. M5 não está fechado.
+
+**Corrida na reabertura — reprodução determinística:** o teste
+`cancellation_inside_admission_callback_never_reopens_writes` faz o callback
+de admissão sinalizar cancelamento antes de efetivar a abertura. Ele falhou em
+três execuções isoladas: a sequência observada inclui abertura depois do sinal.
+O callback atual e o emissor de cancelamento não compartilham uma operação
+atômica, logo consultar `watch` antes ou depois do callback não impede uma
+abertura transitória. Manter o lock de leitura de `watch` durante o callback
+pode causar deadlock se esse callback sinalizar o mesmo canal. O teste fica
+intencionalmente falhando até haver um contrato que coordene cancelamento e
+admissão sem executar código externo sob um lock sujeito a reentrada. Não
+considerar o gate ou M5 aprovados.
+
+`make test` passou após a implementação Go/Rust, incluindo formatação,
+`go vet`, Clippy com warnings negados, suites completas Go/Rust, fuzz curto e
+conformance cruzado e integração Floci. `go test -race ./replicator -count=1`
+também passou. O alvo
+`make test-floci` passou com sync público Go, restore interoperável Go/Rust,
+restart persistente, ACK e `Flush` remoto; o teste Go de sync cria bucket próprio
+e o restore Rust usa esse destino isolado. Essas evidências cobrem somente Floci,
+não homologam outros provedores. Continuam fora do gate fechado stress/chaos do
+worker, adapters de produção e métricas/traces injetáveis.
+
+### Stress concorrente Rust do coordenador — 2026-10-28
+
+`cargo test -p sqlite-replication-core --all-features --test coordinator`
+passou com quatro testes. O teste
+`concurrent_flushes_keep_admission_transitions_serialized_under_stress` executa
+quatro lotes de 16 `Flush` simultâneos contra um snapshot já durável e confirma
+que cada operação mantém o par ordenado de fechamento/reabertura da admissão.
+Não cobre captura SQLite concorrente, cancelamento do worker nem adapters de
+produção; esses gates M5 continuam pendentes.
+
+**Verificação da retomada:** `make test-native` (após o último ajuste), `make test`, `make test-fuzz-extended`, `make bench-ltx`,
+`make test-cp01-fsync-interrupt`, `make test-cp01-qemu-poweroff` e
+ `make test-cp01-enospc` passaram em execuções registradas nesta retomada. `make
+test` usou Floci local persistente pelo daemon rootless já ativo; o smoke removeu
+apenas o projeto/volume próprios. A imagem Debian pinada foi baixada somente
+após autorização explícita e o drill ENOSPC passou em Go/Rust, inclusive após a
+mudança de import path. `make test` também passou após o caminho canônico ser
+aplicado. Os drills FUSE,
+QEMU e ENOSPC aumentam a evidência, mas não cobrem perda física de energia/cache,
+filesystems/drivers alternativos nem fecham a matriz CP-01. A campanha extended
+foi repetida com minimização limitada e o gate nativo passou após o ajuste. A
+mudança de harness está separada em `4701deb`; campanha e progresso estão em
+`a0415a2`/`abd7ef7`; a identidade do módulo foi aplicada em `307da59`. A base
+M5 foi aprovada para implementação, mas detalhes finais seguem abertos. M2 e o
+roadmap inteiro continuam incompletos.
+
+### Validação GitHub Actions ARM64 — 2026-10-27
+
+Após scan `gitleaks` sem achados na faixa de 73 commits, a branch foi enviada
+com autorização do mantenedor. O push disparou o gate normal, concluído com
+sucesso em `40592146552`. O dispatch manual `40592150987` passou nos jobs Linux
+ARM64 (6m27s) e macOS ARM64 (10m31s), incluindo verificação da arquitetura
+nativa e `make test-native` (Go, Rust e conformance). Esses jobs não executaram
+`make test-cp01-enospc`, `make test-cp01-fsync-interrupt` nem
+`make test-cp01-qemu-poweroff`; portanto, ARM64 continua fora da garantia inicial
+CP-01, escolhida para Linux x86-64. Detalhes e limites em
+`docs/cp01-review-summary.md`.

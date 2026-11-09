@@ -10,8 +10,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"sqlite-replication/internal/sqliteadapter"
-	"sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
 )
 
 func TestTranslateWALProducedBySQLiteRuntime(t *testing.T) {

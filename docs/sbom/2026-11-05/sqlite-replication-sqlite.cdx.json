@@ -1,0 +1,510 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "serialNumber": "urn:uuid:0af20198-f3c3-4be2-9117-25467e42cf20",
+  "metadata": {
+    "timestamp": "2026-11-05T18:22:45.501921238Z",
+    "tools": [
+      {
+        "vendor": "CycloneDX",
+        "name": "cargo-cyclonedx",
+        "version": "0.5.9"
+      }
+    ],
+    "component": {
+      "type": "library",
+      "bom-ref": "path+file:///workspace/rust/crates/sqlite-adapter#sqlite-replication-sqlite@0.1.0",
+      "name": "sqlite-replication-sqlite",
+      "version": "0.1.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/sqlite-replication-sqlite@0.1.0?download_url=file://.",
+      "components": [
+        {
+          "type": "library",
+          "bom-ref": "path+file:///workspace/rust/crates/sqlite-adapter#sqlite-replication-sqlite@0.1.0 bin-target-0",
+          "name": "sqlite_replication_sqlite",
+          "version": "0.1.0",
+          "purl": "pkg:cargo/sqlite-replication-sqlite@0.1.0?download_url=file://.#src/lib.rs"
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "cdx:rustc:sbom:target:triple",
+        "value": "x86_64-unknown-linux-gnu"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.2",
+      "author": "The Rust Project Developers",
+      "name": "bitflags",
+      "version": "2.13.2",
+      "description": "A macro to generate structures which behave like bitflags. ",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/bitflags@2.13.2",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/bitflags"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/bitflags/bitflags"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/bitflags/bitflags"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#cc@1.11.0",
+      "name": "cc",
+      "version": "1.11.0",
+      "description": "A build-time dependency for Cargo build scripts to assist in invoking the native C compiler to compile native C code into a static archive to be linked into Rust code. ",
+      "scope": "excluded",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "375989decec1a0fa424442bed520fa12ede43a48475ce8c7417d2c69b32b5f6b"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/cc@1.11.0",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/cc"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rust-lang/cc-rs"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/cc-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#fallible-iterator@0.3.0",
+      "author": "Steven Fackler <sfackler@gmail.com>",
+      "name": "fallible-iterator",
+      "version": "0.3.0",
+      "description": "Fallible iterator traits",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/fallible-iterator@0.3.0",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/sfackler/rust-fallible-iterator"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#fallible-streaming-iterator@0.1.9",
+      "author": "Steven Fackler <sfackler@gmail.com>",
+      "name": "fallible-streaming-iterator",
+      "version": "0.1.9",
+      "description": "Fallible streaming iteration",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/fallible-streaming-iterator@0.1.9",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/sfackler/fallible-streaming-iterator"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#find-msvc-tools@0.1.15",
+      "name": "find-msvc-tools",
+      "version": "0.1.15",
+      "description": "Find windows-specific tools, read MSVC versions from the registry and from COM interfaces",
+      "scope": "excluded",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1c66915cc5391097de7a2b0b972e8505aa33c0df401fd3a6811dbdb32881ba48"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/find-msvc-tools@0.1.15",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/find-msvc-tools"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/cc-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#jobserver@0.1.35",
+      "author": "Alex Crichton <alex@alexcrichton.com>",
+      "name": "jobserver",
+      "version": "0.1.35",
+      "description": "An implementation of the GNU Make jobserver for Rust. ",
+      "scope": "excluded",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "1c00acbd29eabad4a2392fa0e921c874934dbbf4194312ad20f04a0ed67a3cb3"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/jobserver@0.1.35",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/jobserver"
+        },
+        {
+          "type": "website",
+          "url": "https://github.com/rust-lang/jobserver-rs"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/jobserver-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.191",
+      "name": "libc",
+      "version": "0.2.191",
+      "description": "Raw FFI bindings to platform libraries like libc.",
+      "scope": "excluded",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "65cd87c9a6d60536580b316ad985726104730a5151c99845f2490428ef91240a"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/libc@0.2.191",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/libc"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.39.1",
+      "author": "The rusqlite developers",
+      "name": "libsqlite3-sys",
+      "version": "0.39.1",
+      "description": "Native bindings to the libsqlite3 library",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "14a5f01b87b92705d07b433c06f96cbc764637d81a0bffb5734ce17cf0f9a2b3"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/libsqlite3-sys@0.39.1",
+      "externalReferences": [
+        {
+          "type": "other",
+          "url": "sqlite3"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rusqlite/rusqlite"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#pkg-config@0.3.34",
+      "author": "Alex Crichton <alex@alexcrichton.com>",
+      "name": "pkg-config",
+      "version": "0.3.34",
+      "description": "A library to run the pkg-config system tool at build time in order to be used in Cargo build scripts. ",
+      "scope": "excluded",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/pkg-config@0.3.34",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/pkg-config"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rust-lang/pkg-config-rs"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.41.1",
+      "author": "The rusqlite developers",
+      "name": "rusqlite",
+      "version": "0.41.1",
+      "description": "Ergonomic wrapper for SQLite",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "da9bba6f3506135e120a6586df05be18b48d18896600646a4bec8f993d91a594"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/rusqlite@0.41.1",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/rusqlite/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/rusqlite/rusqlite"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#shlex@2.0.1",
+      "author": "comex <comexk@gmail.com>, Fenhl <fenhl@fenhl.net>, Adrian Taylor <adetaylor@chromium.org>, Alex Touchet <alextouchet@outlook.com>, Daniel Parks <dp+git@oxidized.org>, Garrett Berg <googberg@gmail.com>",
+      "name": "shlex",
+      "version": "2.0.1",
+      "description": "Split a string into shell words, like Python's shlex.",
+      "scope": "excluded",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/shlex@2.0.1",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/comex/rust-shlex"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.16.4",
+      "author": "The Servo Project Developers",
+      "name": "smallvec",
+      "version": "1.16.4",
+      "description": "'Small vector' optimization: store up to a small number of items on the stack",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d0d5d4b1981b8bbbb7aed204cae5726d683d5d6ac7e74ec54122ea28f315e7c8"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/smallvec@1.16.4",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/smallvec/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/servo/rust-smallvec"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#vcpkg@0.2.15",
+      "author": "Jim McGrath <jimmc2@gmail.com>",
+      "name": "vcpkg",
+      "version": "0.2.15",
+      "description": "A library to find native dependencies in a vcpkg tree at build time in order to be used in Cargo build scripts. ",
+      "scope": "excluded",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT OR Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/vcpkg@0.2.15",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/vcpkg"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/mcgoo/vcpkg-rs"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "path+file:///workspace/rust/crates/sqlite-adapter#sqlite-replication-sqlite@0.1.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.41.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.2"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#cc@1.11.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#find-msvc-tools@0.1.15",
+        "registry+https://github.com/rust-lang/crates.io-index#jobserver@0.1.35",
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.191",
+        "registry+https://github.com/rust-lang/crates.io-index#shlex@2.0.1"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#fallible-iterator@0.3.0"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#fallible-streaming-iterator@0.1.9"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#find-msvc-tools@0.1.15"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#jobserver@0.1.35",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.191"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#libc@0.2.191"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.39.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#cc@1.11.0",
+        "registry+https://github.com/rust-lang/crates.io-index#pkg-config@0.3.34",
+        "registry+https://github.com/rust-lang/crates.io-index#vcpkg@0.2.15"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#pkg-config@0.3.34"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#rusqlite@0.41.1",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#bitflags@2.13.2",
+        "registry+https://github.com/rust-lang/crates.io-index#fallible-iterator@0.3.0",
+        "registry+https://github.com/rust-lang/crates.io-index#fallible-streaming-iterator@0.1.9",
+        "registry+https://github.com/rust-lang/crates.io-index#libsqlite3-sys@0.39.1",
+        "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.16.4"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#shlex@2.0.1"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#smallvec@1.16.4"
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#vcpkg@0.2.15"
+    }
+  ]
+}

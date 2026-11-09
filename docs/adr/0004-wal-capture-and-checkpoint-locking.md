@@ -1,6 +1,6 @@
 # ADR 0004: captura WAL e política de checkpoint
 
-- **Status:** decisão de segurança aceita; protocolo operacional bloqueado por CP-01
+- **Status:** protocolo operacional aprovado para Linux x86-64 no escopo restrito; expansão de matriz não aprovada
 - **Data:** 2026-10-23
 
 ## Contexto
@@ -13,8 +13,10 @@ serão perdidos nas transições de lock.
 
 Implementar parser WAL próprio conforme `spec/WAL.md`; coordenar checkpoint pelo
 adapter SQLite, não fazer tail/cópia simples. Não conectar captura incremental a
-API pública nem declarar segurança antes da sequência de locks, injeção
-determinística e falhas exigidas em `spec/CHECKPOINT_PROTOCOL.md` passarem CP-01.
+API pública fora da matriz aprovada; a sequência de locks, injeção determinística
+e falhas exigidas em `spec/CHECKPOINT_PROTOCOL.md` passaram para o escopo Linux
+x86-64 delimitado em 2026-10-27. Não extrapolar essa aprovação a outras
+plataformas ou configurações.
 Falha de spool, reader pin, `SQLITE_BUSY`, conexão externa ou versão/driver não
 homologado bloqueia checkpoint e degrada/falha explicitamente.
 
@@ -28,13 +30,13 @@ homologado bloqueia checkpoint e degrada/falha explicitamente.
 
 ## Consequências e evidência
 
-M1 continua snapshot-only e captura incremental não é exposta pela API pública.
+M1 continua snapshot-only até a implementação da superfície pública aprovada.
 Implementações internas Go/Rust agora cobrem WAL→LTX, spool durável, watermark,
 recuperação e leases SQLite; testes locais cobrem locks, reset/reconciliação e
 crashes de processo. A matriz e suas lacunas atuais estão em
-`spec/CHECKPOINT_PROTOCOL.md`. CP-01 continua bloqueado até todos os cenários
-homologados terem resultado reproduzível, código/versão testados e revisão do
-protocolo; nenhum caminho de checkpoint foi habilitado.
+`spec/CHECKPOINT_PROTOCOL.md`. CP-01 está aprovado somente na combinação
+homologada; conectar a API e completar gates M5 continuam trabalho pendente. O
+motor não solicita checkpoint destrutivo durante a captura.
 
 ## Reversão / reconsideração
 

@@ -1,9 +1,11 @@
-# Protocolo de captura e checkpoint — CP-01 pendente
+# Protocolo de captura e checkpoint — CP-01 aprovado no escopo inicial
 
-> **Estado: bloqueado / não aprovado.** A captura, o spool durável e a
-> recuperação têm implementação interna e evidência local, mas não estão ligados
-> à API pública e não executam checkpoint. Esta evidência parcial não autoriza
-> alegar cobertura incremental saudável nem habilitar M2.
+> **Estado: aprovado com limites.** Em 2026-10-27, o mantenedor aprovou a
+> garantia inicial para Linux x86-64, Go/modernc SQLite 3.54.1 e
+> Rust/rusqlite bundled SQLite 3.53.2, com um escritor lógico coordenado e sem
+> promessa contra perda física de energia/cache. Isso libera implementar a API
+> somente nesse escopo; não equivale a código público já entregue nem autoriza
+> ampliar plataforma, drivers, VFS ou filesystem.
 
 ## Invariante a provar
 
@@ -37,7 +39,7 @@ parciais e não avança o watermark; uma tentativa posterior reconcilia a cadeia
 Depois que o watermark e seu diretório foram sincronizados, a operação é
 considerada concluída mesmo se o cancelamento chegar nessa fronteira final.
 
-## Evidência local — parcial, não aprova CP-01
+## Evidência para o escopo inicial aprovado
 
 No Linux desta execução, os testes exercitaram Go/modernc SQLite **3.54.1** e
 Rust/rusqlite bundled SQLite **3.53.2**, em filesystem local. O código exercitado
@@ -55,7 +57,7 @@ inclui `go/internal/capture`, `go/internal/walcapture`, `go/internal/spool`,
 | Vários commits, páginas repetidas, crescimento/redução, salts, prefixo truncado/alterado e cauda parcial | passou | passou | Limites commitados preservados; fronteira estrita rejeita prefixo de recuperação inválido. |
 | `TRUNCATE` entre ciclos e reconciliação por imagem consistente | passou | passou | Commit já checkpointado entra como delta sem falsa proveniência WAL. |
 | Ordem `stage sync → LTX imutável → watermark atômico`; retry e chain recovery | passou | passou | Falha após uma publicação de várias não salta os commits restantes. |
-| Erros injetados nos limites de write/fsync | passou | passou | Hooks simulam erros ENOSPC/EIO; não provocam falha real de write/fsync. ENOSPC real em tmpfs está na linha seguinte. |
+| Erros injetados nos limites de write/fsync | passou | passou | Hooks preexistentes simulam erros antes das operações. Novas seams privadas fazem o sync de arquivo usado pela captura e o sync do diretório pós-rename retornarem EIO: sync do LTX mantém watermark ausente; sync do watermark staged preserva o LTX sem adiantar o watermark; erro após rename pode deixar o watermark visível, e retry repetido é idempotente. Recovery do LTX publicado com falha no sync do watermark também passou duas vezes. A seam não injeta erro no kernel/syscall real e não prova durabilidade física. ENOSPC real em tmpfs está na linha seguinte. |
 | ENOSPC real durante publicação parcial e recuperação | passou | passou | `make test-cp01-enospc`, Linux amd64, container rootless e tmpfs limitado a 8 MiB: falta de espaço durante a publicação, watermark não avança sobre a cadeia parcial, lease é liberada e nova captura recupera o WAL após liberar espaço. Não prova comportamento de filesystems de produção nem falha física de `fsync`. |
 | Cancelamento cooperativo antes e durante publicação | passou | passou | Testes cancelam após o primeiro LTX e após o `fsync` do watermark staged, antes da promoção: retornam `context.Canceled`/`Interrupted`, conservam o watermark anterior, liberam a lease e a próxima captura reconcilia a cadeia. Cancelamento após watermark+diretório duráveis retorna sucesso. Syscalls em andamento não são preemptadas. |
 | Conexão de aplicação não gerenciada, busy timeout e autocheckpoint | passou | passou | Conexão separada com `busy_timeout=250ms` e `wal_autocheckpoint=1` recebe `SQLITE_BUSY` durante a lease; depois da captura confirma, checkpointa/trunca e a captura seguinte reconcilia o commit como delta sem proveniência WAL. Limita-se ao runtime/driver desta linha. |
@@ -63,6 +65,8 @@ inclui `go/internal/capture`, `go/internal/walcapture`, `go/internal/spool`,
 | Crash de processo durante checkpoint real e recuperação | passou | passou | Linux amd64: durante `PRAGMA wal_checkpoint(FULL)`, o pai envia `SIGKILL` após write bem-sucedido e, separadamente, após `fsync`/`fdatasync` bem-sucedido no arquivo principal; reabertura, `integrity_check`, 512 linhas e checkpoint `TRUNCATE` final passam. Cada limite repetido cinco vezes por engine. Não simula perda de energia/cache do SO. |
 | Restauração independente de cadeias LTX capturadas | passou | passou | Linux amd64: o conformance gera dois commits capturados por engine, aplica snapshot+deltas com o CLI upstream `superfly/ltx v0.4.0`, verifica checksums LTX e compara integridade e todas as linhas restauradas com a origem. Repetir na matriz de plataformas/filesystems homologada. |
 | Processo filho morto com `SIGKILL` nos limites de stage, publicação e watermark | passou | passou | No Linux, restart recupera sem perder commit nem duplicar LTX já publicado. |
+| `SIGKILL` com syscall `fsync` pendente em callback FUSE e recovery | passou | passou | `make test-cp01-fsync-interrupt`: o processo de captura é morto enquanto o pedido `fsync` aguarda o callback FUSE; o callback então executa sync no backing file em `/tmp/opencode` (tmpfs), e recovery confirma watermark antigo, retry da captura e recovery repetido. Prova encerramento com pedido FUSE em voo; não interrompe um `fsync` já dentro do filesystem subjacente, nem simula power loss. |
+| Power-off abrupto de guest QEMU e recovery Go/Rust em ext4/virtio-blk | passou (3 execuções) | passou (3 execuções) | `make test-cp01-qemu-poweroff` (harness commitado em `07da8d6`): guest QEMU 11.1.2/KVM, kernel 7.3.0-5-cachyos, ext4/virtio-blk e imagem raw `cache=writeback`. Cada guest publicou e validou a captura; o host encerrou o QEMU com `SIGKILL`; no reboot, TXID/checksum foram recuperados e uma segunda recovery foi idempotente. O QEMU foi iniciado por uma unidade temporária `systemd-run --user` com seccomp restrito (`SystemCallFilter=~io_uring_setup`, `SystemCallErrorNumber=EPERM`), induzindo fallback epoll sem elevar o `RLIMIT_MEMLOCK` (8 MiB) nem alterar configuração global. A imagem raw residia em `/tmp/opencode` (tmpfs): prova restart abrupto de QEMU/guest enquanto o backing file do host permanece disponível; não prova perda do host, power loss físico ou cache de hardware. |
 
 O gate local `make test` passou nesta execução: formatação, `go vet`, Clippy com
 warnings negados, suites Go/Rust, conformance Go↔Rust, restauração independente
@@ -77,12 +81,90 @@ watermark sem avanço e recuperação após liberar espaço.
 Os testes de `SIGKILL` são testes de processo em Linux; não são teste de perda
 de energia nem de comportamento do filesystem após falha física.
 
+O primeiro start direto do QEMU falhou ao criar io_uring (`ENOMEM`) com
+`RLIMIT_MEMLOCK` soft/hard em 8 MiB. Sem mudar limites ou configuração do host,
+uma unidade temporária `systemd-run --user` negou `io_uring_setup` por seccomp e
+configurou retorno `EPERM`; o QEMU então fez fallback para epoll. O drill passou
+três execuções. O harness cobre QEMU/KVM, disco virtual virtio-blk, kernel
+convidado e ext4 enquanto o arquivo de backing permanece no host. O backing
+ficou em tmpfs, portanto a evidência não cobre crash/perda do host, mídia
+persistente, corte físico de energia ou perda da cache volátil do
+host/controlador/dispositivo. Esta linha amplia a evidência operacional, mas não
+completa a matriz nem aprova CP-01.
+
+Comando reproduzível neste host, aplicando o filtro somente à unidade temporária
+e preservando o `PATH` do shell chamador:
+
+```sh
+systemd-run --user --wait --pipe --collect \
+  --working-directory="$PWD" --setenv=PATH="$PATH" \
+  --property='SystemCallFilter=~io_uring_setup' \
+  --property=SystemCallErrorNumber=EPERM \
+  make test-cp01-qemu-poweroff
+```
+
 Na implementação SQLite 3.51.3 consultada, `SQLITE_CHECKPOINT_NOOP` não toma o
 checkpoint lock nem o writer lock: o fluxo pula a aquisição desses locks e lê o
 wal-index. Portanto NOOP é uma observação, não uma barreira de sincronização.
 Referência: [`wal.c`, `sqlite3WalCheckpoint()`](https://github.com/sqlite/sqlite/blob/version-3.51.3/src/wal.c#L4314-L4394).
 
-## Matriz CP-01 ainda obrigatória
+## Escopo aprovado e fronteiras para expansão
+
+### Escopo CP-01 decidido pelo mantenedor — 2026-10-27
+
+O mantenedor aprovou a garantia inicial delimitada a Linux x86-64, às
+combinações Go/Rust com SQLite já testadas e a um único writer lógico coordenado
+pela biblioteca. Perda física de energia/cache fica explicitamente fora dessa
+garantia. A implementação da API e os gates de M5/M6 ainda precisam ser
+concluídos; essa decisão não autoriza release/publicação.
+
+Os drills CP-01 específicos foram executados em Linux amd64; Linux arm64 tem
+gates nativos Go/Rust/conformance aprovados na GitHub Actions (`40592150987`),
+mas esse gate não executa a mesma campanha de falhas. ARM64 fica fora da
+garantia até executar e revisar os drills CP-01 nessa arquitetura. macOS arm64
+também passou o gate nativo, sem se tornar parte da garantia incremental. Outros
+sistemas, drivers, VFS, filesystems e escritores não coordenados permanecem
+fora do escopo.
+
+### Correção do harness de crash em 2026-10-25
+
+Uma nova repetição local encontrou `ESRCH` intermitente no tracer Go de
+checkpoint. Instrumentação temporária confirmou migração da goroutine do pai
+para outra thread entre `Wait4` e `ptrace`; o Linux associa o tracee à thread
+que fez attach. Somente a thread do filho estava fixada anteriormente. O helper
+agora mantém `runtime.LockOSThread` no pai desde antes do attach até colher a
+saída por SIGKILL. A instrumentação temporária foi removida; não há retry de
+ESRCH nem tolerância a checkpoint que complete antes da interrupção.
+
+`TestCheckpointCrashTracerSurvivesConcurrentScheduling` rastreia oito filhos
+independentes em paralelo. Falhou nas dez execuções antes da correção;
+depois dela, esse teste e `TestCheckpointCrashDuringRealCheckpointIoRecovers`
+passaram juntos em 50 execuções (`go test ./internal/sqliteadapter -run
+'^TestCheckpointCrash(DuringRealCheckpointIoRecovers|TracerSurvivesConcurrentScheduling)$'
+-count=50`), Linux amd64, temporários no tmpfs local. A correção torna a coleta
+da evidência mais confiável, mas não amplia os drivers/filesystems homologados,
+não simula perda de energia e não aprova CP-01.
+
+Após essas alterações, em 2026-10-25, os testes Go de `internal/capture` e
+`internal/sqliteadapter` passaram cinco vezes sobre Btrfs local (`TMPDIR` em
+diretório temporário exclusivo dentro do checkout). Rust `core::capture` passou
+sete testes, com um caso ENOSPC corretamente ignorado fora do drill, e os 14
+testes de `sqlite-adapter` passaram uma vez na mesma filesystem. O `make test`
+completo e `make test-cp01-enospc` passaram depois da otimização CRC; o segundo
+provoca ENOSPC real no tmpfs limitado do container rootless. São duas
+filesystems locais exercitadas, não falha física de `fsync` nem matriz nativa de
+produção.
+
+Na CI remota de 2026-10-25, a recuperação de um dos oito subprocessos concorrentes
+retornou `busy=1, log=-1, checkpointed=-1` no `wal_checkpoint(TRUNCATE)`, embora
+integridade e conteúdo estivessem corretos. O verificador agora fecha o pool
+usado por `integrity_check`/leitura e executa o checkpoint final numa conexão
+nova, sem retry nem relaxamento da asserção. O cenário concorrente passou 100
+execuções locais com `GOMAXPROCS=2`, e o `make test` completo passou. A CI
+remota confirmou a correção: o gate Linux amd64 passou no commit `961583f`, e o
+cenário também passou em Linux arm64 na matriz manual do commit `72c834d`.
+
+### Casos ainda exigidos
 
 Use barreiras determinísticas/test hooks para pausar exatamente em cada
 transição; `sleep` ou stress probabilístico sozinho não é prova.
@@ -115,8 +197,9 @@ transição; `sleep` ou stress probabilístico sozinho não é prova.
    SQLite, a checagem final revalida identidade do caminho. Go também compilou
    os testes para Linux arm64, Darwin arm64 e Windows amd64; isso não é execução
    nativa. Escritas externas continuam sem coordenação pelo lock SQLite, e a
-   prova não garante detecção de toda corrida/filesystem. A matriz arm64/macOS
-   ainda precisa ser repetida com este código.
+    prova não garante detecção de toda corrida/filesystem. A matriz nativa Linux
+    arm64/macOS arm64 foi repetida depois das correções e passou no run
+    `40172962620` (commit `72c834d`).
 5. `SIGKILL` nos pontos antes/depois de stage fsync, publicação e watermark foi
    exercitado nos runtimes/OS locais. **Linux amd64 Go/Rust:** teste de processo
    filho executa `PRAGMA wal_checkpoint(FULL)` real; o pai observa syscalls e
@@ -144,29 +227,65 @@ transição; `sleep` ou stress probabilístico sozinho não é prova.
 
 | Plataforma da decisão D-16 | Resultado nesta execução |
 | --- | --- |
-| Linux amd64 — produção inicial | Testado em Btrfs local; Go `modernc.org/sqlite` 3.54.1 e Rust `rusqlite` bundled SQLite 3.53.2. Quality gate `make test` e drill ENOSPC em tmpfs passaram; CP-01 segue bloqueado. |
-| Linux arm64 — produção inicial | `make test-native` passou em runner nativo `ubuntu-24.04-arm`, despacho manual 40114086587, commit `e2a1bc8`; o drill ENOSPC continua limitado a Linux amd64. Esse resultado antecede as alterações locais sem commit desta execução. |
-| macOS arm64 — integração | `make test-native` passou em runner nativo `macos-15`, despacho manual 40114086587, commit `e2a1bc8`. Esse resultado antecede as alterações locais sem commit desta execução. |
+| Linux amd64 — produção inicial | Btrfs local com Go `modernc.org/sqlite` 3.54.1 e Rust `rusqlite` bundled SQLite 3.53.2; `make test` e o drill ENOSPC em tmpfs passaram. O gate padrão remoto passou no run 40173262007, commit `961583f`. |
+| Linux arm64 — produção inicial | `make test-native` passou no runner `ubuntu-24.04-arm`, run manual 40172962620, commit `72c834d`; inclui o cenário concorrente de crash/checkpoint. O drill ENOSPC continua limitado a Linux amd64. |
+| macOS arm64 — integração | `make test-native` passou no runner `macos-15`, run manual 40172962620, commit `72c834d`; inclui as suites Go/Rust e conformance. O tracer de checkpoint com ptrace é Linux-only. |
 | Windows 11 amd64 — fase posterior | Fora da primeira matriz D-16; não verificado. A validação de identidade/`ctime` no adapter Rust é Unix-only e a validação de `ctime` em Go é Linux/macOS-only; ambos falham fechados fora do escopo. |
 
-Permanecem sem prova: drivers/VFS alternativos e conexões externas além da
+### Reexecução local dos drills opt-in — 2026-10-27
+
+No checkout `d719533` (Linux amd64, daemon Docker rootless já ativo), `make
+test-cp01-fsync-interrupt` passou para Go e Rust: o FUSE local bloqueou a
+syscall `fsync`, cada processo de publicação foi terminado nesse ponto e a
+recuperação/retry passou. `make test-cp01-qemu-poweroff` também passou nos dois
+engines: após sync/validação das capturas, o processo QEMU foi morto
+abruptamente; a recuperação foi validada em ext4 sobre virtio-blk. Isso prova
+somente o comportamento observado no harness FUSE e no ambiente virtualizado,
+não perda física de energia/cache nem persistência de hardware real.
+
+Na primeira reexecução dos drills, `make test-cp01-enospc` não foi executado: a
+imagem Debian pinada não estava presente localmente e o script não faz pull. A
+execução posterior autorizada está registrada a seguir.
+
+### Drill ENOSPC após autorização de pull — 2026-10-27
+
+Com autorização explícita do mantenedor, foi baixada somente a imagem
+`debian@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad`
+via contexto Docker rootless verificado. Em seguida, `make test-cp01-enospc`
+passou para Go e Rust: ambos recuperaram após ENOSPC real no tmpfs `/cp01` de
+8 MiB dentro de container sem rede, root filesystem read-only, 512 MiB de memória
+e 128 PIDs; o teste limpou seu diretório temporário exclusivo. Este resultado
+valida apenas esse cenário Linux amd64/tmpfs e não simula falha física de
+`fsync`/energia nem filesystems diferentes do escopo testado.
+
+Após a troca do módulo Go para o caminho canônico em `307da59`, o drill foi
+repetido e passou novamente para os dois engines. `make test` também passou
+integralmente nesse checkout, incluindo conformance, fuzz-smoke e Floci local.
+
+Após adicionar o drill de interrupção FUSE, o código em `0c977eb` passou as
+suites nativas/conformance em Linux arm64 e macOS arm64 no run `40300871827`;
+Linux arm64 concluiu em 3m09s e macOS arm64 em 3m44s. O quality gate do push
+no HEAD `4259009` passou no run `40300905561`. O drill FUSE em si é Linux-only
+e passou localmente nos dois runtimes; a matriz remota não executa montagem FUSE.
+
+Permanecem fora da garantia inicial: Linux arm64 e demais plataformas; drivers/VFS alternativos e conexões externas além da
 configuração de aplicação testada; autocheckpoint global da aplicação;
 escrita direta ou concorrente no sidecar fora do lock SQLite; falha física de
-`fsync`/energia e ENOSPC em filesystems de produção (a evidência de espaço
-cheio é somente em tmpfs);
-interrupção de syscalls em andamento; repetição do crash de checkpoint além de
-Linux amd64; falha de energia/VFS; e a matriz ampliada de drivers/VFS/filesystems.
-Os testes nativos arm64/macOS passaram em revisão anterior, mas não cobrem estas
-alterações locais. Os hooks provam ordenação e recuperação em pontos controlados,
-não atomicidade de hardware ou durabilidade de todos os filesystems. O gate
-segue bloqueado até haver evidência completa e revisão do protocolo.
+`fsync`/energia e ENOSPC em filesystems de produção (a evidência de espaço cheio
+é somente em tmpfs); interrupção de `fsync` já dentro do filesystem subjacente;
+o tracer de crash Linux em filesystems/arquiteturas além de amd64 e arm64; falha
+de energia/VFS; e a matriz ampliada de drivers/VFS/filesystems. Os hooks provam
+ordenação e recuperação em pontos controlados, não atomicidade de hardware ou durabilidade
+de todos os filesystems. O gate segue bloqueado até haver evidência completa e
+revisão do protocolo.
 
-## Critério para aprovação
+## Critério para ampliar o escopo
 
 Registrar sequência de locks/transações, versões, combinação driver/VFS/OS,
 hooks/PRAGMAs, código exercitado, seed/carga, pontos de injeção e resultado de
 cada caso. Exigir zero commits elegíveis perdidos, nenhum falso sucesso de
-checkpoint e suites determinísticas repetidas em toda combinação homologada. A
-aprovação deve ser revisada antes de conectar o protocolo à API pública. Até
-lá, CP-01 permanece reprovado por ausência de evidência completa; M2 e promessas
-de streaming permanecem bloqueadas.
+checkpoint e suites determinísticas repetidas em cada combinação nova. A
+aprovação atual cobre somente Linux x86-64 nas versões acima. Para incluir
+ARM64, outro sistema, driver, VFS ou filesystem, repetir/revisar evidência nessa
+combinação antes de ampliar a promessa. A API pública pode ser implementada
+somente sob o escopo já aprovado e os demais gates de M5/M6.

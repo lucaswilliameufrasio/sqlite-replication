@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -302,6 +303,20 @@ func observeCheckpoint(ctx context.Context, path string) (CaptureObservation, er
 // CreateOnlineBackup creates a consistent SQLite image using the runtime's
 // Online Backup API. The source must be in WAL mode and use the modernc adapter.
 func CreateOnlineBackup(ctx context.Context, sourcePath, destinationPath string) error {
+	return createOnlineBackup(ctx, sourcePath, destinationPath, 0)
+}
+
+// CreateOnlineBackupWithImageLimit bounds the SQLite destination main image
+// using max_page_count. It does not bound journals or reserve physical blocks.
+// The destination must be new or an empty regular file; callers remove it on error.
+func CreateOnlineBackupWithImageLimit(ctx context.Context, sourcePath, destinationPath string, maxImageBytes uint64) error {
+	if maxImageBytes == 0 {
+		return fmt.Errorf("backup image limit must be nonzero")
+	}
+	return createOnlineBackup(ctx, sourcePath, destinationPath, maxImageBytes)
+}
+
+func createOnlineBackup(ctx context.Context, sourcePath, destinationPath string, maxImageBytes uint64) error {
 	db, err := sql.Open("sqlite", sourcePath)
 	if err != nil {
 		return fmt.Errorf("open source database: %w", err)
@@ -318,13 +333,44 @@ func CreateOnlineBackup(ctx context.Context, sourcePath, destinationPath string)
 	if err := validateRuntimeAndJournalMode(ctx, conn); err != nil {
 		return err
 	}
+	destinationURI := destinationPath
+	if maxImageBytes != 0 {
+		info, err := os.Lstat(destinationPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		if err == nil && (!info.Mode().IsRegular() || info.Size() != 0) {
+			return fmt.Errorf("bounded backup destination must be an empty regular file")
+		}
+		var pageSize uint64
+		if err := conn.QueryRowContext(ctx, "PRAGMA page_size").Scan(&pageSize); err != nil {
+			return fmt.Errorf("read SQLite page size: %w", err)
+		}
+		if pageSize == 0 || maxImageBytes/pageSize == 0 {
+			return fmt.Errorf("backup image limit smaller than page size")
+		}
+		pages := maxImageBytes / pageSize
+		if pages > 4294967294 {
+			pages = 4294967294
+		}
+		absolute, err := filepath.Abs(destinationPath)
+		if err != nil {
+			return err
+		}
+		destination := url.URL{Scheme: "file", Path: filepath.ToSlash(absolute)}
+		query := destination.Query()
+		query.Add("_pragma", fmt.Sprintf("page_size(%d)", pageSize))
+		query.Add("_pragma", fmt.Sprintf("max_page_count(%d)", pages))
+		destination.RawQuery = query.Encode()
+		destinationURI = destination.String()
+	}
 
 	return conn.Raw(func(raw any) error {
 		source, ok := raw.(onlineBackupper)
 		if !ok {
 			return fmt.Errorf("SQLite driver does not expose the approved Online Backup API")
 		}
-		backup, err := source.NewBackup(destinationPath)
+		backup, err := source.NewBackup(destinationURI)
 		if err != nil {
 			return fmt.Errorf("initialize SQLite Online Backup API: %w", err)
 		}

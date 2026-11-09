@@ -1,6 +1,6 @@
 # Prompt para execução — SQLite Replication (Go + Rust)
 
-Leia **integralmente** `PLANO_DESENVOLVIMENTO.md` e trate-o como especificação de produto, arquitetura, qualidade e critérios de aceite para construir duas bibliotecas open source de replicação SQLite embutidas em aplicações Go e Rust.
+Leia **integralmente** `development-plan.md` e trate-o como especificação de produto, arquitetura, qualidade e critérios de aceite para construir duas bibliotecas open source de replicação SQLite embutidas em aplicações Go e Rust.
 
 ## Objetivo
 

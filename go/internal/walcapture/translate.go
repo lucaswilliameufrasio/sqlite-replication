@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"sort"
 
-	"sqlite-replication/internal/wal"
-	"sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/wal"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
 )
 
 type Position struct {

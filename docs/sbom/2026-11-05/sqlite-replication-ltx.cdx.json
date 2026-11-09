@@ -1,0 +1,125 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.5",
+  "version": 1,
+  "serialNumber": "urn:uuid:3f461d32-02fa-4b6f-bae1-755bcb5dadc2",
+  "metadata": {
+    "timestamp": "2026-11-05T18:22:45.488276842Z",
+    "tools": [
+      {
+        "vendor": "CycloneDX",
+        "name": "cargo-cyclonedx",
+        "version": "0.5.9"
+      }
+    ],
+    "component": {
+      "type": "library",
+      "bom-ref": "path+file:///workspace/rust/crates/ltx#sqlite-replication-ltx@0.1.0",
+      "name": "sqlite-replication-ltx",
+      "version": "0.1.0",
+      "scope": "required",
+      "licenses": [
+        {
+          "expression": "Apache-2.0"
+        }
+      ],
+      "purl": "pkg:cargo/sqlite-replication-ltx@0.1.0?download_url=file://.",
+      "components": [
+        {
+          "type": "library",
+          "bom-ref": "path+file:///workspace/rust/crates/ltx#sqlite-replication-ltx@0.1.0 bin-target-0",
+          "name": "sqlite_replication_ltx",
+          "version": "0.1.0",
+          "purl": "pkg:cargo/sqlite-replication-ltx@0.1.0?download_url=file://.#src/lib.rs"
+        }
+      ]
+    },
+    "properties": [
+      {
+        "name": "cdx:rustc:sbom:target:triple",
+        "value": "x86_64-unknown-linux-gnu"
+      }
+    ]
+  },
+  "components": [
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#lz4_flex@0.14.0",
+      "author": "Pascal Seitz <pascal.seitz@gmail.com>, Arthur Silva <arthurprs@gmail.com>, ticki <Ticki@users.noreply.github.com>",
+      "name": "lz4_flex",
+      "version": "0.14.0",
+      "description": "Fastest LZ4 implementation in Rust, no unsafe by default.",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "ecbdfe44b1bd960b68170b417450a628c43f7cf56bb3c5317e61cb230ee7f226"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/lz4_flex@0.14.0",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://github.com/pseitz/lz4_flex"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/pseitz/lz4_flex"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "registry+https://github.com/rust-lang/crates.io-index#twox-hash@2.1.5",
+      "author": "Jake Goulding <jake.goulding@gmail.com>",
+      "name": "twox-hash",
+      "version": "2.1.5",
+      "description": "A Rust implementation of the XXHash and XXH3 algorithms",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "86a801b3cea342a06d468c8710662aa29e5e05e4f5c0d62f00bbb7f2ad7941c2"
+        }
+      ],
+      "licenses": [
+        {
+          "expression": "MIT"
+        }
+      ],
+      "purl": "pkg:cargo/twox-hash@2.1.5",
+      "externalReferences": [
+        {
+          "type": "documentation",
+          "url": "https://docs.rs/twox-hash/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/shepmaster/twox-hash"
+        }
+      ]
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "path+file:///workspace/rust/crates/ltx#sqlite-replication-ltx@0.1.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#lz4_flex@0.14.0"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#lz4_flex@0.14.0",
+      "dependsOn": [
+        "registry+https://github.com/rust-lang/crates.io-index#twox-hash@2.1.5"
+      ]
+    },
+    {
+      "ref": "registry+https://github.com/rust-lang/crates.io-index#twox-hash@2.1.5"
+    }
+  ]
+}

@@ -40,6 +40,57 @@ pub struct Watermark {
     pub wal: PersistedPosition,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RemoteAck {
+    pub version: u32,
+    pub remote_id: String,
+    pub prefix: String,
+    pub txid: u64,
+    pub database_checksum: u64,
+}
+
+pub fn read_remote_ack(root: &Path) -> io::Result<RemoteAck> {
+    let path = root.join("_meta").join("remote-ack.json");
+    let file = File::open(path)?;
+    let ack: RemoteAck = serde_json::from_reader(file).map_err(io::Error::other)?;
+    validate_remote_ack(&ack)?;
+    Ok(ack)
+}
+
+pub fn write_remote_ack(root: &Path, ack: &RemoteAck) -> io::Result<()> {
+    validate_remote_ack(ack)?;
+    let metadata_directory = root.join("_meta");
+    fs::create_dir_all(&metadata_directory)?;
+    let mut staged = Builder::new()
+        .prefix(".remote-ack-")
+        .suffix(".tmp")
+        .tempfile_in(&metadata_directory)?;
+    serde_json::to_writer_pretty(staged.as_file_mut(), ack).map_err(io::Error::other)?;
+    staged.as_file_mut().sync_all()?;
+    let (file, staged_path) = staged.keep().map_err(|error| error.error)?;
+    file.sync_all()?;
+    drop(file);
+    fs::rename(staged_path, metadata_directory.join("remote-ack.json"))?;
+    sync_directory(&metadata_directory)
+}
+
+fn validate_remote_ack(ack: &RemoteAck) -> io::Result<()> {
+    if ack.version != 1
+        || ack.remote_id.trim().is_empty()
+        || ack.txid == 0
+        || ack.database_checksum == 0
+    {
+        return Err(invalid_data("remote acknowledgement is incompatible"));
+    }
+    if ack.remote_id.contains(['\r', '\n', '\0']) {
+        return Err(invalid_data(
+            "remote acknowledgement has an invalid remote ID",
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PersistedPosition {
@@ -86,10 +137,107 @@ pub fn publish_transactions<F>(
     root: &Path,
     transactions: &[Transaction],
     state: &State,
-    mut hook: F,
+    hook: F,
 ) -> io::Result<()>
 where
     F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    publish_transactions_with_sync(
+        root,
+        transactions,
+        state,
+        hook,
+        |file| file.sync_all(),
+        sync_directory,
+    )
+}
+
+/// Limits encoded bytes in this batch before staging. Does not include existing
+/// spool, encoding memory, metadata, other producers, or filesystem blocks.
+pub fn publish_transactions_with_batch_limit<F>(
+    root: &Path,
+    transactions: &[Transaction],
+    state: &State,
+    hook: F,
+    limit: u64,
+) -> io::Result<()>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    if limit == 0 {
+        return Err(invalid_input("LTX batch limit must be nonzero"));
+    }
+    let mut remaining = limit;
+    for transaction in transactions {
+        let size = u64::try_from(transaction.encoded.len())
+            .map_err(|_| invalid_input("LTX batch size overflow"))?;
+        remaining = remaining
+            .checked_sub(size)
+            .ok_or_else(|| invalid_input("LTX batch size limit exceeded"))?;
+    }
+    publish_transactions(root, transactions, state, hook)
+}
+
+/// Limits logical bytes under `ltx` plus the entire encoded batch, including
+/// staging for identical retries. Caller must hold the repository lock and
+/// exclude all other mutations through return. This is not a physical quota;
+/// files outside `ltx`, encoding memory and uncooperative writers are excluded.
+pub fn publish_transactions_with_spool_limit<F>(
+    root: &Path,
+    transactions: &[Transaction],
+    state: &State,
+    hook: F,
+    limit: u64,
+) -> io::Result<()>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    if limit == 0 {
+        return Err(invalid_input("spool limit must be nonzero"));
+    }
+    let mut remaining = limit;
+    let mut directories = vec![root.join("ltx")];
+    while let Some(directory) = directories.pop() {
+        let metadata = fs::symlink_metadata(&directory)?;
+        if !metadata.file_type().is_dir() {
+            return Err(invalid_input("unsupported spool directory"));
+        }
+        for entry in fs::read_dir(directory)? {
+            let entry = entry?;
+            let metadata = fs::symlink_metadata(entry.path())?;
+            if metadata.file_type().is_dir() {
+                directories.push(entry.path());
+            } else if metadata.file_type().is_file() {
+                remaining = remaining
+                    .checked_sub(metadata.len())
+                    .ok_or_else(|| invalid_input("spool size limit exceeded"))?;
+            } else {
+                return Err(invalid_input("unsupported spool entry"));
+            }
+        }
+    }
+    for transaction in transactions {
+        let size = u64::try_from(transaction.encoded.len())
+            .map_err(|_| invalid_input("LTX batch size overflow"))?;
+        remaining = remaining
+            .checked_sub(size)
+            .ok_or_else(|| invalid_input("spool size limit exceeded"))?;
+    }
+    publish_transactions(root, transactions, state, hook)
+}
+
+fn publish_transactions_with_sync<F, S, D>(
+    root: &Path,
+    transactions: &[Transaction],
+    state: &State,
+    mut hook: F,
+    mut sync_file: S,
+    mut sync_metadata_directory: D,
+) -> io::Result<()>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+    S: FnMut(&File) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
 {
     ensure_repository(root)?;
     validate_batch(transactions, state)?;
@@ -112,7 +260,7 @@ where
         staged.write_all(&transaction.encoded)?;
         hook(FaultPoint::AfterStageWrite, index)?;
         hook(FaultPoint::BeforeStageSync, index)?;
-        staged.as_file().sync_all()?;
+        sync_file(staged.as_file())?;
         hook(FaultPoint::AfterStageSync, index)?;
         hook(FaultPoint::BeforeLtxPublish, index)?;
 
@@ -134,7 +282,14 @@ where
         database_checksum: state.database.checksum,
         wal: state.wal.into(),
     };
-    write_watermark(root, watermark, &mut hook, transactions.len())?;
+    write_watermark(
+        root,
+        watermark,
+        &mut hook,
+        transactions.len(),
+        &mut sync_file,
+        &mut sync_metadata_directory,
+    )?;
     hook(FaultPoint::AfterWatermark, transactions.len())
 }
 
@@ -161,13 +316,35 @@ pub fn read_watermark(root: &Path) -> io::Result<Watermark> {
 /// LTX publication. The caller must reconcile this state with the live database
 /// image before capture when the WAL generation is no longer present.
 pub fn recover(root: &Path, wal_bytes: &[u8]) -> io::Result<State> {
+    recover_inner(root, wal_bytes, None)
+}
+
+/// Bounds logical bytes written to the decoded temporary recovery image only.
+/// This is not a filesystem quota and does not reserve physical blocks.
+pub fn recover_with_image_limit(root: &Path, wal_bytes: &[u8], limit: u64) -> io::Result<State> {
+    if limit == 0 {
+        return Err(invalid_input("recovery image limit must be nonzero"));
+    }
+    recover_inner(root, wal_bytes, Some(limit))
+}
+
+fn recover_inner(root: &Path, wal_bytes: &[u8], limit: Option<u64>) -> io::Result<State> {
     let snapshot_path = ltx_path(root, 1, 1);
     let snapshot = File::open(&snapshot_path)?;
     let mut restored = Builder::new()
         .prefix(".recover-snapshot-")
         .suffix(".sqlite")
         .tempfile_in(root.join("_meta"))?;
-    let snapshot_header = decode_snapshot(snapshot, restored.as_file_mut())?;
+    let snapshot_header = match limit {
+        Some(remaining) => {
+            let mut limited = LimitedRecoveryWriter {
+                writer: restored.as_file_mut(),
+                remaining,
+            };
+            decode_snapshot(snapshot, &mut limited)?
+        }
+        None => decode_snapshot(snapshot, restored.as_file_mut())?,
+    };
     restored.as_file().sync_all()?;
     let mut database = DatabaseState::load(restored.as_file_mut(), 1)?;
     if database.page_size != snapshot_header.page_size || database.commit != snapshot_header.commit
@@ -247,6 +424,26 @@ pub fn recover(root: &Path, wal_bytes: &[u8]) -> io::Result<State> {
         publish_transactions(root, &[], &state, |_, _| Ok(()))?;
     }
     Ok(state)
+}
+
+struct LimitedRecoveryWriter<W> {
+    writer: W,
+    remaining: u64,
+}
+
+impl<W: Write> Write for LimitedRecoveryWriter<W> {
+    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+        if data.len() as u64 > self.remaining {
+            return Err(io::Error::other("recovery image size limit exceeded"));
+        }
+        let written = self.writer.write(data)?;
+        self.remaining -= written as u64;
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -366,14 +563,18 @@ fn validate_current_wal_position(
     Ok(position)
 }
 
-fn write_watermark<F>(
+fn write_watermark<F, S, D>(
     root: &Path,
     watermark: Watermark,
     hook: &mut F,
     transaction_index: usize,
+    sync_file: &mut S,
+    sync_metadata_directory: &mut D,
 ) -> io::Result<()>
 where
     F: FnMut(FaultPoint, usize) -> io::Result<()>,
+    S: FnMut(&File) -> io::Result<()>,
+    D: FnMut(&Path) -> io::Result<()>,
 {
     let metadata_directory = root.join("_meta");
     fs::create_dir_all(&metadata_directory)?;
@@ -385,13 +586,13 @@ where
     serde_json::to_writer_pretty(staged.as_file_mut(), &watermark).map_err(io::Error::other)?;
     staged.write_all(b"\n")?;
     hook(FaultPoint::BeforeWatermarkSync, transaction_index)?;
-    staged.as_file().sync_all()?;
+    sync_file(staged.as_file())?;
     hook(FaultPoint::AfterWatermarkSync, transaction_index)?;
 
     let destination = metadata_directory.join("capture-watermark.json");
     let staged_path = staged.into_temp_path();
     fs::rename(&staged_path, &destination)?;
-    sync_directory(&metadata_directory)?;
+    sync_metadata_directory(&metadata_directory)?;
     Ok(())
 }
 
@@ -441,12 +642,66 @@ fn invalid_input(message: &'static str) -> io::Error {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::io::Cursor;
+    use std::io::{self, Cursor};
+    use std::path::PathBuf;
+    use std::process::{Child, Command, ExitStatus, Stdio};
+    use std::thread;
+    use std::time::{Duration, Instant};
 
     use sqlite_replication_ltx::{DatabaseState, Header, Page};
     use sqlite_replication_wal::translate::{Position, State, Transaction};
 
-    use super::{Builder, FaultPoint, publish_transactions, read_watermark, recover};
+    use super::{
+        Builder, FaultPoint, RemoteAck, publish_transactions, publish_transactions_with_sync,
+        read_remote_ack, read_watermark, recover, write_remote_ack,
+    };
+
+    #[test]
+    fn remote_ack_round_trips_durably_and_rejects_unknown_fields() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let expected = RemoteAck {
+            version: 1,
+            remote_id: "production-eu-west-replica".to_owned(),
+            prefix: "tenant/database".to_owned(),
+            txid: 42,
+            database_checksum: 1 << 63,
+        };
+        write_remote_ack(directory.path(), &expected).expect("write remote ack");
+        assert_eq!(
+            read_remote_ack(directory.path()).expect("read remote ack"),
+            expected
+        );
+
+        fs::write(
+            directory.path().join("_meta/remote-ack.json"),
+            r#"{"version":1,"remote_id":"r","prefix":"p","txid":1,"database_checksum":9223372036854775808,"extra":true}"#,
+        )
+        .expect("write malformed remote ack");
+        assert!(read_remote_ack(directory.path()).is_err());
+    }
+
+    #[test]
+    fn remote_ack_rejects_control_identity_and_zero_position() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        for ack in [
+            RemoteAck {
+                version: 1,
+                remote_id: "remote\nname".to_owned(),
+                prefix: String::new(),
+                txid: 1,
+                database_checksum: 1 << 63,
+            },
+            RemoteAck {
+                version: 1,
+                remote_id: "remote".to_owned(),
+                prefix: String::new(),
+                txid: 0,
+                database_checksum: 1 << 63,
+            },
+        ] {
+            assert!(write_remote_ack(directory.path(), &ack).is_err());
+        }
+    }
 
     #[test]
     fn publication_orders_ltx_before_watermark_and_survives_injected_failures() {
@@ -553,6 +808,336 @@ mod tests {
     }
 
     #[test]
+    fn publication_propagates_sync_operation_errors_and_retries_idempotently() {
+        let (transaction, state) = sample_capture();
+        for (name, fail_sync_call, expected_ltx) in
+            [("LTX file", 1, false), ("watermark file", 2, true)]
+        {
+            let directory = tempfile::tempdir().expect("sync failure directory");
+            let mut sync_call = 0;
+            let result = publish_transactions_with_sync(
+                directory.path(),
+                std::slice::from_ref(&transaction),
+                &state,
+                |_, _| Ok(()),
+                |file| {
+                    sync_call += 1;
+                    if sync_call == fail_sync_call {
+                        return Err(io::Error::other("injected EIO from sync operation"));
+                    }
+                    file.sync_all()
+                },
+                sqlite_replication_storage_fs::sync_directory,
+            );
+            let error = result.expect_err("sync operation error must be returned");
+            assert!(
+                error.to_string().contains("injected EIO"),
+                "unexpected error: {error}"
+            );
+
+            let ltx_path = sqlite_replication_storage_fs::ltx_path(
+                directory.path(),
+                transaction.header.min_txid,
+                transaction.header.max_txid,
+            );
+            assert_eq!(
+                ltx_path.exists(),
+                expected_ltx,
+                "wrong LTX state after {name} sync error"
+            );
+            assert!(
+                read_watermark(directory.path()).is_err(),
+                "file sync error advanced watermark"
+            );
+
+            publish_transactions(
+                directory.path(),
+                std::slice::from_ref(&transaction),
+                &state,
+                |_, _| Ok(()),
+            )
+            .expect("retry after file sync error");
+            publish_transactions(
+                directory.path(),
+                std::slice::from_ref(&transaction),
+                &state,
+                |_, _| Ok(()),
+            )
+            .expect("repeat retry after file sync error");
+        }
+
+        let directory = tempfile::tempdir().expect("directory sync failure directory");
+        let result = publish_transactions_with_sync(
+            directory.path(),
+            std::slice::from_ref(&transaction),
+            &state,
+            |_, _| Ok(()),
+            |file| file.sync_all(),
+            |_| {
+                Err(io::Error::other(
+                    "injected EIO from directory sync operation",
+                ))
+            },
+        );
+        let error = result.expect_err("directory sync operation error must be returned");
+        assert!(error.to_string().contains("injected EIO"));
+        assert_eq!(
+            read_watermark(directory.path())
+                .expect("renamed watermark remains visible")
+                .txid,
+            state.database.txid,
+        );
+        publish_transactions(
+            directory.path(),
+            std::slice::from_ref(&transaction),
+            &state,
+            |_, _| Ok(()),
+        )
+        .expect("retry after directory sync error");
+        publish_transactions(
+            directory.path(),
+            std::slice::from_ref(&transaction),
+            &state,
+            |_, _| Ok(()),
+        )
+        .expect("repeat retry after directory sync error");
+    }
+
+    #[test]
+    #[ignore = "requires the opt-in CP-01 FUSE fsync interruption drill"]
+    fn publish_interrupted_during_sync() {
+        let root = PathBuf::from(
+            std::env::var_os("SQLITE_REPLICATION_CP01_FUSE_ROOT")
+                .expect("FUSE drill root environment"),
+        );
+        let (transaction, state) = sample_capture();
+        if std::env::var("SQLITE_REPLICATION_CP01_FUSE_CHILD").as_deref() == Ok("1") {
+            publish_transactions(&root, std::slice::from_ref(&transaction), &state, |_, _| {
+                Ok(())
+            })
+            .expect("child capture resumes after FUSE releases sync");
+            return;
+        }
+
+        let barrier_path =
+            PathBuf::from(std::env::var_os("CP01_FUSE_BARRIER").expect("FUSE barrier environment"));
+        let release_path =
+            PathBuf::from(std::env::var_os("CP01_FUSE_RELEASE").expect("FUSE release environment"));
+        let completed_path = PathBuf::from(
+            std::env::var_os("CP01_FUSE_COMPLETED").expect("FUSE completion environment"),
+        );
+        initialize_fuse_recovery_repository(&root);
+
+        let executable = std::env::current_exe().expect("test executable path");
+        let mut child = DrillChild::start(
+            &executable,
+            release_path,
+            "SQLITE_REPLICATION_CP01_FUSE_ROOT",
+            root.as_os_str(),
+        );
+        let deadline = Instant::now() + Duration::from_secs(15);
+        loop {
+            if let Some(status) = child.try_wait() {
+                panic!("publishing child exited before blocked fsync: {status}");
+            }
+            if barrier_path.exists() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "child did not enter FUSE fsync callback"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let status = child.kill_release_and_wait();
+        assert!(
+            !status.success(),
+            "child unexpectedly survived SIGKILL during fsync"
+        );
+        let completion_deadline = Instant::now() + Duration::from_secs(15);
+        while !completed_path.exists() {
+            assert!(
+                Instant::now() < completion_deadline,
+                "FUSE fsync callback did not finish after release"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let recovered = recover(&root, &[]).expect("recover base after interrupted fsync");
+        assert_eq!(recovered.database.txid, 1);
+        assert_eq!(read_watermark(&root).expect("read old watermark").txid, 1);
+
+        publish_transactions(&root, std::slice::from_ref(&transaction), &state, |_, _| {
+            Ok(())
+        })
+        .expect("retry capture after interrupted fsync");
+        let recovered = recover(&root, &[]).expect("recover retried capture");
+        assert_eq!(recovered.database.txid, state.database.txid);
+        assert_eq!(recovered.database.checksum, state.database.checksum);
+        let repeated = recover(&root, &[]).expect("repeat recovery");
+        assert_eq!(repeated.database, recovered.database);
+    }
+
+    #[test]
+    #[ignore = "requires the opt-in CP-01 QEMU power-off drill"]
+    fn recover_after_abrupt_qemu_exit() {
+        let Some(root) = std::env::var_os("SQLITE_REPLICATION_CP01_QEMU_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let mode = std::env::var("SQLITE_REPLICATION_CP01_QEMU_MODE").expect("QEMU drill mode");
+        let (transaction, state) = sample_capture();
+
+        match mode.as_str() {
+            "prepare" => {
+                initialize_fuse_recovery_repository(&root);
+                publish_transactions(&root, &[transaction], &state, |_, _| Ok(()))
+                    .expect("publish durable capture before abrupt QEMU exit");
+                let recovered = recover(&root, &[]).expect("verify capture before QEMU exit");
+                assert_eq!(recovered.database.txid, state.database.txid);
+                assert_eq!(recovered.database.checksum, state.database.checksum);
+            }
+            "recover" => {
+                let recovered = recover(&root, &[]).expect("recover after abrupt QEMU exit");
+                assert_eq!(recovered.database.txid, state.database.txid);
+                assert_eq!(recovered.database.checksum, state.database.checksum);
+                let repeated = recover(&root, &[]).expect("repeat post-exit recovery");
+                assert_eq!(repeated.database, recovered.database);
+            }
+            _ => panic!("unknown QEMU drill mode {mode:?}"),
+        }
+    }
+
+    struct DrillChild {
+        child: Option<Child>,
+        release_path: PathBuf,
+    }
+
+    impl DrillChild {
+        fn start(
+            executable: &std::path::Path,
+            release_path: PathBuf,
+            root_key: &str,
+            root: &std::ffi::OsStr,
+        ) -> Self {
+            let mut command = Command::new(executable);
+            command
+                .args([
+                    "--exact",
+                    "tests::publish_interrupted_during_sync",
+                    "--ignored",
+                    "--nocapture",
+                ])
+                .env("SQLITE_REPLICATION_CP01_FUSE_CHILD", "1")
+                .env(root_key, root)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null());
+            let child = command.spawn().expect("start publishing child");
+            Self {
+                child: Some(child),
+                release_path,
+            }
+        }
+
+        fn try_wait(&mut self) -> Option<ExitStatus> {
+            self.child
+                .as_mut()
+                .expect("publishing child is active")
+                .try_wait()
+                .expect("check publishing child status")
+        }
+
+        fn kill_release_and_wait(&mut self) -> ExitStatus {
+            let mut child = self.child.take().expect("publishing child is active");
+            let _ = child.kill();
+            fs::write(&self.release_path, b"release\n").expect("release FUSE sync barrier");
+            child.wait().expect("wait for killed publishing child")
+        }
+    }
+
+    impl Drop for DrillChild {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.child.take() {
+                let _ = child.kill();
+                let _ = fs::write(&self.release_path, b"release\n");
+                let _ = child.wait();
+            }
+        }
+    }
+
+    fn initialize_fuse_recovery_repository(root: &std::path::Path) {
+        let mut image = vec![0_u8; 1024];
+        image[..16].copy_from_slice(b"SQLite format 3\0");
+        image[16..18].copy_from_slice(&512_u16.to_be_bytes());
+        image[28..32].copy_from_slice(&2_u32.to_be_bytes());
+        let base = DatabaseState::load(&mut Cursor::new(&image), 1).expect("load base state");
+
+        sqlite_replication_storage_fs::ensure_repository(root).expect("initialize repository");
+        let snapshot_path = sqlite_replication_storage_fs::ltx_path(root, 1, 1);
+        let parent = snapshot_path.parent().expect("snapshot parent");
+        fs::create_dir_all(parent).expect("create snapshot directory");
+        let mut staged = Builder::new()
+            .prefix(".snapshot-")
+            .suffix(".stage")
+            .tempfile_in(parent)
+            .expect("create base snapshot stage");
+        sqlite_replication_ltx::encode_snapshot(&mut Cursor::new(&image), staged.as_file_mut(), 1)
+            .expect("encode base snapshot");
+        staged.as_file().sync_all().expect("sync base snapshot");
+        let (file, staged_path) = staged.keep().expect("retain base snapshot stage");
+        drop(file);
+        sqlite_replication_storage_fs::publish(&staged_path, &snapshot_path)
+            .expect("publish base snapshot");
+        publish_transactions(
+            root,
+            &[],
+            &State {
+                database: base,
+                wal: Position::default(),
+            },
+            |_, _| Ok(()),
+        )
+        .expect("publish base watermark");
+    }
+
+    #[test]
+    fn limited_recovery_rejects_and_retries_without_changing_watermark() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path();
+        initialize_fuse_recovery_repository(root);
+        let watermark_path = root.join("_meta/capture-watermark.json");
+        let before = fs::read(&watermark_path).expect("watermark");
+        assert!(super::recover_with_image_limit(root, &[], 512).is_err());
+        assert_eq!(fs::read(&watermark_path).expect("watermark"), before);
+        assert!(
+            !fs::read_dir(root.join("_meta"))
+                .expect("metadata")
+                .any(|entry| {
+                    entry
+                        .expect("entry")
+                        .file_name()
+                        .to_string_lossy()
+                        .starts_with(".recover-snapshot-")
+                })
+        );
+        let recovered = super::recover_with_image_limit(root, &[], 1024).expect("retry");
+        assert_eq!(recovered.database.txid, 1);
+    }
+
+    #[test]
+    fn limited_recovery_writer_rejects_before_oversize_write() {
+        let mut output = Vec::new();
+        let mut writer = super::LimitedRecoveryWriter {
+            writer: &mut output,
+            remaining: 4,
+        };
+        std::io::Write::write_all(&mut writer, b"1234").expect("within limit");
+        assert!(std::io::Write::write_all(&mut writer, b"5").is_err());
+        assert_eq!(output, b"1234");
+    }
+
+    #[test]
     fn recovery_repairs_published_ltx_ahead_of_watermark() {
         let directory = tempfile::tempdir().expect("temporary directory");
         let root = directory.path();
@@ -598,18 +1183,25 @@ mod tests {
         .expect("publish base watermark");
 
         let (transaction, state) = sample_capture();
-        let result = publish_transactions(
+        let mut sync_call = 0;
+        let result = publish_transactions_with_sync(
             root,
             std::slice::from_ref(&transaction),
             &state,
-            |point, _| {
-                if point == FaultPoint::AfterLtxPublish {
-                    return Err(std::io::Error::other("crash before watermark"));
+            |_, _| Ok(()),
+            |file| {
+                sync_call += 1;
+                if sync_call == 2 {
+                    return Err(io::Error::other(
+                        "injected EIO from watermark sync operation",
+                    ));
                 }
-                Ok(())
+                file.sync_all()
             },
+            sqlite_replication_storage_fs::sync_directory,
         );
-        assert!(result.is_err());
+        let error = result.expect_err("watermark sync EIO must be returned");
+        assert!(error.to_string().contains("injected EIO"));
         assert_eq!(read_watermark(root).unwrap().txid, 1);
 
         let recovered = recover(root, &[]).expect("recover published delta");
@@ -618,6 +1210,196 @@ mod tests {
         assert_eq!(read_watermark(root).unwrap().txid, 2);
         let repeated = recover(root, &[]).expect("repeat recovery");
         assert_eq!(repeated.database, recovered.database);
+    }
+
+    #[test]
+    fn batch_limit_rejects_before_staging_and_retries() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let (transaction, state) = sample_capture();
+        let limit = transaction.encoded.len() as u64;
+        assert!(limit > 1);
+        let mut called = false;
+        let result = super::publish_transactions_with_batch_limit(
+            &root,
+            std::slice::from_ref(&transaction),
+            &state,
+            |_, _| {
+                called = true;
+                Ok(())
+            },
+            limit - 1,
+        );
+        assert!(result.is_err());
+        assert!(!called);
+        assert!(!root.exists());
+        super::publish_transactions_with_batch_limit(
+            &root,
+            &[transaction],
+            &state,
+            |_, _| Ok(()),
+            limit,
+        )
+        .expect("retry");
+        assert_eq!(
+            read_watermark(&root).expect("watermark").txid,
+            state.database.txid
+        );
+    }
+
+    #[test]
+    fn batch_limit_counts_all_transactions_before_validation() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let (transaction, state) = sample_capture();
+        let limit = transaction.encoded.len() as u64;
+        // Duplicates are deliberately invalid: aggregate rejection precedes
+        // batch validation and any filesystem mutation.
+        let batch = [transaction.clone(), transaction];
+        let error = super::publish_transactions_with_batch_limit(
+            &root,
+            &batch,
+            &state,
+            |_, _| Ok(()),
+            limit,
+        )
+        .expect_err("aggregate limit");
+        assert!(error.to_string().contains("LTX batch size limit exceeded"));
+        assert!(!root.exists());
+    }
+
+    #[test]
+    fn batch_limit_retries_after_ltx_publication_failure() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let (transaction, state) = sample_capture();
+        let limit = transaction.encoded.len() as u64;
+        let error = super::publish_transactions_with_batch_limit(
+            &root,
+            std::slice::from_ref(&transaction),
+            &state,
+            |point, _| {
+                if point == FaultPoint::AfterLtxPublish {
+                    return Err(std::io::Error::other("injected after publication"));
+                }
+                Ok(())
+            },
+            limit,
+        )
+        .expect_err("injected failure");
+        assert!(error.to_string().contains("injected after publication"));
+        assert!(
+            sqlite_replication_storage_fs::ltx_path(
+                &root,
+                transaction.header.min_txid,
+                transaction.header.max_txid
+            )
+            .exists()
+        );
+        assert!(read_watermark(&root).is_err());
+        super::publish_transactions_with_batch_limit(
+            &root,
+            &[transaction],
+            &state,
+            |_, _| Ok(()),
+            limit,
+        )
+        .expect("identical retry");
+        assert_eq!(
+            read_watermark(&root).expect("watermark").txid,
+            state.database.txid
+        );
+    }
+
+    #[test]
+    fn spool_limit_counts_existing_staging_and_retry() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let ltx = root.join("ltx");
+        std::fs::create_dir_all(&ltx).expect("ltx directory");
+        std::fs::write(ltx.join(".old.stage"), b"12345").expect("stale staging");
+        let (transaction, state) = sample_capture();
+        let size = transaction.encoded.len() as u64;
+        let batch = std::slice::from_ref(&transaction);
+        assert!(
+            super::publish_transactions_with_spool_limit(
+                &root,
+                batch,
+                &state,
+                |_, _| Ok(()),
+                size + 4
+            )
+            .is_err()
+        );
+        let error = super::publish_transactions_with_spool_limit(
+            &root,
+            batch,
+            &state,
+            |point, _| {
+                if point == FaultPoint::AfterLtxPublish {
+                    return Err(std::io::Error::other("published"));
+                }
+                Ok(())
+            },
+            size + 5,
+        )
+        .expect_err("injected failure");
+        assert!(error.to_string().contains("published"));
+        assert!(
+            super::publish_transactions_with_spool_limit(
+                &root,
+                batch,
+                &state,
+                |_, _| Ok(()),
+                size + 5
+            )
+            .is_err()
+        );
+        super::publish_transactions_with_spool_limit(
+            &root,
+            batch,
+            &state,
+            |_, _| Ok(()),
+            size * 2 + 5,
+        )
+        .expect("retry with headroom");
+        assert_eq!(
+            read_watermark(&root).expect("watermark").txid,
+            state.database.txid
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn spool_limit_rejects_symlink_and_missing_directory() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let root = directory.path().join("repository");
+        let (transaction, state) = sample_capture();
+        let batch = std::slice::from_ref(&transaction);
+        assert!(
+            super::publish_transactions_with_spool_limit(
+                &root,
+                batch,
+                &state,
+                |_, _| Ok(()),
+                1 << 20
+            )
+            .is_err()
+        );
+        let ltx = root.join("ltx");
+        std::fs::create_dir_all(&ltx).expect("ltx directory");
+        std::os::unix::fs::symlink(root.join("outside"), ltx.join("unexpected")).expect("symlink");
+        assert!(
+            super::publish_transactions_with_spool_limit(
+                &root,
+                batch,
+                &state,
+                |_, _| Ok(()),
+                1 << 20
+            )
+            .is_err()
+        );
+        assert!(read_watermark(&root).is_err());
     }
 
     fn sample_capture() -> (Transaction, State) {

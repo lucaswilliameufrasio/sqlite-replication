@@ -1,6 +1,10 @@
 //! Internal WAL capture orchestration. This remains unavailable as public API
 //! until the full CP-01 matrix is reviewed and approved.
 
+#[cfg(all(test, target_os = "linux", target_arch = "x86_64"))]
+#[path = "capture_overlap_test.rs"]
+mod capture_overlap_test;
+
 use std::fs::{self, File};
 use std::io;
 use std::path::Path;
@@ -10,6 +14,7 @@ use sqlite_replication_ltx::{DatabaseState, decode_delta, encode_delta};
 use sqlite_replication_spool::{self, FaultPoint as SpoolFaultPoint};
 use sqlite_replication_sqlite::{
     CaptureLease, begin_capture_lease, create_online_backup, create_online_backup_cancellable,
+    create_online_backup_cancellable_with_image_limit,
 };
 use sqlite_replication_wal::scan;
 use sqlite_replication_wal::translate::{State, Transaction, position_from_wal, translate_wal};
@@ -30,7 +35,8 @@ pub(crate) struct Result {
     pub wal_frames: u32,
 }
 
-pub(crate) fn capture_once(
+#[cfg(test)]
+fn capture_once(
     source_path: &Path,
     repository_root: &Path,
     timestamp_millis: i64,
@@ -43,6 +49,7 @@ pub(crate) fn capture_once(
     )
 }
 
+#[cfg(test)]
 fn capture_once_with_hook<F>(
     source_path: &Path,
     repository_root: &Path,
@@ -52,7 +59,14 @@ fn capture_once_with_hook<F>(
 where
     F: FnMut(FaultPoint, usize) -> io::Result<()>,
 {
-    capture_once_with_cancellation(source_path, repository_root, timestamp_millis, None, hook)
+    capture_once_with_cancellation(
+        source_path,
+        repository_root,
+        timestamp_millis,
+        None,
+        (None, None, None, None),
+        hook,
+    )
 }
 
 pub(crate) fn capture_once_cancellable<F>(
@@ -70,6 +84,29 @@ where
         repository_root,
         timestamp_millis,
         Some(cancelled),
+        (None, None, None, None),
+        hook,
+    )
+}
+
+pub(crate) fn capture_once_cancellable_with_recovery_limit<F>(
+    source_path: &Path,
+    repository_root: &Path,
+    timestamp_millis: i64,
+    cancelled: &AtomicBool,
+    recovery_limit: u64,
+    limits: (Option<u64>, Option<u64>, Option<u64>),
+    hook: F,
+) -> io::Result<Result>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    capture_once_with_cancellation(
+        source_path,
+        repository_root,
+        timestamp_millis,
+        Some(cancelled),
+        (Some(recovery_limit), limits.0, limits.1, limits.2),
         hook,
     )
 }
@@ -79,6 +116,31 @@ fn capture_once_with_cancellation<F>(
     repository_root: &Path,
     timestamp_millis: i64,
     cancelled: Option<&AtomicBool>,
+    image_limits: (Option<u64>, Option<u64>, Option<u64>, Option<u64>),
+    hook: F,
+) -> io::Result<Result>
+where
+    F: FnMut(FaultPoint, usize) -> io::Result<()>,
+{
+    check_cancelled(cancelled)?;
+    let _repository_lock = crate::repository_lock::acquire(repository_root)?;
+    capture_once_with_cancellation_locked(
+        source_path,
+        repository_root,
+        timestamp_millis,
+        cancelled,
+        image_limits,
+        hook,
+    )
+}
+
+// The caller must hold the matching repository coordination lock.
+pub(crate) fn capture_once_with_cancellation_locked<F>(
+    source_path: &Path,
+    repository_root: &Path,
+    timestamp_millis: i64,
+    cancelled: Option<&AtomicBool>,
+    image_limits: (Option<u64>, Option<u64>, Option<u64>, Option<u64>),
     mut hook: F,
 ) -> io::Result<Result>
 where
@@ -92,6 +154,7 @@ where
         repository_root,
         timestamp_millis,
         cancelled,
+        image_limits,
         &mut hook,
     );
     let release_result = lease.release();
@@ -113,6 +176,7 @@ fn capture_under_lease<F>(
     repository_root: &Path,
     timestamp_millis: i64,
     cancelled: Option<&AtomicBool>,
+    image_limits: (Option<u64>, Option<u64>, Option<u64>, Option<u64>),
     hook: &mut F,
 ) -> io::Result<Result>
 where
@@ -127,7 +191,14 @@ where
     hook(FaultPoint::AfterWalRead, 0)?;
     check_cancelled(cancelled)?;
 
-    let state = sqlite_replication_spool::recover(repository_root, &stable_wal.bytes)?;
+    let state = match image_limits.0 {
+        Some(limit) => sqlite_replication_spool::recover_with_image_limit(
+            repository_root,
+            &stable_wal.bytes,
+            limit,
+        )?,
+        None => sqlite_replication_spool::recover(repository_root, &stable_wal.bytes)?,
+    };
     check_cancelled(cancelled)?;
     let staging_directory = repository_root.join(".staging");
     fs::create_dir_all(&staging_directory)?;
@@ -135,12 +206,25 @@ where
         .prefix(".capture-source-")
         .suffix(".sqlite")
         .tempfile_in(&staging_directory)?;
-    match cancelled {
-        Some(token) => {
+    match (cancelled, image_limits.1) {
+        (Some(token), Some(limit)) => {
+            create_online_backup_cancellable_with_image_limit(
+                source_path,
+                source_image.path(),
+                token,
+                limit,
+            )?;
+        }
+        (Some(token), None) => {
             create_online_backup_cancellable(source_path, source_image.path(), token)?;
         }
-        None => {
+        (None, None) => {
             create_online_backup(source_path, source_image.path())?;
+        }
+        (None, Some(_)) => {
+            return Err(io::Error::other(
+                "bounded backup requires cancellation token",
+            ));
         }
     }
     source_image.as_file().sync_all()?;
@@ -159,6 +243,7 @@ where
             .database
             .delta_to_database_image(&mut image, timestamp_millis)?;
         transactions.clear();
+        next_state.database = state.database.clone();
         if let Some((header, pages, reconciled_database)) = delta {
             let mut encoded = Vec::new();
             encode_delta(header, &pages, reconciled_database.checksum, &mut encoded)?;
@@ -193,21 +278,48 @@ where
     hook(FaultPoint::AfterWalTranslation, transactions.len())?;
     check_cancelled(cancelled)?;
 
-    sqlite_replication_spool::publish_transactions(
-        repository_root,
-        &transactions,
-        &next_state,
-        |point, index| {
-            if point != SpoolFaultPoint::AfterWatermark {
-                check_cancelled(cancelled)?;
-            }
-            hook(FaultPoint::Spool(point), index)?;
-            if point == SpoolFaultPoint::AfterWatermark {
-                return Ok(());
-            }
-            check_cancelled(cancelled)
-        },
-    )?;
+    if let (Some(_), Some(batch_limit)) = (image_limits.3, image_limits.2) {
+        let mut remaining = batch_limit;
+        for transaction in &transactions {
+            let size = u64::try_from(transaction.encoded.len()).map_err(io::Error::other)?;
+            remaining = remaining.checked_sub(size).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "LTX batch size limit exceeded")
+            })?;
+        }
+    }
+
+    let spool_hook = |point, index| {
+        if point != SpoolFaultPoint::AfterWatermark {
+            check_cancelled(cancelled)?;
+        }
+        hook(FaultPoint::Spool(point), index)?;
+        if point == SpoolFaultPoint::AfterWatermark {
+            return Ok(());
+        }
+        check_cancelled(cancelled)
+    };
+    match (image_limits.3, image_limits.2) {
+        (Some(limit), _) => sqlite_replication_spool::publish_transactions_with_spool_limit(
+            repository_root,
+            &transactions,
+            &next_state,
+            spool_hook,
+            limit,
+        )?,
+        (None, Some(limit)) => sqlite_replication_spool::publish_transactions_with_batch_limit(
+            repository_root,
+            &transactions,
+            &next_state,
+            spool_hook,
+            limit,
+        )?,
+        (None, None) => sqlite_replication_spool::publish_transactions(
+            repository_root,
+            &transactions,
+            &next_state,
+            spool_hook,
+        )?,
+    }
     hook(FaultPoint::AfterSpoolPublication, transactions.len())?;
     Ok(Result {
         transactions,
@@ -262,6 +374,564 @@ mod tests {
     use sqlite_replication_spool::{FaultPoint as SpoolFaultPoint, read_watermark};
 
     use super::{FaultPoint, capture_once, capture_once_cancellable, capture_once_with_hook};
+
+    #[test]
+    fn locked_capture_excludes_other_repository_operation_and_retries() {
+        struct Gate;
+        struct Permit;
+        impl crate::WriteGate for Gate {
+            type Permit = Permit;
+            fn acquire(&self) -> io::Result<Permit> {
+                Ok(Permit)
+            }
+        }
+        impl crate::WritePermit for Permit {
+            fn release(self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        if !cfg!(all(target_os = "linux", target_arch = "x86_64")) {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("directory");
+        let source = dir.path().join("source.sqlite");
+        let repository = dir.path().join("repository");
+        let db = Connection::open(&source).expect("database");
+        db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE data(value TEXT); INSERT INTO data VALUES ('base')").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        db.execute("UPDATE data SET value='retry'", [])
+            .expect("commit");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let thread_source = source.clone();
+        let thread_repository = repository.clone();
+        let worker = thread::spawn(move || {
+            let _guard = crate::repository_lock::acquire(&thread_repository).expect("lock");
+            super::capture_once_with_cancellation_locked(
+                &thread_source,
+                &thread_repository,
+                100,
+                None,
+                (Some(1 << 20), Some(1 << 20), Some(1 << 20), Some(4 << 20)),
+                |point, _| {
+                    if point == FaultPoint::AfterLeaseAcquire {
+                        entered_tx.send(()).expect("signal");
+                        release_rx.recv().expect("release");
+                        return Err(io::Error::other("injected capture failure"));
+                    }
+                    Ok(())
+                },
+            )
+        });
+        entered_rx.recv().expect("capture entered");
+        assert!(crate::repository_lock::acquire(&repository).is_err());
+        let budget = crate::ConservativeBudget::new(crate::AdmissionGate::new(), 8 << 20)
+            .expect("independent budget");
+        let limits = || crate::CaptureLimits {
+            recovery_image: 1 << 20,
+            backup_image: 1 << 20,
+            ltx_batch: 1 << 20,
+        };
+        let blocked = crate::capture_once_with_measured_reservation(
+            &source,
+            &repository,
+            &Gate,
+            &budget,
+            limits(),
+            4 << 20,
+        );
+        assert!(blocked.is_err(), "public capture ignored the held lock");
+        release_tx.send(()).expect("release");
+        assert!(worker.join().expect("thread").is_err());
+        let result = crate::capture_once_with_measured_reservation(
+            &source,
+            &repository,
+            &Gate,
+            &budget,
+            limits(),
+            4 << 20,
+        )
+        .expect("public retry");
+        assert_eq!(result.txid, 2);
+    }
+
+    #[test]
+    fn characterize_capture_does_not_exclude_budget_reservations() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 10).expect("budget");
+        budget
+            .reconcile_with(|| Ok(Some(0)))
+            .expect("logical baseline");
+        let reservation = budget.try_reserve(Some(1)).expect("producer reservation");
+        database
+            .execute("INSERT INTO records VALUES ('committed')", [])
+            .expect("commit");
+        reservation.settle(Some(1)).expect("logical settlement");
+        let mut observed = false;
+        let result = capture_once_with_hook(&source, &repository, 123, |point, _| {
+            if point == FaultPoint::AfterSourceSnapshot {
+                thread::scope(|scope| {
+                    let producer = budget.clone();
+                    scope
+                        .spawn(move || {
+                            producer
+                                .try_reserve(Some(1))
+                                .expect("capture does not close budget")
+                                .settle(Some(0))
+                                .expect("settle");
+                        })
+                        .join()
+                        .expect("producer thread");
+                });
+                observed = true;
+            }
+            Ok(())
+        })
+        .expect("capture");
+        assert!(observed);
+        assert!(!result.transactions.is_empty());
+    }
+
+    #[test]
+    fn failed_capture_keeps_unknown_budget_closed_until_reconciled() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 1 << 20).expect("budget");
+        budget
+            .reconcile_with(|| Ok(Some(0)))
+            .expect("logical test baseline");
+        let reservation = budget.try_reserve(Some(4096)).expect("reservation");
+        database
+            .execute("INSERT INTO records VALUES ('committed')", [])
+            .expect("commit");
+        assert!(reservation.settle(None).is_err());
+        let error = capture_once_with_hook(&source, &repository, 123, |point, _| {
+            if point == FaultPoint::AfterSourceSnapshot {
+                return Err(io::Error::other("injected capture error"));
+            }
+            Ok(())
+        })
+        .err()
+        .expect("capture fails at injected boundary");
+        assert!(error.to_string().contains("injected capture error"));
+        assert!(
+            budget.try_reserve(Some(1)).is_err(),
+            "failure must not restore occupancy"
+        );
+        let result = capture_once(&source, &repository, 124).expect("retry capture");
+        assert!(!result.transactions.is_empty());
+        assert!(
+            budget.try_reserve(Some(1)).is_err(),
+            "capture does not automatically reconcile"
+        );
+        budget
+            .reconcile_with(|| Ok(Some(1)))
+            .expect("test-only logical occupancy");
+        budget
+            .try_reserve(Some(1))
+            .expect("explicit reconciliation")
+            .settle(Some(0))
+            .expect("settle");
+    }
+
+    #[test]
+    fn cooperative_capture_panic_poison_fails_closed() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 100).expect("budget");
+        budget
+            .reconcile_with(|| Ok(Some(0)))
+            .expect("logical baseline");
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = budget.with_occupancy_mutation(|| {
+                capture_once_with_hook(&source, &repository, 123, |point, _| {
+                    if point == FaultPoint::AfterSourceSnapshot {
+                        panic!("injected capture panic");
+                    }
+                    Ok(())
+                })
+            });
+        }));
+        assert!(panic.is_err());
+        assert!(budget.try_reserve(Some(1)).is_err());
+        assert!(budget.reconcile_with(|| Ok(Some(0))).is_err());
+        assert!(budget.with_occupancy_mutation(|| Ok(())).is_err());
+    }
+
+    #[test]
+    fn cooperative_capture_waits_for_real_ltx_measurement() {
+        struct NotifyGate(std::sync::mpsc::Sender<()>);
+
+        impl crate::WriteGate for NotifyGate {
+            type Permit = Self;
+
+            fn acquire(&self) -> io::Result<Self::Permit> {
+                self.0.send(()).map_err(io::Error::other)?;
+                Ok(Self(self.0.clone()))
+            }
+        }
+
+        impl crate::WritePermit for NotifyGate {
+            fn release(self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        fn ltx_bytes(path: &std::path::Path) -> io::Result<u64> {
+            if path.is_file() {
+                return Ok(path.metadata()?.len());
+            }
+            let mut total = 0;
+            for entry in std::fs::read_dir(path)? {
+                total += ltx_bytes(&entry?.path())?;
+            }
+            Ok(total)
+        }
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 1 << 20).expect("budget");
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let (gate_tx, gate_rx) = std::sync::mpsc::channel();
+        thread::scope(|scope| {
+            let measurement = budget.clone();
+            let ltx = repository.join("ltx");
+            scope.spawn(move || {
+                measurement
+                    .reconcile_with(|| {
+                        let size = ltx_bytes(&ltx)?;
+                        entered_tx.send(size).expect("report measurement");
+                        release_rx
+                            .recv_timeout(Duration::from_secs(5))
+                            .expect("release measurement");
+                        Ok(Some(size))
+                    })
+                    .expect("reconcile");
+            });
+            let before = entered_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("measurement started");
+            let capture_budget = budget.clone();
+            let source = &source;
+            let repository = &repository;
+            scope.spawn(move || {
+                let result = crate::capture_once_with_budget(
+                    source,
+                    repository,
+                    &NotifyGate(gate_tx),
+                    &capture_budget,
+                );
+                done_tx
+                    .send(result.map(|r| r.transactions))
+                    .expect("report capture");
+            });
+            gate_rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("capture acquired application gate");
+            assert!(
+                done_rx.recv_timeout(Duration::from_millis(100)).is_err(),
+                "capture waits for measurement"
+            );
+            release_tx.send(()).expect("release measurement");
+            assert!(
+                done_rx
+                    .recv_timeout(Duration::from_secs(5))
+                    .expect("capture finished")
+                    .expect("capture")
+                    > 0
+            );
+            let after = ltx_bytes(&repository.join("ltx")).expect("measure captured LTX");
+            assert!(after > before);
+        });
+        assert!(
+            budget.try_reserve(Some(1)).is_err(),
+            "capture invalidated occupancy"
+        );
+        budget
+            .reconcile_with(|| Ok(Some(ltx_bytes(&repository.join("ltx"))?)))
+            .expect("fresh measurement");
+        budget
+            .try_reserve(Some(1))
+            .expect("reconciled")
+            .settle(Some(0))
+            .expect("settle");
+        let restored = directory.path().join("restored.sqlite");
+        crate::restore_to_target(&repository, &restored, crate::RestoreTarget::Txid(2))
+            .expect("restore");
+        let count: i64 = Connection::open(restored)
+            .expect("restored")
+            .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn cooperative_capture_invalidates_budget_and_requires_reconciliation() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 100).expect("budget");
+        budget.reconcile_with(|| Ok(Some(0))).expect("baseline");
+        let permit = budget.try_reserve(Some(1)).expect("reserve");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        let err = budget
+            .with_occupancy_mutation(|| Ok(()))
+            .expect_err("active producer excludes capture");
+        assert_eq!(err.kind(), io::ErrorKind::WouldBlock);
+        permit.settle(Some(0)).expect("settle logical cost");
+        let failed = budget.with_occupancy_mutation(|| {
+            capture_once_with_hook(&source, &repository, 123, |point, _| {
+                if point == FaultPoint::AfterSourceSnapshot {
+                    return Err(io::Error::other("injected failure"));
+                }
+                Ok(())
+            })
+        });
+        assert!(failed.is_err());
+        assert!(budget.try_reserve(Some(1)).is_err());
+        let captured = budget
+            .with_occupancy_mutation(|| capture_once(&source, &repository, 124))
+            .expect("capture retry");
+        assert!(!captured.transactions.is_empty());
+        assert!(budget.try_reserve(Some(1)).is_err());
+        budget
+            .reconcile_with(|| Ok(Some(1)))
+            .expect("logical test measurement");
+        budget
+            .try_reserve(Some(1))
+            .expect("reconciled")
+            .settle(Some(0))
+            .expect("settle");
+    }
+
+    #[test]
+    fn characterize_capture_can_stale_reconciliation_measurement() {
+        fn file_bytes(path: &std::path::Path) -> u64 {
+            if path.is_file() {
+                return path.metadata().expect("file metadata").len();
+            }
+            std::fs::read_dir(path)
+                .expect("read directory")
+                .map(|entry| file_bytes(&entry.expect("entry").path()))
+                .sum()
+        }
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let ltx = repository.join("ltx");
+        let initial = file_bytes(&ltx);
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, initial + 1).expect("budget");
+        budget
+            .reconcile_with(|| Ok(Some(file_bytes(&ltx))))
+            .expect("baseline");
+        let permit = budget
+            .try_reserve(Some(1))
+            .expect("logical producer reservation");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        permit.settle(Some(0)).expect("logical settlement");
+        let mut after = 0;
+        budget
+            .reconcile_with(|| {
+                let measured = file_bytes(&ltx);
+                let captured = capture_once(&source, &repository, 123)?;
+                assert!(!captured.transactions.is_empty());
+                after = file_bytes(&ltx);
+                Ok(Some(measured))
+            })
+            .expect("install stale observation");
+        assert!(after > initial + 1);
+        budget
+            .try_reserve(Some(1))
+            .expect("characterization: stale occupancy admits reservation")
+            .settle(Some(0))
+            .expect("settle");
+        println!(
+            "ltx_before={initial} ltx_after={after} budget_limit={}",
+            initial + 1
+        );
+    }
+
+    #[test]
+    fn conservative_budget_reconciles_after_real_capture() {
+        fn ltx_bytes(path: &std::path::Path) -> u64 {
+            if path.is_file() {
+                return path.metadata().expect("metadata").len();
+            }
+            std::fs::read_dir(path)
+                .expect("read ltx directory")
+                .map(|entry| ltx_bytes(&entry.expect("entry").path()))
+                .sum()
+        }
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let database = Connection::open(&source).expect("open database");
+        database.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT)").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        let gate = crate::AdmissionGate::new();
+        gate.open().expect("open gate");
+        let budget = crate::ConservativeBudget::new(gate, 1 << 20).expect("budget");
+        let mut baseline = 0;
+        budget
+            .reconcile_with(|| {
+                baseline = ltx_bytes(&repository.join("ltx"));
+                Ok(Some(baseline))
+            })
+            .expect("baseline");
+        let permit = budget.try_reserve(Some(4096)).expect("logical reservation");
+        database
+            .execute("INSERT INTO records VALUES ('data')", [])
+            .expect("commit");
+        assert!(permit.settle(None).is_err());
+        assert!(budget.try_reserve(Some(1)).is_err());
+        let result = capture_once(&source, &repository, 123).expect("capture");
+        let mut measured = 0;
+        assert!(!result.transactions.is_empty());
+        assert!(
+            budget.try_reserve(Some(1)).is_err(),
+            "capture alone does not reconcile budget"
+        );
+        budget
+            .reconcile_with(|| {
+                measured = ltx_bytes(&repository.join("ltx"));
+                Ok(Some(measured))
+            })
+            .expect("exclusive test measurement");
+        assert!(measured > baseline);
+        budget
+            .try_reserve(Some(1))
+            .expect("reconciled")
+            .settle(Some(0))
+            .expect("settle");
+        println!("baseline_ltx={baseline} captured_ltx={measured}");
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    #[test]
+    fn characterize_wal_spool_and_staging_for_controlled_writes() {
+        fn file_bytes(path: &std::path::Path) -> u64 {
+            if !path.exists() {
+                return 0;
+            }
+            if path.is_file() {
+                return path.metadata().expect("file metadata").len();
+            }
+            std::fs::read_dir(path)
+                .expect("read directory")
+                .map(|entry| file_bytes(&entry.expect("entry").path()))
+                .sum()
+        }
+
+        for mode in ["batch", "individual", "checkpointed"] {
+            let directory = tempfile::tempdir().expect("temporary directory");
+            let source = directory.path().join("source.sqlite");
+            let repository = directory.path().join("repository");
+            let database = Connection::open(&source).expect("open source");
+            database.execute_batch(
+                "PRAGMA page_size=4096; PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(id INTEGER PRIMARY KEY, value BLOB NOT NULL);",
+            ).expect("initialize");
+            crate::snapshot(&source, &repository).expect("snapshot");
+            database
+                .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                .expect("reset WAL");
+            let baseline_ltx = file_bytes(&repository.join("ltx"));
+            if mode == "batch" {
+                database.execute_batch("BEGIN").expect("begin batch");
+            }
+            for id in 1..=20 {
+                database
+                    .execute(
+                        "INSERT INTO records VALUES (?1, ?2)",
+                        rusqlite::params![id, vec![b'x'; 100]],
+                    )
+                    .expect("insert");
+            }
+            if mode == "batch" {
+                database.execute_batch("COMMIT").expect("commit batch");
+            }
+            if mode == "checkpointed" {
+                database
+                    .execute_batch("PRAGMA wal_checkpoint(TRUNCATE)")
+                    .expect("checkpoint");
+            }
+            let wal = std::path::PathBuf::from(format!("{}-wal", source.display()));
+            let wal_bytes = file_bytes(&wal);
+            let mut staging_at_snapshot = 0;
+            let mut staging_after_publication = 0;
+            let result = capture_once_with_hook(&source, &repository, 100, |point, _| {
+                if point == FaultPoint::AfterSourceSnapshot {
+                    staging_at_snapshot = file_bytes(&repository.join(".staging"));
+                }
+                if point == FaultPoint::AfterSpoolPublication {
+                    staging_after_publication = file_bytes(&repository.join(".staging"));
+                }
+                Ok(())
+            })
+            .expect("capture");
+            let added_ltx = file_bytes(&repository.join("ltx")) - baseline_ltx;
+            println!(
+                "mode={mode} wal_bytes={wal_bytes} wal_frames={} ltx_added={added_ltx} staging_snapshot={staging_at_snapshot} staging_publication={staging_after_publication} transactions={} first_wal_offset={:?}",
+                result.state.wal.frame_count,
+                result.transactions.len(),
+                result.transactions.first().map(|tx| tx.header.wal_offset)
+            );
+            assert!(added_ltx > 0);
+            assert!(staging_at_snapshot > 0);
+            if mode == "checkpointed" {
+                assert_eq!(wal_bytes, 0);
+                assert_eq!(result.transactions[0].header.wal_offset, 0);
+            }
+        }
+    }
 
     #[test]
     fn capture_cycle_publishes_and_recovers_checkpointed_changes() {
@@ -596,6 +1266,39 @@ mod tests {
         .expect("cancellation after durable watermark should report completion");
         assert_eq!(completed.state.database.txid, 5);
         assert!(cancel_after_watermark.load(Ordering::Acquire));
+    }
+
+    #[test]
+    fn checkpointed_commits_can_collapse_into_one_reconciliation_txid() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let source = directory.path().join("source.sqlite");
+        let repository = directory.path().join("repository");
+        let connection = Connection::open(&source).expect("open source");
+        connection.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE records(value TEXT);").expect("initialize");
+        crate::snapshot(&source, &repository).expect("snapshot");
+        connection
+            .execute("INSERT INTO records VALUES ('first')", [])
+            .expect("first commit");
+        connection
+            .execute("INSERT INTO records VALUES ('second')", [])
+            .expect("second commit");
+        let (busy, _, _): (i64, i64, i64) = connection
+            .query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            })
+            .expect("checkpoint");
+        assert_eq!(busy, 0);
+        let captured = capture_once(&source, &repository, 123).expect("capture reconciled image");
+        assert_eq!(captured.state.database.txid, 2);
+        assert_eq!(captured.transactions.len(), 1);
+        let restored = directory.path().join("restored.sqlite");
+        crate::restore_to_target(&repository, &restored, crate::RestoreTarget::Txid(2))
+            .expect("restore");
+        let count: i64 = Connection::open(restored)
+            .expect("open restore")
+            .query_row("SELECT COUNT(*) FROM records", [], |row| row.get(0))
+            .expect("count");
+        assert_eq!(count, 2);
     }
 
     #[test]

@@ -16,8 +16,8 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"sqlite-replication"
-	"sqlite-replication/internal/spool"
+	"github.com/lucaswilliameufrasio/sqlite-replication"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/spool"
 )
 
 func TestCaptureRecoversAfterRealENOSPCOnBoundedTmpfs(t *testing.T) {

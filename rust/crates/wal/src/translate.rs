@@ -477,7 +477,8 @@ mod tests {
     }
 
     fn wal_checksum(data: &[u8], mut checksum_1: u32, mut checksum_2: u32) -> (u32, u32) {
-        for words in data.chunks_exact(8) {
+        let (words_list, _) = data.as_chunks::<8>();
+        for words in words_list {
             let first = u32::from_le_bytes(words[..4].try_into().expect("checksum word"));
             let second = u32::from_le_bytes(words[4..].try_into().expect("checksum word"));
             checksum_1 = checksum_1.wrapping_add(first).wrapping_add(checksum_2);

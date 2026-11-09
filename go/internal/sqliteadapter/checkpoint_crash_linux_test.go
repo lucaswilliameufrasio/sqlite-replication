@@ -46,6 +46,15 @@ func TestCheckpointCrashDuringRealCheckpointIoRecovers(t *testing.T) {
 	}
 }
 
+func TestCheckpointCrashTracerSurvivesConcurrentScheduling(t *testing.T) {
+	for attempt := 0; attempt < 8; attempt++ {
+		t.Run(strconv.Itoa(attempt), func(t *testing.T) {
+			t.Parallel()
+			runCheckpointCrashRecovery(t, "sync")
+		})
+	}
+}
+
 func runCheckpointCrashRecovery(t *testing.T, boundary string) {
 	databasePath, err := filepath.Abs(filepath.Join(t.TempDir(), "checkpoint-crash.sqlite"))
 	if err != nil {
@@ -208,6 +217,12 @@ func waitForCheckpointChildReady(stdout io.Reader) (int, error) {
 }
 
 func killAfterCheckpointIoBoundary(traceTID, processID int, databasePath, boundary string, stdin io.Writer) (unix.WaitStatus, error) {
+	// Linux associates the tracee with the attaching OS thread, not merely the
+	// Go process. Wait4 can park this goroutine, so pin the tracer too (the child
+	// already pins its checkpoint thread). Otherwise migration causes ESRCH at
+	// a valid syscall stop and invalidates the crash-boundary evidence.
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	if err := unix.PtraceAttach(traceTID); err != nil {
 		return 0, fmt.Errorf("attach to checkpoint child thread: %w", err)
 	}
@@ -352,8 +367,24 @@ func verifyCheckpointRecovery(t *testing.T, databasePath string) {
 	if rows != 512 || invalidPayloads != 0 {
 		t.Fatalf("recovered checkpoint rows=%d invalid_payloads=%d, want 512 and 0", rows, invalidPayloads)
 	}
+	if err := database.Close(); err != nil {
+		t.Fatalf("close recovery verification database before checkpoint: %v", err)
+	}
+
+	// Do not let the pooled connection used by integrity_check or the row scan
+	// retain a read mark while verifying that recovery can truncate the WAL.
+	checkpointDatabase, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatalf("open database for recovery checkpoint: %v", err)
+	}
+	defer func() {
+		if err := checkpointDatabase.Close(); err != nil {
+			t.Errorf("close recovery checkpoint database: %v", err)
+		}
+	}()
+	checkpointDatabase.SetMaxOpenConns(1)
 	var busy, logFrames, checkpointed int
-	if err := database.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); err != nil {
+	if err := checkpointDatabase.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &checkpointed); err != nil {
 		t.Fatalf("finish checkpoint after crash recovery: %v", err)
 	}
 	if busy != 0 || (logFrames >= 0 && checkpointed != logFrames) {

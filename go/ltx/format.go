@@ -161,6 +161,15 @@ func unmarshalHeader(b []byte) (Header, error) {
 
 // EncodeSnapshot encodes a SQLite database file as a full LTX v2 snapshot.
 func EncodeSnapshot(src io.ReaderAt, fileSize int64, dst io.Writer, timestampMillis int64) (Header, error) {
+	return EncodeSnapshotAt(src, fileSize, dst, 1, timestampMillis)
+}
+
+// EncodeSnapshotAt encodes a full snapshot representing the database at txid.
+// The LTX snapshot range begins at TXID 1 and ends inclusively at txid.
+func EncodeSnapshotAt(src io.ReaderAt, fileSize int64, dst io.Writer, txid uint64, timestampMillis int64) (Header, error) {
+	if txid == 0 {
+		return Header{}, fmt.Errorf("snapshot TXID must be positive")
+	}
 	if fileSize < 100 || fileSize > int64(^uint64(0)>>1) {
 		return Header{}, fmt.Errorf("invalid SQLite file size %d", fileSize)
 	}
@@ -187,7 +196,7 @@ func EncodeSnapshot(src io.ReaderAt, fileSize int64, dst io.Writer, timestampMil
 		return Header{}, fmt.Errorf("SQLite header page count %d does not match file page count %d", dbPageCount, pageCount)
 	}
 
-	hdr := Header{PageSize: pageSize, Commit: uint32(pageCount), MinTXID: 1, MaxTXID: 1, Timestamp: timestampMillis}
+	hdr := Header{PageSize: pageSize, Commit: uint32(pageCount), MinTXID: 1, MaxTXID: txid, Timestamp: timestampMillis}
 	if err := hdr.validate(); err != nil {
 		return Header{}, err
 	}

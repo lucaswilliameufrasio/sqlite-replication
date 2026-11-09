@@ -23,6 +23,10 @@ go_reference_chain_restore="$temporary_directory/go-reference-chain-restore.sqli
 rust_capture_source="$temporary_directory/rust-capture-source.sqlite"
 rust_capture_repository="$temporary_directory/rust-capture-repository"
 rust_reference_chain_restore="$temporary_directory/rust-reference-chain-restore.sqlite"
+go_compacted_snapshot="$temporary_directory/go-compacted-42.ltx"
+rust_from_go_compacted="$temporary_directory/rust-from-go-compacted.sqlite"
+rust_compacted_snapshot="$temporary_directory/rust-compacted-77.ltx"
+go_from_rust_compacted="$temporary_directory/go-from-rust-compacted.sqlite"
 fixture="$repository_root/conformance/fixtures/ltx-v2/snapshot-4096.ltx"
 fixture_512="$repository_root/conformance/fixtures/ltx-v2/snapshot-512.ltx"
 fixture_1024="$repository_root/conformance/fixtures/ltx-v2/snapshot-1024.ltx"
@@ -33,11 +37,14 @@ apply_reference_chain() {
     local repository_path="$1"
     local destination_path="$2"
     local -a ltx_files=()
+    local ltx_file
     if [[ ! -d "$repository_path/ltx/0" ]]; then
         printf 'LTX chain directory is missing: %s\n' "$repository_path/ltx/0" >&2
         return 1
     fi
-    mapfile -t ltx_files < <(find "$repository_path/ltx/0" -maxdepth 1 -type f -name '*.ltx' -print | LC_ALL=C sort)
+    while IFS= read -r ltx_file; do
+        ltx_files+=("$ltx_file")
+    done < <(find "$repository_path/ltx/0" -type f -name '*.ltx' -print | LC_ALL=C sort)
     if [[ "${#ltx_files[@]}" -lt 3 ]]; then
         printf 'Expected a base snapshot and at least two deltas in %s; found %d files.\n' \
             "$repository_path/ltx/0" "${#ltx_files[@]}" >&2
@@ -53,6 +60,7 @@ apply_reference_chain() {
     cd "$repository_root/go"
     go run ./cmd/conformance create "$go_source"
     go run ./cmd/conformance snapshot "$go_source" "$go_repository"
+    go run ./cmd/conformance encode-snapshot-at "$go_source" "$go_compacted_snapshot" 42 1700000000042
     go run ./cmd/conformance create-delta "$go_delta"
 )
 (
@@ -89,6 +97,8 @@ apply_reference_chain() {
     cd "$repository_root/rust"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- restore "$go_repository" "$rust_from_go"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- verify "$rust_from_go"
+    cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- decode-ltx "$go_compacted_snapshot" "$rust_from_go_compacted"
+    cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- verify "$rust_from_go_compacted"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- decode-ltx "$reference_ltx" "$rust_from_reference"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- verify "$rust_from_reference"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- decode-ltx "$fixture" "$temporary_directory/rust-from-fixture.sqlite"
@@ -103,6 +113,7 @@ apply_reference_chain() {
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- verify "$temporary_directory/rust-from-fixture-65536.sqlite"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- create "$rust_source"
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- snapshot "$rust_source" "$rust_repository"
+    cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- encode-snapshot-at "$rust_source" "$rust_compacted_snapshot" 77 1700000000077
     cargo run --quiet -p sqlite-replication-core --bin replication-conformance -- create-delta "$rust_delta"
 )
 (
@@ -115,6 +126,8 @@ apply_reference_chain() {
     go run ./cmd/conformance verify "$temporary_directory/reference-verified-rust.sqlite"
     go run ./cmd/conformance restore "$rust_repository" "$go_from_rust"
     go run ./cmd/conformance verify "$go_from_rust"
+    go run ./cmd/conformance decode-ltx "$rust_compacted_snapshot" "$go_from_rust_compacted"
+    go run ./cmd/conformance verify "$go_from_rust_compacted"
 )
 
 (
@@ -148,4 +161,43 @@ apply_reference_chain() {
         verify "$rust_reference_chain_restore"
 )
 
-printf '%s\n' 'Go ↔ Rust and superfly/ltx v0.4.0 LTX v2 conformance passed, including independent restore of both captured LTX chains (SQLite page sizes 512, 1024, 4096, 8192, 65536).'
+(
+    cd "$repository_root/go"
+    go build -o "$temporary_directory/go-conformance" ./cmd/conformance
+)
+(
+    cd "$repository_root/rust"
+    # Large snapshot cases exercise the optimized library, not Rust's opt-level=0
+    # checksum/decompression loops. Unit and integration suites still run debug.
+    cargo build --quiet --release -p sqlite-replication-core --bin replication-conformance
+    # Copy through Cargo rather than assuming a target directory: CARGO_TARGET_DIR
+    # and workspace configuration can redirect the executable.
+    target_directory="$(cargo metadata --format-version 1 --no-deps | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+    cp "$target_directory/release/replication-conformance" "$temporary_directory/rust-conformance"
+)
+(
+    cd "$repository_root/conformance/reference"
+    go build -o "$temporary_directory/reference-conformance" .
+)
+for fixture in \
+    "$repository_root"/conformance/fixtures/ltx-v2/recovery-chain-4096/*.ltx \
+    "$repository_root"/conformance/fixtures/ltx-v2/large-transaction-4096/*.ltx \
+    "$repository_root"/conformance/fixtures/ltx-v2/long-chain-4096/*.ltx; do
+    "$temporary_directory/reference-conformance" verify-ltx "$fixture"
+done
+(
+    cd "$repository_root/go"
+    go test ./internal/recovery -run '^TestPinnedReferenceRecoveryChainFixtures$' -count=1
+)
+(
+    cd "$repository_root/rust"
+    cargo test -p sqlite-replication-core recovery::tests::pinned_reference_recovery_chain_fixtures -- --exact
+)
+python3 -B -m unittest discover -s "$repository_root/conformance" -p 'test_*.py'
+python3 -B "$repository_root/conformance/snapshot_matrix.py" \
+    --go "$temporary_directory/go-conformance" \
+    --rust "$temporary_directory/rust-conformance" \
+    --reference "$temporary_directory/reference-conformance" \
+    --temporary-root "$temporary_directory"
+
+printf '%s\n' 'Go ↔ Rust and superfly/ltx v0.4.0 LTX v2 conformance passed, including independent restore of both captured LTX chains and the snapshot workload matrix.'

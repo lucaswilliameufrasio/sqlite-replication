@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"os"
 
-	replication "sqlite-replication"
+	replication "github.com/lucaswilliameufrasio/sqlite-replication"
 )
 
 func main() {

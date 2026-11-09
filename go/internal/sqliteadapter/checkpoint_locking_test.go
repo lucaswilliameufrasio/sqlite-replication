@@ -13,7 +13,7 @@ import (
 
 	"modernc.org/sqlite"
 
-	"sqlite-replication/internal/wal"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/wal"
 )
 
 type checkpointResult struct {

@@ -1,0 +1,133 @@
+{
+  "$schema": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:c8759df5-e727-4b8f-8811-4d528d5b58d7",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-11-05T18:28:15Z",
+    "tools": [
+      {
+        "vendor": "CycloneDX",
+        "name": "cyclonedx-gomod",
+        "version": "v1.12.0",
+        "hashes": [
+          {
+            "alg": "MD5",
+            "content": "006b4568e9ddaba70c37d1472aafcf62"
+          },
+          {
+            "alg": "SHA-1",
+            "content": "50e4be634b73cd25b8beb9f1c6c6bc86fce5e0f1"
+          },
+          {
+            "alg": "SHA-256",
+            "content": "2238adac4b5e36926d388461e72ef1ae8caaf4ac11c221ac5fab4e76d7a29861"
+          },
+          {
+            "alg": "SHA-384",
+            "content": "e59914e5ac784513fb6a1ee9ea3a4fe33d783fdbeacefeeec75425eba770e2536165d0c16c7b6d30bbbd102ab1887741"
+          },
+          {
+            "alg": "SHA-512",
+            "content": "d9176bf0c6900b8f597058748051c18906f6f07d60eec1fcec0d440a95a3566e266a26e7c32e2a0899e05c1a213ff579408dcb075ab90391ff62951ae75c35bc"
+          }
+        ],
+        "externalReferences": [
+          {
+            "url": "https://github.com/CycloneDX/cyclonedx-gomod",
+            "type": "vcs"
+          },
+          {
+            "url": "https://cyclonedx.org",
+            "type": "website"
+          }
+        ]
+      }
+    ],
+    "component": {
+      "bom-ref": "pkg:golang/sqlite-replication-conformance/reference@v0.0.0-20261105181611-3553f91cce25?type=module",
+      "type": "library",
+      "name": "sqlite-replication-conformance/reference",
+      "version": "v0.0.0-20261105181611-3553f91cce25",
+      "purl": "pkg:golang/sqlite-replication-conformance/reference@v0.0.0-20261105181611-3553f91cce25?goarch=amd64\u0026goos=linux\u0026type=module"
+    }
+  },
+  "components": [
+    {
+      "bom-ref": "pkg:golang/github.com/pierrec/lz4/v4@v4.1.22?type=module",
+      "type": "library",
+      "name": "github.com/pierrec/lz4/v4",
+      "version": "v4.1.22",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "70a170eae2432befe07f0e417032f424be5a06c00576c213d7c791b4b8fb5485"
+        }
+      ],
+      "purl": "pkg:golang/github.com/pierrec/lz4/v4@v4.1.22?goarch=amd64\u0026goos=linux\u0026type=module",
+      "externalReferences": [
+        {
+          "url": "https://github.com/pierrec/lz4",
+          "type": "vcs"
+        }
+      ],
+      "evidence": {
+        "licenses": [
+          {
+            "license": {
+              "id": "BSD-3-Clause"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "bom-ref": "pkg:golang/github.com/superfly/ltx@v0.4.0?type=module",
+      "type": "library",
+      "name": "github.com/superfly/ltx",
+      "version": "v0.4.0",
+      "scope": "required",
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "163082ad89687fb71153327c64833a73cd80cbdf1f7d36ea7ef6e6db69d3b252"
+        }
+      ],
+      "purl": "pkg:golang/github.com/superfly/ltx@v0.4.0?goarch=amd64\u0026goos=linux\u0026type=module",
+      "externalReferences": [
+        {
+          "url": "https://github.com/superfly/ltx",
+          "type": "vcs"
+        }
+      ],
+      "evidence": {
+        "licenses": [
+          {
+            "license": {
+              "id": "Apache-2.0"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "dependencies": [
+    {
+      "ref": "pkg:golang/sqlite-replication-conformance/reference@v0.0.0-20261105181611-3553f91cce25?type=module",
+      "dependsOn": [
+        "pkg:golang/github.com/superfly/ltx@v0.4.0?type=module"
+      ]
+    },
+    {
+      "ref": "pkg:golang/github.com/pierrec/lz4/v4@v4.1.22?type=module"
+    },
+    {
+      "ref": "pkg:golang/github.com/superfly/ltx@v0.4.0?type=module",
+      "dependsOn": [
+        "pkg:golang/github.com/pierrec/lz4/v4@v4.1.22?type=module"
+      ]
+    }
+  ]
+}

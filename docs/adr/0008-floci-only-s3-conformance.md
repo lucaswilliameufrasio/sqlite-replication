@@ -26,11 +26,13 @@ real como requisito de CI.
 
 ## Consequências e evidência
 
-O smoke local verifica bucket/objeto e reabertura do mesmo Floci com volume
-persistent; `infra/floci-smoke.sh` isola e limpa seu projeto/volume. Testes S3
-completos ainda não estão implementados. Registrar comportamento não suportado
-pelo Floci como limitação, não como teste aprovado. Resultado não homologa
-provedor externo.
+`infra/floci-smoke.sh` isola e limpa projeto/volume e executa conformance dos
+adapters Go/Rust, inclusive PUT imutável/multipart, reconciliação, SIGKILL,
+restart do volume e restores cruzados de repositórios S3 completos: Go publica,
+Rust restaura após o restart; Rust publica e Go restaura. O mesmo bucket é
+compartilhado somente dentro da execução isolada. Registrar comportamento não
+suportado pelo Floci como limitação, não como teste aprovado. Resultado não
+homologa provedor externo.
 
 ## Reversão / reconsideração
 

@@ -26,6 +26,14 @@ fica isolado e não bloqueia v1.
 Os repositórios devem declarar `format_version`; os testes mantêm fixtures
 distintas e testam rejeição explícita de layouts incompatíveis.
 
+O gate de conformance também exercita snapshots de bancos vazios, 100 mil/1
+milhão de linhas, BLOBs, rollback e VACUUM via `conformance/snapshot_matrix.py`.
+A identidade schema 1 tem o mesmo contrato UUID v4 hifenizado/variante RFC 4122
+em Go e Rust (ver `spec/REPOSITORY_LAYOUT.md`). Manifestos inválidos devem ser
+rejeitados antes da promoção, sem reinicialização silenciosa. Essa validação
+corrige uma divergência entre a desserialização permissiva de UUID em Rust e a
+validação Go; não muda os UUIDs gerados por versões anteriores do projeto.
+
 ## Reconsiderar quando
 
 Adicionar leitura/escrita v3 somente após uma nova matriz de compatibilidade e

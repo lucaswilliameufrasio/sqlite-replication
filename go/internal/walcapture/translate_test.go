@@ -6,8 +6,8 @@ import (
 	"reflect"
 	"testing"
 
-	"sqlite-replication/internal/wal"
-	"sqlite-replication/ltx"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/wal"
+	"github.com/lucaswilliameufrasio/sqlite-replication/ltx"
 )
 
 type walFrame struct {

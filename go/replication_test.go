@@ -6,11 +6,13 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
+	"github.com/lucaswilliameufrasio/sqlite-replication"
+	"github.com/lucaswilliameufrasio/sqlite-replication/internal/sqliteadapter"
+	"github.com/lucaswilliameufrasio/sqlite-replication/replicator"
 	_ "modernc.org/sqlite"
-	"sqlite-replication"
-	"sqlite-replication/internal/sqliteadapter"
 )
 
 func TestSnapshotAndOfflineRestore(t *testing.T) {
@@ -40,6 +42,73 @@ func TestSnapshotAndOfflineRestore(t *testing.T) {
 	if err := replication.RestoreSnapshot(ctx, repositoryRoot, restoredPath); err == nil {
 		t.Fatal("restore replaced an existing destination")
 	}
+}
+
+func TestRestoreToTargetReconstructsIncrementalPointWithoutOverwrite(t *testing.T) {
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("public incremental capture is intentionally limited to Linux amd64")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	databasePath := filepath.Join(dir, "source.db")
+	createSourceDatabase(t, databasePath)
+	repositoryRoot := filepath.Join(dir, "repository")
+	if _, err := replication.Snapshot(ctx, databasePath, repositoryRoot); err != nil {
+		t.Fatalf("create initial snapshot: %v", err)
+	}
+
+	db, err := sql.Open("sqlite", databasePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, "INSERT INTO records(value) VALUES (?)", "incremental"); err != nil {
+		t.Fatalf("commit incremental row: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := replicator.CaptureOnce(ctx, databasePath, repositoryRoot, func(context.Context) (func() error, error) {
+		return func() error { return nil }, nil
+	}); err != nil {
+		t.Fatalf("capture local WAL: %v", err)
+	}
+
+	for _, test := range []struct {
+		name   string
+		target replicator.RestoreTarget
+		rows   int
+	}{
+		{name: "snapshot TXID", target: replicator.RestoreTarget{TXID: 1}, rows: 100},
+		{name: "incremental TXID", target: replicator.RestoreTarget{TXID: 2}, rows: 101},
+		{name: "timestamp", target: replicator.RestoreTarget{TimestampMillis: int64Pointer(1<<62 - 1)}, rows: 101},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			destination := filepath.Join(dir, test.name+".db")
+			if err := replicator.RestoreToTarget(ctx, repositoryRoot, destination, test.target); err != nil {
+				t.Fatalf("restore target: %v", err)
+			}
+			if got := rowCount(t, destination); got != test.rows {
+				t.Fatalf("restored row count = %d, want %d", got, test.rows)
+			}
+			if err := os.WriteFile(destination, []byte("preserve"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := replicator.RestoreToTarget(ctx, repositoryRoot, destination, test.target); err == nil {
+				t.Fatal("restore overwrote an existing destination")
+			}
+			contents, err := os.ReadFile(destination)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(contents) != "preserve" {
+				t.Fatalf("existing destination changed to %q", contents)
+			}
+		})
+	}
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
 }
 
 func TestRestoreRejectsCorruptLTXWithoutPromoting(t *testing.T) {
