@@ -2,6 +2,19 @@
 
 ## Ferramentas
 
+- A implementação Go fica no repositório separado
+  `github.com/lucaswilliameufrasio/sqlite-replication-go`. Para os testes
+  cruzados, faça checkout do commit
+  `cd9423694e4de94beeb97e023ca5fc1fe3f5ffee` e informe seu caminho absoluto
+  em `GO_REPO`. Na ausência da variável, `make` usa o diretório irmão
+  `../sqlite-replication-go`. O CI faz checkout do mesmo commit explicitamente.
+  O gate completo continua exercitando Go, Rust, Floci e conformance; não é
+  um teste apenas de Rust.
+- A matriz de snapshots pode consumir vários gigabytes temporários. Se `/tmp`
+  não tiver espaço suficiente, defina `TMPDIR` para um diretório local com
+  espaço disponível antes de executar o gate. Não use um diretório que
+  contenha dados que o teste deva preservar.
+
 - Go 1.27.3 ou posterior compatível com `go.mod`.
 - Rust/Cargo 1.99.1 ou posterior compatível com `Cargo.toml` (MSRV declarado:
   Rust 1.94.1).

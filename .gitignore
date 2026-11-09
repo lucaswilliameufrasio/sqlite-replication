@@ -1,6 +1,5 @@
-# Go
-go/coverage.out
-go/coverage.html
+# External interoperability checkouts
+/.interop/
 
 # Rust
 rust/target/

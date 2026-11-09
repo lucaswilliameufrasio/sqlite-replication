@@ -1,6 +1,9 @@
 # SQLite Replication
 
-Independent Go and Rust SQLite replication libraries
+Rust SQLite replication library. The independent Go implementation lives in
+[`sqlite-replication-go`](https://github.com/lucaswilliameufrasio/sqlite-replication-go).
+Cross-language verification checks out the Go implementation separately; see
+`docs/TESTING.md` for the pinned revision and local setup.
 
 **Status:** M0 permanece parcial; M1 está implementado e verificado em Go e Rust
 pelo gate local `make test`, incluindo 16 casos/96 restores de snapshots LTX v2

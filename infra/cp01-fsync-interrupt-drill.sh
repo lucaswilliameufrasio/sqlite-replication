@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+go_repository_root="${GO_REPO:-$repository_root/../sqlite-replication-go}"
 scratch_root="/tmp/opencode"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -93,7 +94,7 @@ while ! mountpoint -q "$mount_directory"; do
 done
 
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     TMPDIR="$temporary_directory" \
     SQLITE_REPLICATION_CP01_FUSE_ROOT="$mount_directory/repository" \
     CP01_FUSE_BARRIER="$barrier_path" \
