@@ -28,6 +28,9 @@
   dependências baixadas pelos SDKs. O alvo usa somente `floci/floci:2.3.0`
   pinado por digest, credenciais sintéticas e S3 local; nunca chama AWS S3 ou
   Cloudflare R2.
+- `make test-rustfs` é um teste adicional opt-in com RustFS local, Docker
+  rootless e checkout Go em `GO_REPO`; não integra o `make test` nem acessa
+  serviços reais. Consulte `docs/s3-compatible-validation.md` para os limites.
 - O smoke escolhe o contexto Docker `rootless` quando existe e confirma a
   opção `name=rootless` do daemon. Cada execução usa nome de projeto e volume
   próprios e remove apenas esses recursos no teardown.

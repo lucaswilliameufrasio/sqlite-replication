@@ -4,7 +4,7 @@ CARGO ?= cargo
 GO_REPO ?= $(abspath ../sqlite-replication-go)
 export GO_REPO
 
-.PHONY: fmt-check vet-go clippy-rust test-go test-rust test-telemetry test-fuzz test-fuzz-extended bench-go-ltx bench-rust-ltx bench-ltx test-conformance test-floci test-cp01-enospc test-cp01-fsync-interrupt test-cp01-qemu-poweroff test-native test
+.PHONY: fmt-check vet-go clippy-rust test-go test-rust test-telemetry test-fuzz test-fuzz-extended bench-go-ltx bench-rust-ltx bench-ltx test-conformance test-floci test-rustfs test-cp01-enospc test-cp01-fsync-interrupt test-cp01-qemu-poweroff test-native test
 
 fmt-check:
 	cd "$(GO_REPO)" && test -z "$$($(GOFMT) -l $$(find . -type f -name '*.go'))"
@@ -51,6 +51,9 @@ test-conformance:
 
 test-floci:
 	bash infra/floci-smoke.sh
+
+test-rustfs:
+	bash infra/rustfs-smoke.sh
 
 test-cp01-enospc:
 	bash infra/cp01-enospc-drill.sh
