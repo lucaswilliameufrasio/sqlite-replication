@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+go_repository_root="${GO_REPO:-$repository_root/../sqlite-replication-go}"
 compose_file="$repository_root/infra/compose.yaml"
 run_id="$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
 project_name="sqlite-replication-floci-${run_id}"
@@ -48,7 +49,7 @@ export SQLITE_REPLICATION_FLOCI_RUN_ID="$run_id"
 export SQLITE_REPLICATION_FLOCI_FIXTURE="$repository_root/conformance/fixtures/ltx-v2/snapshot-4096.ltx"
 export SQLITE_REPLICATION_FLOCI_CROSS_ENGINE=1
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go test ./storages3 -run '^TestFlociAdapterConformance$' -count=1
     go test ./internal/recovery -run '^TestFlociS3RecoveryRestoreCompactionAndGC$' -count=1
     go test ./replicator -run '^TestFlociPublicS3Sync$' -count=1
@@ -66,12 +67,12 @@ python3 "$repository_root/infra/floci_smoke.py" wait "$endpoint" "$run_id"
     cargo test -p sqlite-replication-core --test flush_barrier barrier_captures_sqlite_and_confirms_remote_position -- --ignored --exact
 )
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go test ./internal/recovery -run '^TestFlociS3CrossEngineRestore$' -count=1
     go test ./replicator -run '^TestFlociPublicS3Restore$' -count=1
 )
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     SQLITE_REPLICATION_FLOCI_RESTART_PHASE=verify go test ./storages3 -run '^TestFlociRestartMarker$' -count=1
 )
 python3 "$repository_root/infra/floci_smoke.py" verify "$endpoint" "$run_id"

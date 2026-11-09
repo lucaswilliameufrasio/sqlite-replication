@@ -5,7 +5,7 @@ snapshot LTX v2 em um repositório filesystem. O destino do restore deve ser um
 caminho novo; os exemplos não sobrescrevem arquivos existentes.
 
 ```sh
-cd go
+cd "$GO_REPO" # checkout de sqlite-replication-go
 go run ./examples/snapshot-restore /path/to/app.sqlite /path/to/replica /path/to/restored.sqlite
 ```
 

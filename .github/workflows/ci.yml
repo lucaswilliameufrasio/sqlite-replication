@@ -23,6 +23,8 @@ concurrency:
 jobs:
   quality:
     name: Go, Rust, and conformance
+    env:
+      GO_REPO: ${{ github.workspace }}/.interop/sqlite-replication-go
     # Manual dispatch is reserved for the explicitly opted-in native matrix.
     if: github.event_name != 'workflow_dispatch'
     runs-on: ubuntu-24.04
@@ -33,6 +35,14 @@ jobs:
         # https://github.com/actions/checkout/releases/tag/v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      - name: Check out pinned Go implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lucaswilliameufrasio/sqlite-replication-go
+          ref: cd9423694e4de94beeb97e023ca5fc1fe3f5ffee
+          path: .interop/sqlite-replication-go
           persist-credentials: false
 
       - name: Install Go
@@ -56,6 +66,8 @@ jobs:
 
   native-arm64:
     name: Native ${{ matrix.platform }} tests
+    env:
+      GO_REPO: ${{ github.workspace }}/.interop/sqlite-replication-go
     if: github.event_name == 'workflow_dispatch' && inputs.run_native_architecture_matrix
     strategy:
       fail-fast: false
@@ -75,6 +87,14 @@ jobs:
         # https://github.com/actions/checkout/releases/tag/v7.0.1
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+
+      - name: Check out pinned Go implementation
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: lucaswilliameufrasio/sqlite-replication-go
+          ref: cd9423694e4de94beeb97e023ca5fc1fe3f5ffee
+          path: .interop/sqlite-replication-go
           persist-credentials: false
 
       - name: Verify native runner architecture

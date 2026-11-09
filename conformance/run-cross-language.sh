@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+go_repository_root="${GO_REPO:-$repository_root/../sqlite-replication-go}"
 temporary_directory="$(mktemp -d "${TMPDIR:-/tmp}/sqlite-replication-conformance.XXXXXX")"
 trap 'rm -rf "$temporary_directory"' EXIT
 
@@ -57,7 +58,7 @@ apply_reference_chain() {
 }
 
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go run ./cmd/conformance create "$go_source"
     go run ./cmd/conformance snapshot "$go_source" "$go_repository"
     go run ./cmd/conformance encode-snapshot-at "$go_source" "$go_compacted_snapshot" 42 1700000000042
@@ -75,7 +76,7 @@ apply_reference_chain() {
     done
 )
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go run ./cmd/conformance verify "$temporary_directory/reference-verified-go.sqlite"
     for page_size in 512 1024 4096 8192 65536; do
         go run ./cmd/conformance verify "$temporary_directory/reference-fixture-${page_size}.sqlite"
@@ -122,7 +123,7 @@ apply_reference_chain() {
     go run . verify-ltx "$rust_delta"
 )
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go run ./cmd/conformance verify "$temporary_directory/reference-verified-rust.sqlite"
     go run ./cmd/conformance restore "$rust_repository" "$go_from_rust"
     go run ./cmd/conformance verify "$go_from_rust"
@@ -131,7 +132,7 @@ apply_reference_chain() {
 )
 
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go run ./cmd/conformance create-capture-chain "$go_capture_source" "$go_capture_repository"
     go run ./cmd/conformance verify-capture-chain "$go_capture_source"
 )
@@ -139,7 +140,7 @@ apply_reference_chain() {
     apply_reference_chain "$go_capture_repository" "$go_reference_chain_restore"
 )
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go run ./cmd/conformance compare-capture-chain "$go_capture_source" "$go_reference_chain_restore"
 )
 
@@ -152,7 +153,7 @@ apply_reference_chain() {
     apply_reference_chain "$rust_capture_repository" "$rust_reference_chain_restore"
 )
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go run ./cmd/conformance compare-capture-chain "$rust_capture_source" "$rust_reference_chain_restore"
 )
 (
@@ -162,7 +163,7 @@ apply_reference_chain() {
 )
 
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go build -o "$temporary_directory/go-conformance" ./cmd/conformance
 )
 (
@@ -186,7 +187,7 @@ for fixture in \
     "$temporary_directory/reference-conformance" verify-ltx "$fixture"
 done
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go test ./internal/recovery -run '^TestPinnedReferenceRecoveryChainFixtures$' -count=1
 )
 (

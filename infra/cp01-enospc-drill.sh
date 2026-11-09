@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+go_repository_root="${GO_REPO:-$repository_root/../sqlite-replication-go}"
 scratch_root="/tmp/opencode"
 image="debian@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20be455898a9f034ad"
 
@@ -47,7 +48,7 @@ cleanup() {
 trap cleanup EXIT
 
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     TMPDIR="$temporary_directory" go test -c -o "$temporary_directory/go-capture.test" ./internal/capture
 )
 

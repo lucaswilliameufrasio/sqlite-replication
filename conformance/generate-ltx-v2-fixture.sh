@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+go_repository_root="${GO_REPO:-$repository_root/../sqlite-replication-go}"
 fixture_path="${1:-$repository_root/conformance/fixtures/ltx-v2/snapshot-4096.ltx}"
 page_size="${2:-4096}"
 if [[ -e "$fixture_path" ]]; then
@@ -14,7 +15,7 @@ trap 'rm -rf "$temporary_directory"' EXIT
 mkdir -p "$(dirname "$fixture_path")"
 
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go run ./cmd/conformance create "$temporary_directory/source.sqlite" "$page_size"
 )
 (

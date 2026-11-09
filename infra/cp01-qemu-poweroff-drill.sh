@@ -2,6 +2,7 @@
 set -euo pipefail
 
 repository_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+go_repository_root="${GO_REPO:-$repository_root/../sqlite-replication-go}"
 temporary_root="/tmp/opencode"
 kernel="/usr/lib/modules/7.3.0-5-cachyos/vmlinuz"
 busybox="/usr/lib/initcpio/busybox"
@@ -61,7 +62,7 @@ trap cleanup EXIT
 
 go_binary="$work_directory/go-spool.test"
 (
-    cd "$repository_root/go"
+    cd "$go_repository_root"
     go test -c -o "$go_binary" ./internal/spool
 )
 
